@@ -51,7 +51,7 @@ export interface SyncRecord {
 
 export interface JobRecord {
   id: string
-  type: 'update-harness' | 'sync-check' | 'merge-base' | 'fix-ci'
+  type: 'update-harness' | 'sync-check' | 'merge-base' | 'fix-ci' | 'resolve-comments'
   status: JobStatus
   syncId?: string
   createdAt: string
@@ -96,7 +96,7 @@ export interface DshWorkerState {
 export interface DshRunRecord {
   id: string
   syncId: string
-  kind: 'merge-base' | 'fix-ci'
+  kind: 'merge-base' | 'fix-ci' | 'resolve-comments'
   clonePath: string
   startedAt: string
   finishedAt: string
@@ -141,8 +141,14 @@ export interface PullRequestInfo {
   headRefName: string
   headRefOid: string
   reviewDecision: string
+  reviewRequests: PullRequestReviewRequest[]
   latestReviews: PullRequestReview[]
   statusCheckRollup: PullRequestCheck[]
+}
+
+export interface PullRequestReviewRequest {
+  __typename?: string
+  login?: string
 }
 
 /** `gh pr list --author @me` 返回的轻量摘要，用于自动追踪发现。 */
@@ -172,6 +178,11 @@ export interface PullRequestReview {
   author?: { login?: string }
   state: string
   submittedAt?: string
+}
+
+export interface ReviewerCommentProgress {
+  total: number
+  resolved: number
 }
 
 export interface PullRequestCheck {
@@ -209,13 +220,16 @@ export interface PrDashboardRecord {
   mergeStateStatus: string
   baseBehind?: boolean
   reviewDecision: string
+  reviewRequests: string[]
   reviews: PullRequestReview[]
+  reviewerComments: Record<string, ReviewerCommentProgress>
   ciStatus: CiStatus
   ciSummary: string
   checks: CiCheck[]
   syncId?: string
   syncEnabled?: boolean
   pendingBaseCheckAt?: string
+  unresolvedComments?: number
   agentPausedReason?: string
   updatedAt: string
 }

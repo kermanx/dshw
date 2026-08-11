@@ -152,6 +152,7 @@ onBeforeUnmount(() => {
             :pending="pending"
             @action="(name, action) => post('/api/pr-action', { name, action }, `${action}:${name}`)"
             @open-job="activeJobId = $event"
+            @open-activity="select('activity')"
             @toggle-sync="(name, enabled) => post('/api/sync/toggle', { name, enabled }, `sync-toggle:${name}`)"
           />
           <ReviewRequests v-else-if="view === 'reviews'" :requests="snapshot.reviewRequests" />

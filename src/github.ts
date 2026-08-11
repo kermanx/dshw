@@ -1,10 +1,10 @@
-import type { CiCheck, CiStatus, MyPullRequestSummary, PullRequestCheck, PullRequestInfo, ReviewRequestRecord } from './types.ts'
+import type { CiCheck, CiStatus, MyPullRequestSummary, PullRequestCheck, PullRequestInfo, ReviewerCommentProgress, ReviewRequestRecord } from './types.ts'
 import { run, runOrThrow } from './util.ts'
 
 const PR_FIELDS = [
   'number', 'title', 'url', 'state', 'isDraft', 'mergeable', 'mergeStateStatus',
   'baseRefName', 'baseRefOid', 'headRefName', 'headRefOid',
-  'reviewDecision', 'latestReviews', 'statusCheckRollup',
+  'reviewDecision', 'reviewRequests', 'latestReviews', 'statusCheckRollup',
 ].join(',')
 
 export async function pullRequest(
@@ -22,6 +22,7 @@ export async function pullRequest(
   const result = await runOrThrow('gh', args, { cwd, timeoutMs: 30_000, signal })
   const parsed = JSON.parse(result.stdout) as PullRequestInfo
   parsed.latestReviews ??= []
+  parsed.reviewRequests ??= []
   parsed.statusCheckRollup ??= []
   parsed.reviewDecision ??= ''
   return parsed
@@ -37,6 +38,7 @@ export async function openPullRequests(cwd: string, repoSlug: string, signal?: A
   const parsed = JSON.parse(result.stdout) as PullRequestInfo[]
   for (const pr of parsed) {
     pr.latestReviews ??= []
+    pr.reviewRequests ??= []
     pr.statusCheckRollup ??= []
     pr.reviewDecision ??= ''
   }
@@ -66,6 +68,44 @@ export async function reviewRequestedPullRequests(cwd: string, repoSlug: string,
   )
   const parsed = JSON.parse(result.stdout) as Array<Omit<ReviewRequestRecord, 'author'> & { author?: { login?: string } }>
   return parsed.map(pr => ({ ...pr, author: pr.author?.login ?? 'unknown' }))
+}
+
+/** 一次 GraphQL 调用批量取多个 PR 的 review thread，并按发起 thread 的 reviewer 汇总解决进度。 */
+export async function reviewerCommentProgress(
+  cwd: string,
+  repoSlug: string,
+  numbers: readonly number[],
+  signal?: AbortSignal,
+): Promise<Map<number, Record<string, ReviewerCommentProgress>>> {
+  const progress = new Map<number, Record<string, ReviewerCommentProgress>>()
+  if (numbers.length === 0) return progress
+  const [owner, name] = repoSlug.split('/')
+  const selections = numbers.map((number, index) => (
+    `pr${index}: pullRequest(number: ${number}) { reviewThreads(first: 100) { nodes { isResolved comments(first: 1) { nodes { author { login } } } } } }`
+  )).join(' ')
+  const query = `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${selections} } }`
+  const result = await runOrThrow('gh', ['api', 'graphql', '-f', `query=${query}`], { cwd, timeoutMs: 30_000, signal })
+  const data = JSON.parse(result.stdout) as {
+    data?: { repository?: Record<string, {
+      reviewThreads: { nodes: Array<{ isResolved: boolean; comments: { nodes: Array<{ author?: { login?: string } }> } }> }
+    } | null> }
+  }
+  numbers.forEach((number, index) => {
+    const pr = data.data?.repository?.[`pr${index}`]
+    if (pr !== null && pr !== undefined) {
+      const reviewers: Record<string, ReviewerCommentProgress> = {}
+      for (const thread of pr.reviewThreads.nodes) {
+        const login = thread.comments.nodes[0]?.author?.login
+        if (login === undefined) continue
+        const current = reviewers[login] ?? { total: 0, resolved: 0 }
+        current.total += 1
+        if (thread.isResolved) current.resolved += 1
+        reviewers[login] = current
+      }
+      progress.set(number, reviewers)
+    }
+  })
+  return progress
 }
 
 export async function ciChecks(cwd: string, repoSlug: string, number: number, signal?: AbortSignal): Promise<CiCheck[]> {  const result = await run(

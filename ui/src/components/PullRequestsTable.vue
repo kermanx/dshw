@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { mergeLabel, mergeTone, reviewLabel, reviewTone } from '../format.ts'
+import { mergeLabel, mergeTone } from '../format.ts'
 import type { JobRecord, PrDashboardRecord } from '../types.ts'
 import CiChecks from './CiChecks.vue'
+import ReviewDetails from './ReviewDetails.vue'
 import StatusDot from './StatusDot.vue'
 import StatusIcon from './StatusIcon.vue'
 import Icon from './Icon.vue'
 
 const props = defineProps<{ prs: PrDashboardRecord[], jobs: JobRecord[], pending: ReadonlySet<string> }>()
 const emit = defineEmits<{
-  action: [cloneName: string, action: 'merge-base' | 'merge-base-direct' | 'fix-ci']
+  action: [cloneName: string, action: 'merge-base' | 'merge-base-direct' | 'fix-ci' | 'resolve-comments']
   openJob: [jobId: string]
+  openActivity: []
   toggleSync: [cloneName: string, enabled: boolean]
 }>()
 
@@ -24,7 +26,7 @@ function findBusyJob(pr: PrDashboardRecord): JobRecord | undefined {
 }
 
 function busyLabel(job?: JobRecord): string {
-  return job?.type === 'fix-ci' ? '修复 CI' : job?.type === 'merge-base' ? '合并 base' : '检查状态'
+  return job?.type === 'fix-ci' ? '修复 CI' : job?.type === 'merge-base' ? '合并 base' : job?.type === 'resolve-comments' ? '解决评论' : '检查状态'
 }
 
 /** 冲突走 dsh agent；可合并但落后 base 走无模型的直接 merge+push。 */
@@ -32,6 +34,16 @@ function mergeAction(pr: PrDashboardRecord): 'merge-base' | 'merge-base-direct' 
   if (pr.mergeable === 'CONFLICTING') return 'merge-base'
   if (pr.mergeable === 'MERGEABLE' && pr.baseBehind === true) return 'merge-base-direct'
   return undefined
+}
+
+/** 最近一次自动/手动合并任务失败（且当前可重试）时返回该任务，用于在 Merge 列提示。 */
+function lastFailedMerge(pr: PrDashboardRecord): JobRecord | undefined {
+  const failed = props.jobs.filter(job => (
+    job.syncId === pr.syncId
+    && job.type === 'merge-base'
+    && (job.status === 'failed' || job.status === 'blocked')
+  ))
+  return failed.at(-1)
 }
 
 /** 冲突但处于 base push 后的静默期：到点会自动开始合并。 */
@@ -43,13 +55,6 @@ function autoMergeAt(pr: PrDashboardRecord): string | undefined {
 function autoMergeMinutes(pr: PrDashboardRecord): number {
   const at = autoMergeAt(pr)
   return at === undefined ? 0 : Math.max(1, Math.ceil((Date.parse(at) - Date.now()) / 60_000))
-}
-
-function reviewers(pr: PrDashboardRecord): string {
-  const logins = pr.reviews
-    .map(review => review.author?.login)
-    .filter((login): login is string => login !== undefined && login !== 'ds-review-bot')
-  return [...new Set(logins.map(login => `@${login}`))].join(' · ') || '—'
 }
 
 const thClass = 'h-30px px-12px b-b b-b-solid b-b-line bg-surface text-secondary text-11px font-500 uppercase tracking-[0.05em] text-left whitespace-nowrap sticky top-0 z-1'
@@ -68,7 +73,7 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
         <tr>
           <th :class="thClass">Pull request</th>
           <th class="w-170px" :class="thClass">CI</th>
-          <th class="w-150px" :class="thClass">Review</th>
+          <th class="w-210px" :class="thClass">Review</th>
           <th class="w-150px" :class="thClass">Merge</th>
           <th class="w-110px" :class="thClass">Sync</th>
         </tr>
@@ -108,11 +113,25 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
             </CiChecks>
           </td>
           <td :class="tdClass">
-            <span class="inline-flex items-center gap-6px min-w-0 h-20px text-12.5px whitespace-nowrap" :class="`st-${reviewTone(pr.reviewDecision)}`">
-              <StatusIcon :tone="reviewTone(pr.reviewDecision)" />
-              {{ reviewLabel(pr.reviewDecision) }}
-            </span>
-            <div class="cell-sub" :title="reviewers(pr)">{{ reviewers(pr) }}</div>
+            <ReviewDetails :pr="pr">
+              <template #default="{ summary }">
+                <button v-if="busyByPr.get(pr.number)?.type === 'resolve-comments'" :class="actionClass" @click="emit('openJob', busyByPr.get(pr.number)!.id)">
+                  <StatusDot tone="accent" pulse />
+                  解决评论中 · 查看
+                </button>
+                <div v-else class="flex items-center gap-5px min-w-0">
+                  <span class="truncate text-muted text-11.5px" :title="summary">{{ summary }}</span>
+                  <template v-if="pr.unresolvedComments !== undefined && pr.unresolvedComments > 0">
+                    <span class="flex-none text-faint text-11.5px">·</span>
+                    <button
+                      :class="actionClass"
+                      :disabled="pending.has(`resolve-comments:${pr.cloneName}`)"
+                      @click="emit('action', pr.cloneName, 'resolve-comments')"
+                    >解决 {{ pr.unresolvedComments }} 条评论</button>
+                  </template>
+                </div>
+              </template>
+            </ReviewDetails>
           </td>
           <td :class="tdClass">
             <div class="flex flex-col gap-1px min-w-0">
@@ -120,7 +139,7 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
                 <StatusIcon :tone="mergeTone(pr.mergeable)" />
                 {{ mergeLabel(pr.mergeable) }}
               </span>
-              <button v-if="busyByPr.get(pr.number) && busyByPr.get(pr.number)!.type !== 'fix-ci'" :class="actionClass" @click="emit('openJob', busyByPr.get(pr.number)!.id)">
+              <button v-if="busyByPr.get(pr.number) && busyByPr.get(pr.number)!.type !== 'fix-ci' && busyByPr.get(pr.number)!.type !== 'resolve-comments'" :class="actionClass" @click="emit('openJob', busyByPr.get(pr.number)!.id)">
                 <StatusDot tone="accent" pulse />
                 {{ busyLabel(busyByPr.get(pr.number)) }} · 查看
               </button>
@@ -133,12 +152,17 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
                   @click="emit('action', pr.cloneName, 'merge-base')"
                 >立即合并</button>
               </div>
-              <button
-                v-else-if="mergeAction(pr) !== undefined"
-                :class="actionClass"
-                :disabled="pending.has(`merge-base:${pr.cloneName}`) || pending.has(`merge-base-direct:${pr.cloneName}`)"
-                @click="emit('action', pr.cloneName, mergeAction(pr)!)"
-              >合并 {{ pr.baseRefName }}</button>
+              <div v-else-if="mergeAction(pr) !== undefined" class="flex items-center gap-5px min-w-0">
+                <template v-if="lastFailedMerge(pr) !== undefined">
+                  <span class="flex-none text-warn text-11.5px whitespace-nowrap" :title="lastFailedMerge(pr)!.summary">上次合并失败</span>
+                  <span class="flex-none text-faint text-11.5px">·</span>
+                </template>
+                <button
+                  :class="actionClass"
+                  :disabled="pending.has(`merge-base:${pr.cloneName}`) || pending.has(`merge-base-direct:${pr.cloneName}`)"
+                  @click="emit('action', pr.cloneName, mergeAction(pr)!)"
+                >合并 {{ pr.baseRefName }}</button>
+              </div>
             </div>
           </td>
           <td :class="tdClass">
@@ -160,7 +184,12 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
                 </button>
                 <span class="text-12.5px whitespace-nowrap" :class="pr.syncEnabled === true ? 'text-success' : 'text-muted'">{{ pr.syncEnabled === true ? '已开启' : '已关闭' }}</span>
               </span>
-              <span v-if="pr.agentPausedReason" class="cell-sub text-warn" :title="pr.agentPausedReason">自动任务已暂停</span>
+              <button
+                v-if="pr.agentPausedReason"
+                class="inline-flex items-center gap-5px w-fit text-warn text-11.5px cursor-pointer whitespace-nowrap hover:underline"
+                :title="pr.agentPausedReason"
+                @click="emit('openActivity')"
+              >自动任务已暂停 · 查看原因</button>
             </div>
           </td>
         </tr>

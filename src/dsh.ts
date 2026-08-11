@@ -118,7 +118,7 @@ async function targetDshCommand(clonePath: string, patchPath: string, prompt: st
 }
 
 async function loadPrompt(sync: SyncRecord, kind: DshRunRecord['kind']): Promise<string> {
-  const filename = kind === 'merge-base' ? 'merge-base.md' : 'fix-ci.md'
+  const filename = kind === 'merge-base' ? 'merge-base.md' : kind === 'fix-ci' ? 'fix-ci.md' : 'resolve-comments.md'
   const template = await readFile(join(DSHW_ROOT, 'prompts', filename), 'utf8')
   return renderPromptTemplate(template, {
     clonePath: sync.clonePath,

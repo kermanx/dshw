@@ -19,7 +19,7 @@ import {
 import { createPrClone, listClones } from './clone.ts'
 import { startDshWorker, waitForDshWorker } from './dsh.ts'
 import { currentHead, fetchBranch, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
-import { ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
+import { ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { StateStore } from './state.ts'
 import type { CloneRecord, DshWorkerProgress, JobRecord, PrDashboardRecord, PullRequestInfo, ReviewRequestRecord, SyncRecord } from './types.ts'
 import { after, id, isTaskCancelled, messageOf, now, run, runOrThrow, TaskCancelledError } from './util.ts'
@@ -165,7 +165,7 @@ class WorkflowService {
       const body = await readBody(request)
       const name = bodyString(body, 'name')
       const action = bodyString(body, 'action')
-      if (action !== 'merge-base' && action !== 'fix-ci' && action !== 'merge-base-direct') throw new Error('未知 PR 操作')
+      if (action !== 'merge-base' && action !== 'fix-ci' && action !== 'merge-base-direct' && action !== 'resolve-comments') throw new Error('未知 PR 操作')
       const clone = await findClone(name)
       const sync = await this.#manualSync(clone)
       if (action === 'merge-base-direct') this.#startDirectMergeBase(sync)
@@ -372,7 +372,8 @@ class WorkflowService {
     this.#prDashboardRefreshPromise = (async () => {
       // 一次 list 查询拿到所有 open PR，避免每个 clone 一次 gh pr view 烧 GraphQL 额度
       const clones = await listClones()
-      const openPrs = await openPullRequests(HARNESS_ROOT, clones[0]?.repoSlug ?? 'deepseek-harness/deepseek-harness')
+      const repoSlug = clones[0]?.repoSlug ?? 'deepseek-harness/deepseek-harness'
+      const openPrs = await openPullRequests(HARNESS_ROOT, repoSlug)
       const byBranch = new Map(openPrs.map(pr => [pr.headRefName, pr]))
       const records = await Promise.all(clones.map(async clone => {
         try {
@@ -403,7 +404,11 @@ class WorkflowService {
             mergeStateStatus: pr.mergeStateStatus,
             ...(baseBehind ? { baseBehind: true } : {}),
             reviewDecision: pr.reviewDecision,
+            reviewRequests: pr.reviewRequests
+              .filter(request => request.__typename === 'User' && request.login !== undefined)
+              .map(request => request.login!),
             reviews: pr.latestReviews,
+            reviewerComments: {},
             ciStatus: ci.status,
             ciSummary: ci.summary,
             checks,
@@ -421,8 +426,19 @@ class WorkflowService {
           return undefined
         }
       }))
-      this.#prDashboard = records
-        .filter((record): record is PrDashboardRecord => record !== undefined)
+      const matched = records.filter((record): record is PrDashboardRecord => record !== undefined)
+      try {
+        const progress = await reviewerCommentProgress(HARNESS_ROOT, repoSlug, matched.map(record => record.number))
+        for (const record of matched) {
+          record.reviewerComments = progress.get(record.number) ?? {}
+          const unresolved = Object.values(record.reviewerComments)
+            .reduce((count, reviewer) => count + reviewer.total - reviewer.resolved, 0)
+          if (unresolved > 0) record.unresolvedComments = unresolved
+        }
+      } catch (error) {
+        this.#store.event('warning', 'pr-dashboard', `review 评论计数失败：${messageOf(error)}`)
+      }
+      this.#prDashboard = matched
         .sort((left, right) => Number(left.isDraft) - Number(right.isDraft) || left.number - right.number || left.cloneName.localeCompare(right.cloneName))
       this.#clearRateLimited()
       this.#broadcast()
@@ -670,7 +686,7 @@ class WorkflowService {
     await this.#store.changed()
   }
 
-  async #runAgent(sync: SyncRecord, kind: 'merge-base' | 'fix-ci'): Promise<void> {
+  async #runAgent(sync: SyncRecord, kind: 'merge-base' | 'fix-ci' | 'resolve-comments'): Promise<void> {
     if (sync.agentPausedReason !== undefined) {
       this.#store.event(
         'warning',
@@ -680,8 +696,8 @@ class WorkflowService {
       await this.#store.changed()
       return
     }
-    const type = kind === 'merge-base' ? 'merge-base' : 'fix-ci'
-    const label = kind === 'merge-base' ? `合并 ${sync.baseRefName}` : '修复 CI'
+    const type = kind
+    const label = kind === 'merge-base' ? `合并 ${sync.baseRefName}` : kind === 'fix-ci' ? '修复 CI' : '解决 review 评论'
     const job = this.#beginJob(type, `${sync.cloneName} / PR #${sync.prNumber}: ${label}`, sync.id)
     const oldHead = sync.headOid
     try {
@@ -811,9 +827,9 @@ class WorkflowService {
     }
   }
 
-  #startManualAction(sync: SyncRecord, action: 'merge-base' | 'fix-ci'): void {
+  #startManualAction(sync: SyncRecord, action: 'merge-base' | 'fix-ci' | 'resolve-comments'): void {
     if (this.#syncLocks.has(sync.id)) throw new Error(`${sync.cloneName} 已有任务执行中`)
-    const label = action === 'merge-base' ? `手动合并最新 ${sync.baseRefName}` : '手动修复 CI'
+    const label = action === 'merge-base' ? `手动合并最新 ${sync.baseRefName}` : action === 'fix-ci' ? '手动修复 CI' : '手动解决 review 评论'
     if (sync.agentPausedReason !== undefined) {
       this.#store.event('info', 'dsh-resumed', `${sync.cloneName} / PR #${sync.prNumber}: 手动操作恢复 dsh 任务`)
       sync.agentPausedAt = undefined

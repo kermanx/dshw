@@ -6,11 +6,12 @@ import type {
   EventRecord,
   JobRecord,
   PrDashboardRecord,
+  PullRequestReview,
   ReviewRequestRecord,
   ServiceState,
 } from '../../src/types.ts'
 
-export type { CiCheck, DshRunRecord, DshWorkerProgress, EventRecord, JobRecord, PrDashboardRecord, ReviewRequestRecord }
+export type { CiCheck, DshRunRecord, DshWorkerProgress, EventRecord, JobRecord, PrDashboardRecord, PullRequestReview, ReviewRequestRecord }
 
 export interface WorkflowSnapshot extends ServiceState {
   service: {

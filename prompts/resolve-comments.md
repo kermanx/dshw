@@ -1,0 +1,23 @@
+# 解决 PR review 评论
+
+唯一目标仓库是 `{{clonePath}}`，它是 PR #{{prNumber}} 的分支 `{{branch}}`，该 PR 有尚未解决的 review 评论。
+
+你当前就在这个目标仓库中运行。开始修改前，先用 `gh` 和 Git 查看 PR #{{prNumber}} 的标题、描述、提交和 diff，弄清这个 PR 想实现什么；回应评论时必须保留该意图和已有行为，不能为了迎合评论而丢弃或弱化 PR 的功能。
+
+请用 `gh api graphql` 查询 PR #{{prNumber}} 的 reviewThreads，逐条阅读未解决（isResolved 为 false）的评论：
+
+- 合理的修改建议：在当前分支实现对应修改，运行必要的针对性检查。
+- 误解或不需要修改的评论：在该 thread 下回复一句简短说明，解释为什么不需要改动。
+
+全部处理完后提交并 push 当前分支，然后把已解决的 threads 标记为 resolved（对有实质修改回应的评论，可在回复中简要说明修改内容）。
+
+不要修改与评论无关的内容，不要 force push。
+
+如果任务能够完成，最终回复最后一行必须是：
+
+`DSHW_RESULT: completed`
+
+如果经过调查后确认任务无法安全完成，停止继续尝试，不要伪造成功，也不要 push 不完整的结果；最终回复最后两行必须严格是：
+
+`DSHW_RESULT: blocked`
+`DSHW_REASON: <用一行说明无法完成的具体原因>`
