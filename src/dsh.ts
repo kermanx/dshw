@@ -49,21 +49,27 @@ function runtimeExportTarget(value: unknown): string | undefined {
 export async function missingTypertRuntimeArtifacts(clonePath: string): Promise<string[]> {
   const packagesRoot = join(clonePath, 'packages')
   const manifests: string[] = []
-  const visit = async (directory: string): Promise<void> => {
-    let entries
+  const directories = async (directory: string): Promise<string[]> => {
     try {
-      entries = await readdir(directory, { withFileTypes: true })
+      return (await readdir(directory, { withFileTypes: true }))
+        .filter(entry => entry.isDirectory())
+        .map(entry => join(directory, entry.name))
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
       throw error
     }
-    await Promise.all(entries.map(async entry => {
-      const path = join(directory, entry.name)
-      if (entry.isDirectory()) await visit(path)
-      else if (entry.isFile() && entry.name === 'package.json') manifests.push(path)
-    }))
   }
-  await visit(packagesRoot)
+  for (const group of await directories(packagesRoot)) {
+    for (const packageDirectory of await directories(group)) {
+      const manifestPath = join(packageDirectory, 'package.json')
+      try {
+        await access(manifestPath)
+        manifests.push(manifestPath)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
+  }
   const missing: string[] = []
   await Promise.all(manifests.map(async manifestPath => {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { exports?: Record<string, unknown> }
@@ -82,17 +88,30 @@ export async function missingTypertRuntimeArtifacts(clonePath: string): Promise<
 
 /** 自动克隆的 worktree 首次运行时安装依赖，并补齐其声明但缺失的 TypeRT runtime 产物。 */
 async function ensureCloneRuntimeReady(clonePath: string): Promise<void> {
+  const targetRequire = createRequire(join(clonePath, 'package.json'))
   try {
-    createRequire(join(clonePath, 'package.json')).resolve('tsx/esm')
+    targetRequire.resolve('tsx/esm')
   } catch {
     await runOrThrow('pnpm', ['install', '--frozen-lockfile'], { cwd: clonePath, timeoutMs: 10 * 60 * 1000 })
   }
   const missing = await missingTypertRuntimeArtifacts(clonePath)
   if (missing.length === 0) return
-  await runOrThrow('pnpm', ['run', 'build:lib:host'], { cwd: clonePath, timeoutMs: 10 * 60 * 1000 })
+  const generatorPath = join(clonePath, 'packages', 'typert', 'generator', 'src', 'tsdown-plugin.ts')
+  try {
+    await access(generatorPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    throw new Error(`clone 声明了缺失的 TypeRT runtime 产物，但没有生成器：${generatorPath}`)
+  }
+  await runOrThrow(process.execPath, [
+    '--import', targetRequire.resolve('tsx/esm'),
+    '--input-type=module',
+    '--eval',
+    "import { typertPlugin } from './packages/typert/generator/src/tsdown-plugin.ts'; typertPlugin({ mode: 'workspace', faces: ['host'] }).writeBundle({ dir: process.cwd() + '/lib' })",
+  ], { cwd: clonePath, timeoutMs: 10 * 60 * 1000 })
   const stillMissing = await missingTypertRuntimeArtifacts(clonePath)
   if (stillMissing.length > 0) {
-    throw new Error(`Host TypeRT 构建后仍缺少 runtime 产物：${stillMissing.join(', ')}`)
+    throw new Error(`TypeRT 生成后仍缺少 runtime 产物：${stillMissing.join(', ')}`)
   }
 }
 
