@@ -33,10 +33,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <span
+  <button
+    type="button"
     ref="trigger"
-    class="inline-flex items-center gap-6px min-w-0 h-20px text-12.5px text-danger whitespace-nowrap cursor-default"
-    tabindex="0"
+    class="inline-flex items-center gap-6px w-fit min-w-0 h-20px cursor-pointer text-secondary text-12.5px whitespace-nowrap hover:underline hover:text-fg"
     @mouseenter="show"
     @mouseleave="hideSoon"
     @focus="show"
@@ -44,7 +44,7 @@ onBeforeUnmount(() => {
   >
     <StatusIcon tone="bad" />
     冲突
-  </span>
+  </button>
   <Teleport to="body">
     <div
       v-if="open"

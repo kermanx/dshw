@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { validateCloneName } from '../src/clone.ts'
 import { resolveCommandTarget } from '../src/command-target.ts'
-import { addSharedWorktree, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
+import { addSharedWorktree, commitOid, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
 import { rollupChecks, summarizeChecks } from '../src/github.ts'
 import { CLONES_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
@@ -99,22 +99,42 @@ test('finds merge conflicts without changing the worktree or index', async () =>
     await runOrThrow('git', ['init', '-b', 'master'], { cwd: root })
     await runOrThrow('git', ['config', 'user.name', 'dshw test'], { cwd: root })
     await runOrThrow('git', ['config', 'user.email', 'dshw@example.invalid'], { cwd: root })
+    await runOrThrow('git', ['config', 'merge.dsh-translation-pairing.driver', 'true'], { cwd: root })
+    await writeFile(join(root, '.gitattributes'), '*.i18n.yaml merge=dsh-translation-pairing\n')
     await writeFile(join(root, 'README.md'), 'base\n')
     await writeFile(join(root, 'config.yaml'), 'value: base\n')
+    await writeFile(join(root, 'pair.i18n.yaml'), 'value: base\n')
     await runOrThrow('git', ['add', '.'], { cwd: root })
     await runOrThrow('git', ['commit', '-m', 'base'], { cwd: root })
     await runOrThrow('git', ['branch', 'feature'], { cwd: root })
 
     await writeFile(join(root, 'README.md'), 'master\n')
     await writeFile(join(root, 'config.yaml'), 'value: master\n')
+    await writeFile(join(root, 'pair.i18n.yaml'), 'value: master\n')
     await runOrThrow('git', ['commit', '-am', 'master changes'], { cwd: root })
     await runOrThrow('git', ['checkout', 'feature'], { cwd: root })
     await writeFile(join(root, 'README.md'), 'feature\n')
     await writeFile(join(root, 'config.yaml'), 'value: feature\n')
+    await writeFile(join(root, 'pair.i18n.yaml'), 'value: feature\n')
     await runOrThrow('git', ['commit', '-am', 'feature changes'], { cwd: root })
 
-    assert.deepEqual(await mergeConflictPaths(root, 'feature', 'master'), ['README.md', 'config.yaml'])
+    assert.deepEqual(await mergeConflictPaths(root, 'feature', 'master'), ['README.md', 'config.yaml', 'pair.i18n.yaml'])
     assert.equal((await runOrThrow('git', ['status', '--porcelain=v1'], { cwd: root })).stdout, '')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('resolves the commit behind a git ref', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-commit-oid-'))
+  try {
+    await runOrThrow('git', ['init'], { cwd: root })
+    await runOrThrow('git', ['config', 'user.email', 'dshw@example.com'], { cwd: root })
+    await runOrThrow('git', ['config', 'user.name', 'dshw'], { cwd: root })
+    await writeFile(join(root, 'file.txt'), 'base\n')
+    await runOrThrow('git', ['add', 'file.txt'], { cwd: root })
+    await runOrThrow('git', ['commit', '-m', 'base'], { cwd: root })
+    assert.match(await commitOid(root, 'HEAD'), /^[0-9a-f]{40,64}$/u)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

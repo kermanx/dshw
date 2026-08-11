@@ -51,6 +51,10 @@ export async function currentHead(root: string): Promise<string> {
   return (await runOrThrow('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim()
 }
 
+export async function commitOid(root: string, ref: string): Promise<string> {
+  return (await runOrThrow('git', ['rev-parse', '--verify', `${ref}^{commit}`], { cwd: root })).stdout.trim()
+}
+
 export async function fetchBranch(root: string, branch: string, signal?: AbortSignal): Promise<void> {
   await runOrThrow('git', ['fetch', '--no-tags', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
     cwd: root,
@@ -71,7 +75,13 @@ export async function mergeConflictPaths(
   right: string,
   signal?: AbortSignal,
 ): Promise<string[]> {
-  const args = ['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', left, right]
+  // GitHub does not run the repository's worktree-local translation pairing driver.
+  // Use the standard text merge for those records so this preview matches GitHub's
+  // mergeability result instead of silently resolving conflicts only on this machine.
+  const args = [
+    '-c', 'merge.dsh-translation-pairing.driver=git merge-file %A %O %B',
+    'merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', left, right,
+  ]
   const result = await run('git', args, { cwd: root, signal })
   if (result.cancelled) throw new TaskCancelledError()
   if (result.code !== 0 && result.code !== 1) {

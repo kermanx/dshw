@@ -18,7 +18,7 @@ import {
 } from './config.ts'
 import { createPrClone, listClones } from './clone.ts'
 import { startDshWorker, waitForDshWorker } from './dsh.ts'
-import { currentHead, fetchBranch, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
+import { commitOid, currentHead, fetchBranch, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
 import { ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { StateStore } from './state.ts'
 import type { CloneRecord, DshWorkerProgress, JobRecord, PrDashboardRecord, PullRequestInfo, ReviewRequestRecord, SyncRecord } from './types.ts'
@@ -393,6 +393,7 @@ class WorkflowService {
           const ci = summarizeChecks(checks)
           const conflicting = pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY'
           if (pr.mergeable === 'MERGEABLE' || conflicting) await ensureBaseFetched(clone, pr.baseRefName)
+          const baseTipOid = conflicting ? await commitOid(clone.path, `origin/${pr.baseRefName}`) : undefined
           // GitHub 对落后的 PR 也报 BLOCKED 而非 BEHIND，用本地 git 判断是否落后 base
           const baseBehind = pr.mergeable === 'MERGEABLE' && await (async () => {
             return !(await isAncestor(clone.path, `origin/${pr.baseRefName}`))
@@ -400,7 +401,7 @@ class WorkflowService {
           let conflictPaths: string[] | undefined
           if (conflicting) {
             try {
-              conflictPaths = await this.#cachedConflictPaths(clone.repoSlug, clone.path, pr.headRefOid, pr.baseRefOid)
+              conflictPaths = await this.#cachedConflictPaths(clone.repoSlug, clone.path, pr.headRefOid, baseTipOid!)
             } catch (error) {
               this.#store.event('warning', 'conflict-paths', `${clone.name}: ${messageOf(error)}`)
             }
