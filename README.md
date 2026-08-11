@@ -84,6 +84,8 @@ dshw unsync [name|repo-id]
 
 “Code” 按钮向后台服务发送请求，由 daemon 执行 `code --reuse-window <worktree>`，不再要求浏览器直接打开 `vscode://` URL。“Merge latest <target>” 和 “Fix CI” 会把任务注册给后台后立即返回，复用正常 dsh 调用、最终输出和执行记录。虽然常见 target 是 `master`，merge 按钮始终以 PR 的真实 target 为准。draft PR 的自动 merge/fix 仍会暂停，但明确点击的手动操作会执行。
 
+底部“从头配置 dsh”只维护托管主仓库 `../deepseek-harness`。确认后依次执行 `git clean -fdx`、`git pull --ff-only origin master`、再次 `git clean -fdx`、`pnpm install --frozen-lockfile`、重装仓库 Git 配置和 `pnpm run typecheck`。两次 clean 会删除主仓库内包括 `.env`、`node_modules` 和构建产物在内的所有未跟踪或 ignored 文件；`dshw` 与 `clones/` 不在清理范围。若主仓库不在 `master`，或存在 tracked/staged 修改，任务会在首次 clean 前拒绝执行。
+
 若 dsh 返回机器可识别的 `DSHW_RESULT: blocked` 和 `DSHW_REASON: ...`，PR 行会显示“自动任务已暂停”，Recent jobs 和 Final dsh outputs 会显示“无法完成”及具体原因。手动操作视为明确重试，会先解除该暂停；如果仍无法完成，agent 可以再次将它暂停。
 
 PR 行和任务列表中的“合并中 / 修复中”可点击打开大尺寸任务面板。每次调用会通过 `dsh --profile headless --patch` 临时挂载 dshw 的 progress plugin，直接把 Harness 的 `session/event` 中的 step、assistant 文本、tool call、tool result 和 turn end 转成纯文本。worker 将文本 POST 给 daemon，daemon 只在内存保留最近 48 KB 并通过轻量 SSE 实时推送；进度不写入文件，daemon 重启或任务结束即丢弃，长期记录仍然只有最终一条输出。

@@ -44,6 +44,15 @@ export function scheduleBaseCheck(sync: SyncRecord, observedAt = Date.now()): st
   return sync.pendingBaseCheckAt
 }
 
+export const HARNESS_RECONFIGURE_STEPS = [
+  { command: 'git', args: ['clean', '-fdx'] },
+  { command: 'git', args: ['pull', '--ff-only', 'origin', 'master'], timeoutMs: 5 * 60 * 1000 },
+  { command: 'git', args: ['clean', '-fdx'] },
+  { command: 'pnpm', args: ['install', '--frozen-lockfile'], timeoutMs: 10 * 60 * 1000 },
+  { command: process.execPath, args: ['scripts/install-lefthook.mjs'] },
+  { command: 'pnpm', args: ['run', 'typecheck'], timeoutMs: 10 * 60 * 1000 },
+] as const
+
 function clearPendingBaseCheck(sync: SyncRecord): void {
   sync.pendingBaseCheckStartedAt = undefined
   sync.pendingBaseCheckAt = undefined
@@ -183,6 +192,17 @@ class WorkflowService {
       if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
       // 失败状态已在 #updateHarness 内记录并广播，这里只需避免 unhandled rejection
       void this.#ensureHarnessUpdated().catch(() => {})
+      this.#json(response, 202, { accepted: true })
+      return
+    }
+    if (method === 'POST' && url === '/api/reconfigure') {
+      if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
+      if (this.#updatePromise !== undefined) throw new Error('主仓库维护任务正在运行，请等待完成')
+      const promise = this.#reconfigureHarness()
+      this.#updatePromise = promise
+      void promise.catch(() => {}).finally(() => {
+        if (this.#updatePromise === promise) this.#updatePromise = undefined
+      })
       this.#json(response, 202, { accepted: true })
       return
     }
@@ -985,13 +1005,57 @@ class WorkflowService {
     }
   }
 
+  async #reconfigureHarness(): Promise<void> {
+    this.#runningUpdate = true
+    const job = this.#beginJob('reconfigure-harness', '从头配置托管的 deepseek-harness')
+    const signal = this.#jobSignal(job)
+    try {
+      const branch = (await runOrThrow('git', ['branch', '--show-current'], { cwd: HARNESS_ROOT, signal })).stdout.trim()
+      if (branch !== 'master') throw new Error(`托管主仓库当前分支是 ${JSON.stringify(branch)}，拒绝清理；预期 master`)
+      const tracked = await runOrThrow(
+        'git', ['status', '--porcelain=v1', '--untracked-files=no'], { cwd: HARNESS_ROOT, signal },
+      )
+      if (tracked.stdout !== '') throw new Error('托管主仓库存在 tracked 或 staged 修改，拒绝 git clean；请先处理这些修改')
+      const before = await currentHead(HARNESS_ROOT)
+      for (const step of HARNESS_RECONFIGURE_STEPS) {
+        await runOrThrow(step.command, [...step.args], {
+          cwd: HARNESS_ROOT,
+          signal,
+          ...('timeoutMs' in step ? { timeoutMs: step.timeoutMs } : {}),
+        })
+      }
+      const current = await currentHead(HARNESS_ROOT)
+      const summary = `已清理并从头配置 master ${before.slice(0, 8)} → ${current.slice(0, 8)}`
+      this.#store.state.update.lastAt = now()
+      this.#store.state.update.lastStatus = 'succeeded'
+      this.#store.state.update.lastMessage = summary
+      this.#recomputeNextUpdate()
+      this.#finishJob(job, 'succeeded', summary)
+      this.#store.event('info', 'update', summary)
+      await this.#store.changed()
+    } catch (error) {
+      const detail = messageOf(error)
+      this.#store.state.update.lastAt = now()
+      this.#store.state.update.lastStatus = 'failed'
+      this.#store.state.update.lastMessage = detail
+      this.#recomputeNextUpdate()
+      this.#finishJob(job, isTaskCancelled(error) ? 'cancelled' : 'failed', detail)
+      this.#store.event('error', 'update', `从头配置失败：${detail}`)
+      await this.#store.changed()
+      throw error
+    } finally {
+      this.#runningUpdate = false
+    }
+  }
+
   async #ensureHarnessUpdated(): Promise<void> {
     if (this.#updatePromise !== undefined) return await this.#updatePromise
-    this.#updatePromise = this.#updateHarness()
+    const promise = this.#updateHarness()
+    this.#updatePromise = promise
     try {
-      await this.#updatePromise
+      await promise
     } finally {
-      this.#updatePromise = undefined
+      if (this.#updatePromise === promise) this.#updatePromise = undefined
     }
   }
 

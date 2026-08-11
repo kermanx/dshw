@@ -12,7 +12,7 @@ import { CLONES_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
-import { observeBaseTip, scheduleBaseCheck } from '../src/service.ts'
+import { HARNESS_RECONFIGURE_STEPS, observeBaseTip, scheduleBaseCheck } from '../src/service.ts'
 import { headlessDshArguments, missingTypertRuntimeArtifacts, parseDshOutcome, renderPromptTemplate, waitForDshWorker } from '../src/dsh.ts'
 import { dshLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
@@ -49,6 +49,17 @@ test('finds declared Host TypeRT runtime artifacts that a fresh clone still need
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('defines the destructive main-repository reset as clean, pull, clean, and first-time setup', () => {
+  assert.deepEqual(HARNESS_RECONFIGURE_STEPS.map(step => [step.command === process.execPath ? 'node' : step.command, ...step.args]), [
+    ['git', 'clean', '-fdx'],
+    ['git', 'pull', '--ff-only', 'origin', 'master'],
+    ['git', 'clean', '-fdx'],
+    ['pnpm', 'install', '--frozen-lockfile'],
+    ['node', 'scripts/install-lefthook.mjs'],
+    ['pnpm', 'run', 'typecheck'],
+  ])
 })
 
 test('treats a numeric command argument as a workspace repository id', () => {

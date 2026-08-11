@@ -51,7 +51,7 @@ export interface SyncRecord {
 
 export interface JobRecord {
   id: string
-  type: 'update-harness' | 'sync-check' | 'merge-base' | 'fix-ci' | 'resolve-comments'
+  type: 'update-harness' | 'reconfigure-harness' | 'sync-check' | 'merge-base' | 'fix-ci' | 'resolve-comments'
   status: JobStatus
   syncId?: string
   createdAt: string

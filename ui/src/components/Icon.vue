@@ -15,6 +15,7 @@ const icons: Record<string, string> = {
   code: 'i-lucide:code-xml',
   external: 'i-lucide:arrow-up-right',
   sync: 'i-lucide:refresh-cw',
+  reset: 'i-lucide:rotate-ccw',
   ok: 'i-lucide:circle-check',
   bad: 'i-lucide:circle-x',
   pending: 'i-lucide:circle-dashed',

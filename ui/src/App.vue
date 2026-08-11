@@ -46,6 +46,8 @@ const prCount = computed(() => snapshot.value?.prs.length ?? 0)
 const runningJobs = computed(() => snapshot.value?.service.activeJobs ?? 0)
 const updateFailed = computed(() => snapshot.value?.update.lastStatus === 'failed')
 const updating = computed(() => pending.has('update-harness') || (snapshot.value?.jobs.some(job => job.type === 'update-harness' && job.status === 'running') ?? false))
+const reconfiguring = computed(() => pending.has('reconfigure-harness') || (snapshot.value?.jobs.some(job => job.type === 'reconfigure-harness' && job.status === 'running') ?? false))
+const harnessMaintenanceRunning = computed(() => updating.value || reconfiguring.value)
 const updateTitle = computed(() => {
   const update = snapshot.value?.update
   if (update?.lastAt === undefined) return '更新托管的 deepseek-harness（dsh 命令来源）'
@@ -86,6 +88,17 @@ function showToast(message: string, bad = false): void {
   toast.visible = true
   if (toastTimer !== undefined) window.clearTimeout(toastTimer)
   toastTimer = window.setTimeout(() => { toast.visible = false }, 2_600)
+}
+
+function reconfigureHarness(): void {
+  const confirmed = window.confirm([
+    '从头配置托管的 deepseek-harness？',
+    '',
+    '这会在主仓库执行两次 git clean -fdx，删除所有未跟踪和 ignored 文件（包括 .env、node_modules 和构建产物），然后拉取 origin/master、重新安装依赖并运行 typecheck。',
+    '',
+    'clones/ 和 dshw 不受影响；主仓库若有 tracked/staged 修改，后台会拒绝执行。',
+  ].join('\n'))
+  if (confirmed) void post('/api/reconfigure', {}, 'reconfigure-harness')
 }
 
 onMounted(() => { clock = window.setInterval(() => { currentTime.value = Date.now() }, 1_000) })
@@ -183,12 +196,22 @@ onBeforeUnmount(() => {
         <button
           v-if="snapshot"
           class="inline-flex items-center gap-5px h-full px-10px whitespace-nowrap cursor-pointer transition-colors duration-100 hover:bg-statusbar-item-hover disabled:opacity-55 disabled:pointer-events-none"
-          :disabled="updating"
+          :disabled="harnessMaintenanceRunning"
           :title="updateTitle"
           @click="post('/api/update', {}, 'update-harness')"
         >
           <Icon name="sync" :size="11" :class="{ 'animate-spin': updating }" />
           <span>{{ updating ? '更新 dsh 中' : '更新 dsh' }}</span>
+        </button>
+        <button
+          v-if="snapshot"
+          class="inline-flex items-center gap-5px h-full px-10px whitespace-nowrap cursor-pointer transition-colors duration-100 hover:bg-statusbar-item-hover disabled:opacity-55 disabled:pointer-events-none"
+          :disabled="harnessMaintenanceRunning"
+          title="清理托管主仓库、拉取最新 master，并从头安装和配置"
+          @click="reconfigureHarness"
+        >
+          <Icon name="reset" :size="11" :class="{ 'animate-spin': reconfiguring }" />
+          <span>{{ reconfiguring ? '配置 dsh 中' : '从头配置 dsh' }}</span>
         </button>
         <span v-if="snapshot?.service.devMode" class="inline-flex items-center gap-5px h-full px-10px whitespace-nowrap transition-colors duration-100 hover:bg-statusbar-item-hover">dev</span>
         <span v-if="snapshot" class="inline-flex items-center gap-5px h-full px-10px whitespace-nowrap font-mono transition-colors duration-100 hover:bg-statusbar-item-hover">:{{ snapshot.service.port }}</span>
