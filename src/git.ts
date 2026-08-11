@@ -1,7 +1,7 @@
 import { realpath } from 'node:fs/promises'
 import { relative, resolve, sep } from 'node:path'
 import { CLONES_ROOT } from './config.ts'
-import { run, runOrThrow } from './util.ts'
+import { run, runOrThrow, TaskCancelledError } from './util.ts'
 
 export async function gitRoot(cwd: string): Promise<string> {
   const result = await runOrThrow('git', ['rev-parse', '--show-toplevel'], { cwd })
@@ -62,6 +62,31 @@ export async function fetchBranch(root: string, branch: string, signal?: AbortSi
 export async function isAncestor(root: string, ref: string): Promise<boolean> {
   const result = await run('git', ['merge-base', '--is-ancestor', ref, 'HEAD'], { cwd: root })
   return result.code === 0
+}
+
+/** Compute conflicted paths without changing the worktree or index. */
+export async function mergeConflictPaths(
+  root: string,
+  left: string,
+  right: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const args = ['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', left, right]
+  const result = await run('git', args, { cwd: root, signal })
+  if (result.cancelled) throw new TaskCancelledError()
+  if (result.code !== 0 && result.code !== 1) {
+    const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`
+    throw new Error(`git ${args.join(' ')} failed: ${detail}`)
+  }
+  const [treeOid, ...paths] = result.stdout.split('\0')
+  if (treeOid === undefined || !/^[0-9a-f]{40,64}$/u.test(treeOid)) {
+    throw new Error(`git merge-tree 返回了无效 tree OID：${JSON.stringify(treeOid)}`)
+  }
+  return paths.filter(path => path !== '')
+}
+
+export function isDocumentationConflictPath(path: string): boolean {
+  return path.endsWith('.md') || path.endsWith('.i18n.yaml') || path.endsWith('.i18n.yml')
 }
 
 export async function addSharedWorktree(

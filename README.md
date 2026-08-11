@@ -70,8 +70,8 @@ dshw unsync [name|repo-id]
 一次订阅的行为如下：
 
 1. 调用 `sync` 时立即检查 mergeability 和当前 CI；即使 PR 不可合并也会检查 CI。
-2. 同一 `repo + target branch` 的所有 PR 共享一个 ref watcher。检测到 target 新 OID 后进入 10 分钟 debounce；期间再次 push 会重新计时。
-3. debounce 到期后先更新托管的 `../deepseek-harness`。同一批受影响 PR 共享这次更新，随后每个 PR 都检查 mergeability 和 CI。若冲突，调用 agent 合并最新 target、解决冲突、提交并 push。
+2. 同一 `repo + target branch` 的所有 PR 共享一个 ref watcher。检测到 target 新 OID 后进入 10 分钟 debounce；期间再次 push 会重新计时，但从本轮首次发现变化起最多等待 30 分钟，避免上游持续合入导致冲突同步被无限推迟。
+3. debounce 到期后先更新托管的 `../deepseek-harness`。同一批受影响 PR 共享这次更新，随后每个 PR 都检查 mergeability 和 CI。若冲突，先用本地 `git merge-tree` 只读计算冲突文件；仅有 Markdown（`*.md`）和翻译配对记录（`*.i18n.yaml` / `*.i18n.yml`）时跳过自动合并，否则调用 agent 合并最新 target、解决冲突、提交并 push。
 4. agent push 后等待新 head 的 CI 全部结束；仍有 pending check 时不会提前修复。全部结束且存在失败时，再调用 agent 查看 `gh` 日志、修复、提交并 push，并继续等待新 CI。
 5. draft PR 保留订阅，但自动暂停冲突同步和 CI 修复；转为 ready 后自动恢复并即时检查。PR 不再 open 时订阅自动停止。
 6. 如果 agent 明确报告任务无法安全完成，dshw 会把本次任务记为“无法完成”、展示原因，并暂停这个 PR 后续的自动 agent 调用；PR/CI 状态仍会继续刷新。再次执行 `dshw sync`，或在网页明确点击“合并 / 修 CI”，会恢复并重试 agent。

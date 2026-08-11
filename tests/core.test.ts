@@ -6,15 +6,16 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { validateCloneName } from '../src/clone.ts'
 import { resolveCommandTarget } from '../src/command-target.ts'
-import { addSharedWorktree, isInsideDirectory, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
+import { addSharedWorktree, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
 import { rollupChecks, summarizeChecks } from '../src/github.ts'
 import { CLONES_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
-import { observeBaseTip } from '../src/service.ts'
+import { observeBaseTip, scheduleBaseCheck } from '../src/service.ts'
 import { headlessDshArguments, parseDshOutcome, renderPromptTemplate, waitForDshWorker } from '../src/dsh.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
+import { parseProgressOutput } from '../ui/src/progress-output.ts'
 import type { DshWorkerHandle } from '../src/types.ts'
 
 test('treats a numeric command argument as a workspace repository id', () => {
@@ -48,6 +49,42 @@ test('parses common GitHub origin URL forms', () => {
   assert.equal(repoSlugFromRemote('git@github.com:deepseek-harness/deepseek-harness.git'), 'deepseek-harness/deepseek-harness')
   assert.equal(repoSlugFromRemote('ssh://git@github.com/deepseek-harness/deepseek-harness'), 'deepseek-harness/deepseek-harness')
   assert.throws(() => repoSlugFromRemote('https://example.com/a/b.git'), /无法从 origin/)
+})
+
+test('only treats Markdown and translation pairing YAML as documentation conflicts', () => {
+  for (const path of ['README.md', 'docs/guide.zh.md', 'docs/guide.i18n.yaml', 'docs/guide.i18n.yml']) {
+    assert.equal(isDocumentationConflictPath(path), true)
+  }
+  for (const path of ['pnpm-lock.yaml', 'examples/app.cordis.yml', 'docs/config.yaml', 'docs/guide.mdx']) {
+    assert.equal(isDocumentationConflictPath(path), false)
+  }
+})
+
+test('finds merge conflicts without changing the worktree or index', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-merge-tree-'))
+  try {
+    await runOrThrow('git', ['init', '-b', 'master'], { cwd: root })
+    await runOrThrow('git', ['config', 'user.name', 'dshw test'], { cwd: root })
+    await runOrThrow('git', ['config', 'user.email', 'dshw@example.invalid'], { cwd: root })
+    await writeFile(join(root, 'README.md'), 'base\n')
+    await writeFile(join(root, 'config.yaml'), 'value: base\n')
+    await runOrThrow('git', ['add', '.'], { cwd: root })
+    await runOrThrow('git', ['commit', '-m', 'base'], { cwd: root })
+    await runOrThrow('git', ['branch', 'feature'], { cwd: root })
+
+    await writeFile(join(root, 'README.md'), 'master\n')
+    await writeFile(join(root, 'config.yaml'), 'value: master\n')
+    await runOrThrow('git', ['commit', '-am', 'master changes'], { cwd: root })
+    await runOrThrow('git', ['checkout', 'feature'], { cwd: root })
+    await writeFile(join(root, 'README.md'), 'feature\n')
+    await writeFile(join(root, 'config.yaml'), 'value: feature\n')
+    await runOrThrow('git', ['commit', '-am', 'feature changes'], { cwd: root })
+
+    assert.deepEqual(await mergeConflictPaths(root, 'feature', 'master'), ['README.md', 'config.yaml'])
+    assert.equal((await runOrThrow('git', ['status', '--porcelain=v1'], { cwd: root })).stdout, '')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('validates clone names before using them as directories', () => {
@@ -141,6 +178,17 @@ test('tracks target branch tips independently from a PR base snapshot', () => {
   assert.equal(sync.observedBaseOid, 'remote-b')
 })
 
+test('caps repeated target push debounce at 30 minutes from the first push', () => {
+  const sync = {} as Parameters<typeof scheduleBaseCheck>[0]
+  const startedAt = Date.parse('2026-08-11T00:00:00.000Z')
+
+  assert.equal(scheduleBaseCheck(sync, startedAt), '2026-08-11T00:10:00.000Z')
+  assert.equal(sync.pendingBaseCheckStartedAt, '2026-08-11T00:00:00.000Z')
+  assert.equal(scheduleBaseCheck(sync, startedAt + 9 * 60_000), '2026-08-11T00:19:00.000Z')
+  assert.equal(scheduleBaseCheck(sync, startedAt + 25 * 60_000), '2026-08-11T00:30:00.000Z')
+  assert.equal(scheduleBaseCheck(sync, startedAt + 35 * 60_000), '2026-08-11T00:30:00.000Z')
+})
+
 test('formats dsh session steps as plain-text progress', () => {
   assert.equal(formatProgressEvent({ type: 'step/start', data: { turn: 1, step: 2 } }), '步骤 2 开始')
   assert.equal(formatProgressEvent({
@@ -151,6 +199,23 @@ test('formats dsh session steps as plain-text progress', () => {
     type: 'assistant/message',
     data: { message: { content: [{ type: 'text', text: '正在检查失败日志' }] } },
   }), 'Agent：正在检查失败日志')
+})
+
+test('groups live progress into lightweight display blocks', () => {
+  assert.deepEqual(parseProgressOutput([
+    '步骤 2 开始',
+    'Agent：正在检查失败日志',
+    '下一行说明',
+    '调用工具 bash：{',
+    '  "cmd": "pnpm test"',
+    '}',
+    '工具结果 完成：18 tests passed',
+  ].join('\n')), [
+    { kind: 'step', body: '步骤 2 开始', preview: '步骤 2 开始' },
+    { kind: 'agent', title: 'Agent', body: '正在检查失败日志\n下一行说明', preview: '正在检查失败日志' },
+    { kind: 'tool-call', title: 'bash', body: '{\n  "cmd": "pnpm test"\n}', preview: '"cmd": "pnpm test"' },
+    { kind: 'tool-result', title: '完成', body: '18 tests passed', failed: false, preview: '18 tests passed' },
+  ])
 })
 
 test('launchd dsh worker survives its launcher and persists a result', async () => {

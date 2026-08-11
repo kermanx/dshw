@@ -18,7 +18,7 @@ import {
 } from './config.ts'
 import { createPrClone, listClones } from './clone.ts'
 import { startDshWorker, waitForDshWorker } from './dsh.ts'
-import { currentHead, fetchBranch, isAncestor, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
+import { currentHead, fetchBranch, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
 import { ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { StateStore } from './state.ts'
 import type { CloneRecord, DshWorkerProgress, JobRecord, PrDashboardRecord, PullRequestInfo, ReviewRequestRecord, SyncRecord } from './types.ts'
@@ -572,8 +572,20 @@ class WorkflowService {
       if (checkCiNow) await this.#inspectCi(sync, false, signal)
       pr = await pullRequest(sync.clonePath, sync.repoSlug, sync.prNumber, undefined, signal)
       this.#applyPr(sync, pr)
+      let mergeSummary = `mergeable=${pr.mergeable}`
       if (pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY') {
-        await this.#runAgent(sync, 'merge-base')
+        await fetchBranch(sync.clonePath, sync.baseRefName, signal)
+        const conflictPaths = await mergeConflictPaths(sync.clonePath, 'HEAD', `origin/${sync.baseRefName}`, signal)
+        if (conflictPaths.length > 0 && conflictPaths.every(isDocumentationConflictPath)) {
+          mergeSummary += '（仅文档冲突，跳过自动合并）'
+          this.#store.event(
+            'info',
+            'mergeability',
+            `PR #${sync.prNumber} 仅有文档冲突，跳过自动合并：${conflictPaths.join('、')}`,
+          )
+        } else {
+          await this.#runAgent(sync, 'merge-base')
+        }
       } else if (pr.mergeable === 'UNKNOWN') {
         sync.immediateCheckRequestedAt = after(30_000)
         this.#store.event('warning', 'mergeability', `PR #${sync.prNumber} 的 mergeable 暂为 UNKNOWN，30 秒后重试`)
@@ -582,7 +594,7 @@ class WorkflowService {
       }
       sync.nextPrRefreshAt = after(PR_WATCH_INTERVAL_MS)
       sync.updatedAt = now()
-      this.#finishJob(job, 'succeeded', `mergeable=${pr.mergeable}, CI=${sync.lastCiStatus ?? '未检查'}`)
+      this.#finishJob(job, 'succeeded', `${mergeSummary}, CI=${sync.lastCiStatus ?? '未检查'}`)
       await this.#store.changed()
     } catch (error) {
       this.#noteGhFailure(error)
