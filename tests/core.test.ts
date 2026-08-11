@@ -13,7 +13,7 @@ import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
 import { observeBaseTip, scheduleBaseCheck } from '../src/service.ts'
-import { headlessDshArguments, parseDshOutcome, renderPromptTemplate, waitForDshWorker } from '../src/dsh.ts'
+import { headlessDshArguments, missingTypertRuntimeArtifacts, parseDshOutcome, renderPromptTemplate, waitForDshWorker } from '../src/dsh.ts'
 import { dshLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
 import { parseProgressOutput } from '../ui/src/progress-output.ts'
@@ -29,6 +29,26 @@ test('forwards only endpoint variables that Harness requires at launch', () => {
     '    <key>DEEPSEEK_SEARCH_BASE_URL</key><string>https://search.example.test</string>',
   ].join('\n'))
   assert.equal(dshLaunchEnvironmentXml({}), '')
+})
+
+test('finds declared Host TypeRT runtime artifacts that a fresh clone still needs to build', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-typert-artifacts-'))
+  try {
+    const contributor = join(root, 'packages', 'feature', 'contributor')
+    const ready = join(root, 'packages', 'feature', 'ready')
+    await mkdir(join(contributor, 'lib'), { recursive: true })
+    await mkdir(join(ready, 'src'), { recursive: true })
+    await writeFile(join(contributor, 'package.json'), JSON.stringify({
+      exports: { './typert': { types: './lib/typert.host.d.ts', default: './lib/typert.host.js' } },
+    }))
+    await writeFile(join(ready, 'package.json'), JSON.stringify({ exports: { './typert': './src/typert.ts' } }))
+    await writeFile(join(ready, 'src', 'typert.ts'), 'export const ready = true\n')
+    assert.deepEqual(await missingTypertRuntimeArtifacts(root), [join(contributor, 'lib', 'typert.host.js')])
+    await writeFile(join(contributor, 'lib', 'typert.host.js'), 'export const ready = true\n')
+    assert.deepEqual(await missingTypertRuntimeArtifacts(root), [])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('treats a numeric command argument as a workspace repository id', () => {

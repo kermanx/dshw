@@ -1,7 +1,7 @@
 import { createWriteStream } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DATA_ROOT, DSHW_ROOT, HOST, LOG_ROOT, PORT, SERVICE_LABEL, WORKER_ROOT } from './config.ts'
 import { dshLaunchEnvironmentXml } from './dsh-launch-env.ts'
@@ -38,15 +38,62 @@ export function headlessDshArguments(patchPath: string, prompt: string, usesRunS
   ]
 }
 
-/** 自动克隆的 worktree 没有 node_modules；dsh CLI 从目标 clone 源码运行，首次使用前按需安装依赖。 */
-async function ensureDepsInstalled(clonePath: string): Promise<void> {
+function runtimeExportTarget(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const conditions = value as Record<string, unknown>
+  return runtimeExportTarget(conditions.default) ?? runtimeExportTarget(conditions.import)
+}
+
+/** 返回 workspace package 声明但尚未生成的 Host TypeRT runtime 产物。 */
+export async function missingTypertRuntimeArtifacts(clonePath: string): Promise<string[]> {
+  const packagesRoot = join(clonePath, 'packages')
+  const manifests: string[] = []
+  const visit = async (directory: string): Promise<void> => {
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    await Promise.all(entries.map(async entry => {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) await visit(path)
+      else if (entry.isFile() && entry.name === 'package.json') manifests.push(path)
+    }))
+  }
+  await visit(packagesRoot)
+  const missing: string[] = []
+  await Promise.all(manifests.map(async manifestPath => {
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { exports?: Record<string, unknown> }
+    const target = runtimeExportTarget(manifest.exports?.['./typert'])
+    if (target === undefined || !target.startsWith('./')) return
+    const artifact = resolve(dirname(manifestPath), target)
+    try {
+      await access(artifact)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      missing.push(artifact)
+    }
+  }))
+  return missing.sort()
+}
+
+/** 自动克隆的 worktree 首次运行时安装依赖，并补齐其声明但缺失的 TypeRT runtime 产物。 */
+async function ensureCloneRuntimeReady(clonePath: string): Promise<void> {
   try {
     createRequire(join(clonePath, 'package.json')).resolve('tsx/esm')
-    return
   } catch {
-    // tsx 解析失败说明依赖未安装，继续往下走 pnpm install
+    await runOrThrow('pnpm', ['install', '--frozen-lockfile'], { cwd: clonePath, timeoutMs: 10 * 60 * 1000 })
   }
-  await runOrThrow('pnpm', ['install', '--frozen-lockfile'], { cwd: clonePath, timeoutMs: 10 * 60 * 1000 })
+  const missing = await missingTypertRuntimeArtifacts(clonePath)
+  if (missing.length === 0) return
+  await runOrThrow('pnpm', ['run', 'build:lib:host'], { cwd: clonePath, timeoutMs: 10 * 60 * 1000 })
+  const stillMissing = await missingTypertRuntimeArtifacts(clonePath)
+  if (stillMissing.length > 0) {
+    throw new Error(`Host TypeRT 构建后仍缺少 runtime 产物：${stillMissing.join(', ')}`)
+  }
 }
 
 async function targetDshCommand(clonePath: string, patchPath: string, prompt: string): Promise<{ executable: string, args: string[] }> {
@@ -54,7 +101,7 @@ async function targetDshCommand(clonePath: string, patchPath: string, prompt: st
   if (executableOverride !== undefined) {
     return { executable: executableOverride, args: headlessDshArguments(patchPath, prompt) }
   }
-  await ensureDepsInstalled(clonePath)
+  await ensureCloneRuntimeReady(clonePath)
   const targetRequire = createRequire(join(clonePath, 'package.json'))
   const cliPath = join(clonePath, 'apps', 'cli', 'src', 'bin.ts')
   const argsSource = await readFile(join(clonePath, 'apps', 'cli', 'src', 'args.ts'), 'utf8')
