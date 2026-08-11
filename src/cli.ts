@@ -17,6 +17,7 @@ import {
 } from './config.ts'
 import { runService } from './service.ts'
 import { runDevPreview } from './dev.ts'
+import { dshLaunchEnvironmentXml } from './dsh-launch-env.ts'
 import { escapeXml, messageOf, run, runOrThrow } from './util.ts'
 import { refreshCodeWorkspace } from './workspace.ts'
 
@@ -130,7 +131,10 @@ async function installService(): Promise<void> {
   <key>Label</key><string>${SERVICE_LABEL}</string>
   <key>ProgramArguments</key><array><string>${escapeXml(process.execPath)}</string><string>${escapeXml(cliPath)}</string><string>daemon</string></array>
   <key>WorkingDirectory</key><string>${escapeXml(WORKFLOW_ROOT)}</string>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>${escapeXml(path)}</string></dict>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>${escapeXml(path)}</string>
+    ${dshLaunchEnvironmentXml(process.env)}
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Background</string>

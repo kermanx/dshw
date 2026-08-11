@@ -4,6 +4,7 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DATA_ROOT, DSHW_ROOT, HOST, LOG_ROOT, PORT, SERVICE_LABEL, WORKER_ROOT } from './config.ts'
+import { dshLaunchEnvironmentXml } from './dsh-launch-env.ts'
 import type { DshRunRecord, DshWorkerHandle, DshWorkerProgress, SyncRecord } from './types.ts'
 import { escapeXml, finalOutput, id, now, readJson, run, runOrThrow, writeJsonAtomic } from './util.ts'
 
@@ -37,11 +38,23 @@ export function headlessDshArguments(patchPath: string, prompt: string, usesRunS
   ]
 }
 
+/** 自动克隆的 worktree 没有 node_modules；dsh CLI 从目标 clone 源码运行，首次使用前按需安装依赖。 */
+async function ensureDepsInstalled(clonePath: string): Promise<void> {
+  try {
+    createRequire(join(clonePath, 'package.json')).resolve('tsx/esm')
+    return
+  } catch {
+    // tsx 解析失败说明依赖未安装，继续往下走 pnpm install
+  }
+  await runOrThrow('pnpm', ['install', '--frozen-lockfile'], { cwd: clonePath, timeoutMs: 10 * 60 * 1000 })
+}
+
 async function targetDshCommand(clonePath: string, patchPath: string, prompt: string): Promise<{ executable: string, args: string[] }> {
   const executableOverride = process.env.DSHW_DSH_EXECUTABLE
   if (executableOverride !== undefined) {
     return { executable: executableOverride, args: headlessDshArguments(patchPath, prompt) }
   }
+  await ensureDepsInstalled(clonePath)
   const targetRequire = createRequire(join(clonePath, 'package.json'))
   const cliPath = join(clonePath, 'apps', 'cli', 'src', 'bin.ts')
   const argsSource = await readFile(join(clonePath, 'apps', 'cli', 'src', 'args.ts'), 'utf8')
@@ -101,6 +114,7 @@ export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'
     <key>PATH</key><string>${escapeXml(path)}</string>
     <key>DSH_PERMISSION_MODE</key><string>danger-full-access</string>
     <key>DSHW_DATA_ROOT</key><string>${escapeXml(DATA_ROOT)}</string>
+    ${dshLaunchEnvironmentXml(process.env)}
     ${process.env.DSHW_DSH_EXECUTABLE === undefined ? '' : `<key>DSHW_DSH_EXECUTABLE</key><string>${escapeXml(process.env.DSHW_DSH_EXECUTABLE)}</string>`}
   </dict>
   <key>ProcessType</key><string>Background</string>

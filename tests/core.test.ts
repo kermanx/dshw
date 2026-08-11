@@ -14,9 +14,22 @@ import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
 import { observeBaseTip, scheduleBaseCheck } from '../src/service.ts'
 import { headlessDshArguments, parseDshOutcome, renderPromptTemplate, waitForDshWorker } from '../src/dsh.ts'
+import { dshLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
 import { parseProgressOutput } from '../ui/src/progress-output.ts'
 import type { DshWorkerHandle } from '../src/types.ts'
+
+test('forwards only endpoint variables that Harness requires at launch', () => {
+  assert.equal(dshLaunchEnvironmentXml({
+    DEEPSEEK_BASE_URL: 'https://chat.example.test?a=1&b=2',
+    DEEPSEEK_SEARCH_BASE_URL: 'https://search.example.test',
+    DEEPSEEK_API_KEY: 'must-not-enter-plist',
+  }), [
+    '<key>DEEPSEEK_BASE_URL</key><string>https://chat.example.test?a=1&amp;b=2</string>',
+    '    <key>DEEPSEEK_SEARCH_BASE_URL</key><string>https://search.example.test</string>',
+  ].join('\n'))
+  assert.equal(dshLaunchEnvironmentXml({}), '')
+})
 
 test('treats a numeric command argument as a workspace repository id', () => {
   const workspace = '/Users/example/workspace'
