@@ -151,8 +151,8 @@ onBeforeUnmount(() => {
       </div>
 
       <footer class="flex items-center justify-between gap-16px px-16px b-t b-t-solid b-t-line text-muted text-12px">
-        <span>{{ running ? '输出实时传输中，完整日志已落盘保存' : '任务已结束，显示最终结果' }}</span>
-        <button v-if="running" class="btn btn-danger" :disabled="job.cancelRequestedAt !== undefined || cancelling" @click="emit('cancel', job.id)">{{ job.cancelRequestedAt || cancelling ? '终止中' : '终止任务' }}</button>
+        <span v-if="!running">任务已结束，显示最终结果</span>
+        <button v-if="running" class="btn btn-danger ml-auto" :disabled="job.cancelRequestedAt !== undefined || cancelling" @click="emit('cancel', job.id)">{{ job.cancelRequestedAt || cancelling ? '终止中' : '终止任务' }}</button>
       </footer>
     </section>
   </div>
