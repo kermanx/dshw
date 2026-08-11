@@ -66,6 +66,7 @@ class WorkflowService {
   readonly #jobControllers = new Map<string, AbortController>()
   readonly #sse = new Set<ServerResponse>()
   readonly #workerProgress = new Map<string, DshWorkerProgress>()
+  readonly #conflictPathsCache = new Map<string, Promise<string[]>>()
   #server: Server | undefined
   #timer: NodeJS.Timeout | undefined
   #progressFingerprint = ''
@@ -375,17 +376,35 @@ class WorkflowService {
       const repoSlug = clones[0]?.repoSlug ?? 'deepseek-harness/deepseek-harness'
       const openPrs = await openPullRequests(HARNESS_ROOT, repoSlug)
       const byBranch = new Map(openPrs.map(pr => [pr.headRefName, pr]))
+      const baseFetches = new Map<string, Promise<void>>()
+      const ensureBaseFetched = (clone: CloneRecord, branch: string): Promise<void> => {
+        const key = `${clone.repoSlug}\n${branch}`
+        const existing = baseFetches.get(key)
+        if (existing !== undefined) return existing
+        const promise = fetchBranch(clone.path, branch)
+        baseFetches.set(key, promise)
+        return promise
+      }
       const records = await Promise.all(clones.map(async clone => {
         try {
           const pr = byBranch.get(clone.branch)
           if (pr === undefined) return undefined
           const checks = rollupChecks(pr.statusCheckRollup)
           const ci = summarizeChecks(checks)
+          const conflicting = pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY'
+          if (pr.mergeable === 'MERGEABLE' || conflicting) await ensureBaseFetched(clone, pr.baseRefName)
           // GitHub 对落后的 PR 也报 BLOCKED 而非 BEHIND，用本地 git 判断是否落后 base
           const baseBehind = pr.mergeable === 'MERGEABLE' && await (async () => {
-            await fetchBranch(clone.path, pr.baseRefName)
             return !(await isAncestor(clone.path, `origin/${pr.baseRefName}`))
           })()
+          let conflictPaths: string[] | undefined
+          if (conflicting) {
+            try {
+              conflictPaths = await this.#cachedConflictPaths(clone.repoSlug, clone.path, pr.headRefOid, pr.baseRefOid)
+            } catch (error) {
+              this.#store.event('warning', 'conflict-paths', `${clone.name}: ${messageOf(error)}`)
+            }
+          }
           const sync = this.#store.state.syncs.find(candidate => (
             candidate.repoSlug === clone.repoSlug && candidate.prNumber === pr.number
           ))
@@ -402,6 +421,7 @@ class WorkflowService {
             baseRefName: pr.baseRefName,
             mergeable: pr.mergeable,
             mergeStateStatus: pr.mergeStateStatus,
+            ...(conflictPaths === undefined ? {} : { conflictPaths }),
             ...(baseBehind ? { baseBehind: true } : {}),
             reviewDecision: pr.reviewDecision,
             reviewRequests: pr.reviewRequests
@@ -452,6 +472,24 @@ class WorkflowService {
       await this.#prDashboardRefreshPromise
     } finally {
       this.#prDashboardRefreshPromise = undefined
+    }
+  }
+
+  async #cachedConflictPaths(repoSlug: string, root: string, headOid: string, baseOid: string): Promise<string[]> {
+    const key = `${repoSlug}\n${headOid}\n${baseOid}`
+    const existing = this.#conflictPathsCache.get(key)
+    if (existing !== undefined) return await existing
+    const pending = mergeConflictPaths(root, headOid, baseOid)
+    this.#conflictPathsCache.set(key, pending)
+    if (this.#conflictPathsCache.size > 100) {
+      const oldest = this.#conflictPathsCache.keys().next().value
+      if (oldest !== undefined && oldest !== key) this.#conflictPathsCache.delete(oldest)
+    }
+    try {
+      return await pending
+    } catch (error) {
+      this.#conflictPathsCache.delete(key)
+      throw error
     }
   }
 

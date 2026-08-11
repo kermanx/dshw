@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { mergeLabel, mergeTone } from '../format.ts'
 import type { JobRecord, PrDashboardRecord } from '../types.ts'
 import CiChecks from './CiChecks.vue'
+import ConflictDetails from './ConflictDetails.vue'
 import ReviewDetails from './ReviewDetails.vue'
 import StatusDot from './StatusDot.vue'
 import StatusIcon from './StatusIcon.vue'
@@ -135,7 +136,8 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
           </td>
           <td :class="tdClass">
             <div class="flex flex-col gap-1px min-w-0">
-              <span class="inline-flex items-center gap-6px min-w-0 h-20px text-12.5px whitespace-nowrap" :class="`st-${mergeTone(pr.mergeable)}`">
+              <ConflictDetails v-if="pr.mergeable === 'CONFLICTING'" :pr="pr" />
+              <span v-else class="inline-flex items-center gap-6px min-w-0 h-20px text-12.5px whitespace-nowrap" :class="`st-${mergeTone(pr.mergeable)}`">
                 <StatusIcon :tone="mergeTone(pr.mergeable)" />
                 {{ mergeLabel(pr.mergeable) }}
               </span>

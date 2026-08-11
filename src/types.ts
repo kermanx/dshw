@@ -218,6 +218,7 @@ export interface PrDashboardRecord {
   baseRefName: string
   mergeable: string
   mergeStateStatus: string
+  conflictPaths?: string[]
   baseBehind?: boolean
   reviewDecision: string
   reviewRequests: string[]
