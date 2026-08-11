@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   BASE_DEBOUNCE_MS,
+  BASE_DEBOUNCE_MAX_MS,
   CI_WATCH_INTERVAL_MS,
   CLONES_ROOT,
   DEV_MODE,
@@ -32,6 +33,20 @@ export function observeBaseTip(sync: SyncRecord, oid: string): 'initialized' | '
   sync.observedBaseOid = oid
   if (previous === undefined) return 'initialized'
   return previous === oid ? 'unchanged' : 'changed'
+}
+
+export function scheduleBaseCheck(sync: SyncRecord, observedAt = Date.now()): string {
+  const startedAt = sync.pendingBaseCheckStartedAt ?? new Date(observedAt).toISOString()
+  sync.pendingBaseCheckStartedAt = startedAt
+  const debounceAt = observedAt + BASE_DEBOUNCE_MS
+  const mustCheckAt = Date.parse(startedAt) + BASE_DEBOUNCE_MAX_MS
+  sync.pendingBaseCheckAt = new Date(Math.min(debounceAt, mustCheckAt)).toISOString()
+  return sync.pendingBaseCheckAt
+}
+
+function clearPendingBaseCheck(sync: SyncRecord): void {
+  sync.pendingBaseCheckStartedAt = undefined
+  sync.pendingBaseCheckAt = undefined
 }
 
 export async function runService(): Promise<void> {
@@ -209,7 +224,7 @@ class WorkflowService {
       this.#store.event('info', 'sync', `PR #${sync.prNumber} 已开启自动 sync，追加一次即时检查`)
     } else {
       sync.immediateCheckRequestedAt = undefined
-      sync.pendingBaseCheckAt = undefined
+      clearPendingBaseCheck(sync)
       sync.nextCiCheckAt = undefined
       this.#recomputeNextUpdate()
       this.#store.event('info', 'sync', `PR #${sync.prNumber} 已关闭自动 sync；仍会继续追踪 PR 状态`)
@@ -511,12 +526,12 @@ class WorkflowService {
             if (observation === 'initialized') sync.updatedAt = now()
             continue
           }
-          sync.pendingBaseCheckAt = after(BASE_DEBOUNCE_MS)
+          const scheduledAt = scheduleBaseCheck(sync)
           sync.updatedAt = now()
           this.#store.event(
             'info',
             'base-push',
-            `${sync.repoSlug}:${sync.baseRefName} 有新 push；PR #${sync.prNumber} 将在 10 分钟静默期后检查冲突`,
+            `${sync.repoSlug}:${sync.baseRefName} 有新 push；PR #${sync.prNumber} 将在 10 分钟静默期后检查冲突（最晚 ${scheduledAt}）`,
           )
         }
         this.#recomputeNextUpdate()
@@ -533,9 +548,9 @@ class WorkflowService {
     const signal = this.#jobSignal(job)
     try {
       if (updateHarnessFirst) {
-        await this.#ensureHarnessUpdated()
-        sync.pendingBaseCheckAt = undefined
+        clearPendingBaseCheck(sync)
         this.#recomputeNextUpdate()
+        await this.#ensureHarnessUpdated()
       }
       let pr = await pullRequest(sync.clonePath, sync.repoSlug, sync.prNumber, undefined, signal)
       if (pr.state !== 'OPEN') {

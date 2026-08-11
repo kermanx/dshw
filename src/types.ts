@@ -37,6 +37,8 @@ export interface SyncRecord {
   createdAt: string
   updatedAt: string
   nextPrRefreshAt: string
+  /** First target-branch push in the current debounce cycle; keeps repeated pushes from postponing forever. */
+  pendingBaseCheckStartedAt?: string
   pendingBaseCheckAt?: string
   immediateCheckRequestedAt?: string
   ciMonitorHeadOid?: string

@@ -27,6 +27,7 @@ export const PR_DASHBOARD_INTERVAL_MS = 60 * 1000
 export const WORKSPACE_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 export const CI_WATCH_INTERVAL_MS = 30 * 1000
 export const BASE_DEBOUNCE_MS = 10 * 60 * 1000
+export const BASE_DEBOUNCE_MAX_MS = 30 * 60 * 1000
 
 function parsePort(value: string | undefined): number {
   if (value === undefined) return 7849
