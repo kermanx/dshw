@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { elapsedTime, jobLabel, jobTone, kindLabel, phaseLabel, shortTime, stripAnsi } from '../format.ts'
+import { parseProgressOutput } from '../progress-output.ts'
 import type { DshRunRecord, DshWorkerProgress, EventRecord, JobRecord } from '../types.ts'
 import Icon from './Icon.vue'
 import StatusDot from './StatusDot.vue'
@@ -21,13 +22,16 @@ const phase = computed(() => props.job.status === 'running'
   ? props.progress !== undefined ? phaseLabel(props.progress.phase) : props.job.dshWorker !== undefined ? 'Agent 运行中' : '后台检查中'
   : jobLabel(props.job.status))
 const output = computed(() => stripAnsi(props.progress?.outputTail || props.run?.finalOutput || ''))
-const outputLines = computed(() => output.value.split('\n'))
+const outputBlocks = computed(() => parseProgressOutput(output.value).filter(block => block.kind !== 'step'))
 const placeholder = computed(() => props.job.status === 'running' && props.job.dshWorker?.handle.progressProtocol !== 'memory-events-v1'
   ? '这个任务由升级前的 worker 启动，实时输出不可用；状态和事件仍会自动更新。'
   : props.progress?.message ?? '等待任务产生输出…')
 const elapsed = computed(() => elapsedTime(props.job.startedAt ?? props.job.createdAt, props.job.finishedAt, now.value))
 const running = computed(() => props.job.status === 'running')
 const tone = computed(() => jobTone(props.job.status))
+const activityLabel = computed(() => props.progress?.message.startsWith('步骤 ') === true
+  ? phase.value
+  : props.progress?.message ?? phase.value)
 const timeline = computed(() => {
   const sync = props.job.dshWorker?.sync
   const start = Date.parse(props.job.startedAt ?? props.job.createdAt) - 1_000
@@ -106,14 +110,24 @@ onBeforeUnmount(() => {
 
       <div class="min-h-0 grid grid-cols-[minmax(0,1fr)_280px] max-[720px]:grid-cols-1">
         <section class="min-h-0 overflow-hidden flex flex-col">
-          <div ref="outputElement" class="flex-1 min-h-0 overflow-auto px-14px py-12px bg-code-bg font-mono text-12px leading-[1.65]">
+          <div ref="outputElement" class="flex-1 min-h-0 overflow-auto px-14px py-12px bg-code-bg text-12px leading-[1.6]">
             <template v-if="output">
-              <div
-                v-for="(line, index) in outputLines"
-                :key="index"
-                class="min-h-[1.65em] whitespace-pre-wrap break-anywhere"
-                :class="line.startsWith('[stderr]') ? 'text-warn' : 'text-code-text'"
-              >{{ line }}</div>
+              <template v-for="(block, index) in outputBlocks" :key="index">
+                <details
+                  v-if="block.kind === 'tool-call' || block.kind === 'tool-result'"
+                  class="tool-disclosure text-muted"
+                >
+                  <summary class="flex items-center gap-6px min-h-21px cursor-pointer select-none hover:text-secondary">
+                    <span class="tool-chevron flex-none text-faint transition-transform duration-100">▸</span>
+                    <span class="flex-none text-10.5px">{{ block.kind === 'tool-call' ? 'tool' : 'result' }}</span>
+                    <strong class="flex-none font-mono font-500 text-11px" :class="block.failed ? 'text-danger' : 'text-secondary'">{{ block.title }}</strong>
+                    <span v-if="block.preview" class="min-w-0 truncate font-mono text-faint text-11px">{{ block.preview }}</span>
+                  </summary>
+                  <pre v-if="block.body" class="ml-15px pl-9px py-5px b-l b-l-solid b-l-line text-code-text font-mono text-11.5px leading-[1.55] whitespace-pre-wrap break-anywhere">{{ block.body }}</pre>
+                </details>
+                <pre v-else-if="block.kind === 'agent'" class="my-8px text-code-text text-12.5px leading-[1.65] whitespace-pre-wrap break-anywhere">{{ block.body }}</pre>
+                <pre v-else class="my-2px font-mono text-11.5px whitespace-pre-wrap break-anywhere" :class="block.kind === 'stderr' ? 'text-warn' : 'text-code-text'">{{ block.body }}</pre>
+              </template>
               <div v-if="running" class="mt-2px"><span class="inline-block w-7px h-13px bg-code-text opacity-70 animate-pulse" /></div>
             </template>
             <span v-else class="text-muted">{{ placeholder }}</span>
@@ -125,7 +139,7 @@ onBeforeUnmount(() => {
               :class="tlItemClass"
               class="before:bg-accent before:shadow-[0_0_0_3px_var(--accent-soft)]"
             >
-              <strong class="font-600">{{ progress?.message ?? phase }}</strong>
+              <strong class="font-600">{{ activityLabel }}</strong>
               <time class="block mt-3px font-mono text-faint text-11px">{{ shortTime(progress?.updatedAt ?? job.finishedAt ?? job.startedAt) }}</time>
             </div>
             <div v-for="event in timeline" :key="event.id" :class="tlItemClass" class="before:bg-line-strong">
@@ -143,3 +157,7 @@ onBeforeUnmount(() => {
     </section>
   </div>
 </template>
+
+<style scoped>
+.tool-disclosure[open] .tool-chevron { transform: rotate(90deg); }
+</style>
