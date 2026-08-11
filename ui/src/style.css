@@ -1,0 +1,98 @@
+/* 配色全部照抄 VS Code Light Modern（microsoft/vscode main 分支 light 默认值），仅亮色模式 */
+:root {
+  color-scheme: light;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* base colors: foreground / description / error / link / focus */
+  --foreground: #616161;
+  --description: #717171;
+  --focus: #0090f1;
+  --link: #006ab1;
+  --error: #a1260d;
+
+  /* surfaces: editor / tabs container / inactive tab / titlebar / widget */
+  --surface: #ffffff;
+  --editor-fg: #333333;
+  --tabbar: #f3f3f3;
+  --tab-inactive: #ececec;
+  --tab-fg-inactive: rgba(51, 51, 51, .7);
+  --titlebar: #dddddd;
+  --hover: #f0f0f0;
+  --widget: #f3f3f3;
+
+  /* borders: editorGroup.border / panel.border */
+  --border: #e7e7e7;
+  --border-strong: rgba(128, 128, 128, .35);
+
+  /* text hierarchy */
+  --text: #333333;
+  --text-secondary: #616161;
+  --text-muted: #717171;
+  --text-faint: #9a9a9a;
+
+  /* brand blue: button.background / hover / soft */
+  --accent: #007acc;
+  --accent-hover: #0062a3;
+  --accent-soft: rgba(0, 122, 204, .12);
+
+  /* status tones（charts.green / editorWarning / errorForeground 的 light 值） */
+  --success: #388a34;
+  --success-soft: rgba(56, 138, 52, .12);
+  --warning: #bf8803;
+  --warning-soft: rgba(191, 136, 3, .12);
+  --danger: #a1260d;
+  --danger-soft: rgba(161, 38, 13, .1);
+
+  /* status bar */
+  --statusbar: #007acc;
+  --statusbar-fg: #ffffff;
+  --statusbar-item-hover: rgba(0, 0, 0, .12);
+  --statusbar-alert: #cc6633;
+
+  /* badge */
+  --badge: #c4c4c4;
+  --badge-fg: #333333;
+
+  /* 终端/输出面板：亮色下继承编辑器底色 */
+  --code-bg: #ffffff;
+  --code-text: #333333;
+  --overlay: rgba(0, 0, 0, .32);
+  --shadow: 0 4px 16px rgba(0, 0, 0, .16), 0 0 2px rgba(0, 0, 0, .08);
+
+  --titlebar-h: 36px;
+  --tabbar-h: 35px;
+  --statusbar-h: 22px;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; }
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: 13px/1.5 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+button, input, textarea { font: inherit; color: inherit; }
+button { background: none; border: 0; padding: 0; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+::selection { background: var(--accent-soft); }
+:focus-visible { outline: 1px solid var(--focus); outline-offset: -1px; }
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+pre { margin: 0; }
+code { font-family: var(--font-mono); font-size: .92em; }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { min-height: 28px; border: 4px solid transparent; border-radius: 8px; background: rgba(100, 100, 100, .4); background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(100, 100, 100, .7); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* 运行中状态的脉冲（jobs / live 连接等流动状态专用） */
+.dot-pulse { animation: dot-pulse 1.2s ease-in-out infinite; }
+@keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
