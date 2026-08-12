@@ -20,7 +20,7 @@ import {
 } from './config.ts'
 import { createPrClone, listClones } from './clone.ts'
 import { startDshWorker, waitForDshWorker } from './dsh.ts'
-import { cloneGitStatus, commitOid, currentHead, fetchBranch, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
+import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
 import { ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { StateStore } from './state.ts'
 import type { CloneRecord, DshWorkerProgress, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord } from './types.ts'
@@ -522,12 +522,22 @@ class WorkflowService {
       const pendingClones = openPrs.filter(pr => !clonedBranches.has(`${repoSlug}\n${pr.headRefName}`))
       if (pendingClones.length > 0) refreshErrors.push(`${pendingClones.length} 个 open PR 的本地 clone 尚未准备完成`)
       const commitFetches = new Map<string, Promise<void>>()
-      const ensureCommitAvailable = (clone: CloneRecord, branch: string, oid: string): Promise<void> => {
-        // Clone worktrees can belong to different backing repositories even when
-        // their GitHub slug is the same. Deduplicate only within one object database.
-        const key = `${clone.sourcePath}\n${branch}\n${oid}`
-        const existing = commitFetches.get(key)
+      const targetTipFetches = new Map<string, Promise<string>>()
+      const commonDirs = new Map<string, Promise<string>>()
+      const commonDirFor = (clone: CloneRecord): Promise<string> => {
+        const existing = commonDirs.get(clone.path)
         if (existing !== undefined) return existing
+        const pending = gitCommonDir(clone.path)
+        commonDirs.set(clone.path, pending)
+        return pending
+      }
+      const ensureCommitAvailable = async (clone: CloneRecord, branch: string, oid: string): Promise<void> => {
+        // Old clone metadata can point sourcePath at the user's original checkout,
+        // while the clone is actually a worktree of HARNESS_ROOT. Ask Git for the
+        // true object database so shared worktrees never fetch the same ref at once.
+        const key = `${await commonDirFor(clone)}\n${branch}\n${oid}`
+        const existing = commitFetches.get(key)
+        if (existing !== undefined) return await existing
         const promise = (async () => {
           try {
             await commitOid(clone.path, oid)
@@ -538,7 +548,16 @@ class WorkflowService {
           }
         })()
         commitFetches.set(key, promise)
-        return promise
+        return await promise
+      }
+      const latestTargetOid = async (clone: CloneRecord, branch: string): Promise<string> => {
+        // Worktrees sharing one object database also share origin refs and fetched objects.
+        const key = `${await commonDirFor(clone)}\n${branch}`
+        const existing = targetTipFetches.get(key)
+        if (existing !== undefined) return await existing
+        const promise = fetchRemoteBranchTip(clone.path, branch)
+        targetTipFetches.set(key, promise)
+        return await promise
       }
       const records = await Promise.all(clones.map(async clone => {
         try {
@@ -549,22 +568,20 @@ class WorkflowService {
           const ci = summarizeChecks(checks)
           const conflicting = pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY'
           await ensureCommitAvailable(clone, pr.headRefName, pr.headRefOid)
-          if (pr.mergeable === 'MERGEABLE' || conflicting) {
-            await ensureCommitAvailable(clone, pr.baseRefName, pr.baseRefOid)
-          }
+          const targetOid = pr.mergeable === 'MERGEABLE' || conflicting
+            ? await latestTargetOid(clone, pr.baseRefName)
+            : undefined
           const localGitStatus = await cloneGitStatus(clone.path, pr.headRefOid)
           // GitHub 对落后的 PR 也报 BLOCKED 而非 BEHIND，用本地 git 判断是否落后 base
-          const baseBehind = pr.mergeable === 'MERGEABLE' && await (async () => {
-            return !(await isAncestor(clone.path, pr.baseRefOid, pr.headRefOid))
-          })()
-          let conflictPaths = previous?.conflictPaths
-          if (conflicting) {
+          const baseBehind = pr.mergeable === 'MERGEABLE'
+            && targetOid !== undefined
+            && !(await isAncestor(clone.path, targetOid, pr.headRefOid))
+          let conflictPaths = conflicting ? previous?.conflictPaths : undefined
+          if (conflicting && targetOid !== undefined) {
             try {
-              // `gh pr list` may observe a newer PR head than this worktree has fetched.
-              // Ensure the exact GitHub head object exists locally before asking merge-tree
-              // to compare it with the freshly fetched base.
-              await ensureCommitAvailable(clone, pr.headRefName, pr.headRefOid)
-              conflictPaths = await this.#cachedConflictPaths(clone.repoSlug, clone.path, pr.headRefOid, pr.baseRefOid)
+              // GitHub computes mergeability against the current target tip. baseRefOid is
+              // only the PR's base snapshot and can remain an ancestor after target moves.
+              conflictPaths = await this.#cachedConflictPaths(clone.repoSlug, clone.path, pr.headRefOid, targetOid)
             } catch (error) {
               const detail = `${clone.name} 冲突文件：${messageOf(error)}`
               refreshErrors.push(detail)

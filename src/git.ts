@@ -9,6 +9,11 @@ export async function gitRoot(cwd: string): Promise<string> {
   return await realpath(result.stdout.trim())
 }
 
+export async function gitCommonDir(cwd: string): Promise<string> {
+  const result = await runOrThrow('git', ['rev-parse', '--git-common-dir'], { cwd })
+  return await realpath(resolve(cwd, result.stdout.trim()))
+}
+
 export function isInsideDirectory(path: string, directory: string): boolean {
   const pathRelative = relative(resolve(directory), resolve(path))
   return pathRelative === '' || (!pathRelative.startsWith(`..${sep}`) && pathRelative !== '..')
@@ -62,6 +67,24 @@ export async function fetchBranch(root: string, branch: string, signal?: AbortSi
     timeoutMs: 5 * 60 * 1000,
     signal,
   })
+}
+
+/** Resolve the current remote branch tip and ensure that exact commit exists locally. */
+export async function fetchRemoteBranchTip(root: string, branch: string, signal?: AbortSignal): Promise<string> {
+  const result = await runOrThrow('git', ['ls-remote', 'origin', `refs/heads/${branch}`], {
+    cwd: root,
+    timeoutMs: 30_000,
+    signal,
+  })
+  const oid = result.stdout.trim().split(/\s+/u)[0]
+  if (oid === undefined || oid === '') throw new Error(`origin 的 target branch ${branch} 不存在`)
+  try {
+    await commitOid(root, oid)
+  } catch {
+    await fetchBranch(root, branch, signal)
+    await commitOid(root, oid)
+  }
+  return oid
 }
 
 export async function isAncestor(root: string, ref: string, descendant = 'HEAD'): Promise<boolean> {

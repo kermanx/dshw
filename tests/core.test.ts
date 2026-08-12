@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { validateCloneName } from '../src/clone.ts'
 import { resolveCommandTarget } from '../src/command-target.ts'
-import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
+import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
 import { rollupChecks, summarizeChecks } from '../src/github.ts'
 import { CLONES_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
@@ -252,6 +252,47 @@ test('fetches a newer remote head before computing its merge conflicts', async (
     await fetchBranch(clone, 'master')
     await fetchBranch(clone, 'feature')
     assert.deepEqual(await mergeConflictPaths(clone, headOid, 'origin/master'), ['file.txt'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('computes conflicts against the latest target tip instead of the PR base snapshot', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-latest-target-'))
+  const remote = join(root, 'remote.git')
+  const source = join(root, 'source')
+  const clone = join(root, 'clone')
+  try {
+    await mkdir(source)
+    await runOrThrow('git', ['init', '--bare', remote])
+    await runOrThrow('git', ['init', '-b', 'master'], { cwd: source })
+    await runOrThrow('git', ['config', 'user.name', 'dshw test'], { cwd: source })
+    await runOrThrow('git', ['config', 'user.email', 'dshw@example.invalid'], { cwd: source })
+    await writeFile(join(source, 'file.txt'), 'base\n')
+    await runOrThrow('git', ['add', 'file.txt'], { cwd: source })
+    await runOrThrow('git', ['commit', '-m', 'base'], { cwd: source })
+    const baseSnapshot = await commitOid(source, 'HEAD')
+    await runOrThrow('git', ['branch', 'feature'], { cwd: source })
+    await runOrThrow('git', ['remote', 'add', 'origin', remote], { cwd: source })
+    await runOrThrow('git', ['push', 'origin', 'master', 'feature'], { cwd: source })
+    await runOrThrow('git', ['clone', remote, clone])
+
+    await runOrThrow('git', ['checkout', 'feature'], { cwd: source })
+    await writeFile(join(source, 'file.txt'), 'feature\n')
+    await runOrThrow('git', ['commit', '-am', 'feature changes'], { cwd: source })
+    const headOid = await commitOid(source, 'HEAD')
+    await runOrThrow('git', ['push', 'origin', 'feature'], { cwd: source })
+
+    await runOrThrow('git', ['checkout', 'master'], { cwd: source })
+    await writeFile(join(source, 'file.txt'), 'latest master\n')
+    await runOrThrow('git', ['commit', '-am', 'master changes'], { cwd: source })
+    const latestTarget = await commitOid(source, 'HEAD')
+    await runOrThrow('git', ['push', 'origin', 'master'], { cwd: source })
+
+    await fetchBranch(clone, 'feature')
+    assert.deepEqual(await mergeConflictPaths(clone, headOid, baseSnapshot), [])
+    assert.equal(await fetchRemoteBranchTip(clone, 'master'), latestTarget)
+    assert.deepEqual(await mergeConflictPaths(clone, headOid, latestTarget), ['file.txt'])
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -579,6 +620,7 @@ test('creates worktrees with a unique local branch tracking the PR branch', asyn
     assert.equal((await runOrThrow('git', ['branch', '--show-current'], { cwd: worktree })).stdout.trim(), 'dshw/dsh-1')
     assert.equal((await runOrThrow('git', ['rev-parse', '--abbrev-ref', '@{upstream}'], { cwd: worktree })).stdout.trim(), 'origin/feature/test')
     assert.equal((await runOrThrow('git', ['config', '--worktree', 'push.default'], { cwd: worktree })).stdout.trim(), 'upstream')
+    assert.equal(await gitCommonDir(worktree), await gitCommonDir(managed))
 
     await removeSharedWorktree(managed, branch, worktree)
     await assert.rejects(readFile(join(worktree, '.git'), 'utf8'))
