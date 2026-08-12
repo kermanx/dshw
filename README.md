@@ -14,7 +14,7 @@
 ## 开始使用
 
 ```sh
-git clone https://github.com/kermanx/dshw.git ~/workspace/dshw
+git clone https://github.com/deepseek-harness/dshw.git ~/workspace/dshw
 cd ~/workspace/dshw
 pnpm install
 pnpm dshw start
