@@ -34,6 +34,23 @@ pnpm dshw start
 
 不希望 `start` 自动打开窗口时，使用 `pnpm dshw start --no-open`。只关闭 VS Code、仍打开浏览器看板时，可使用 `--no-code`。环境检查可运行 `pnpm dshw doctor`。
 
+## 配置模型凭据
+
+dshw 默认把 `start` 时已有的 Harness 环境变量传给后台服务和任务。例如：
+
+```sh
+export DEEPSEEK_API_KEY=...
+pnpm dshw start
+```
+
+也可以使用 Harness 自己的标准用户环境文件 `~/.dsh/.env`：
+
+```dotenv
+DEEPSEEK_API_KEY=...
+```
+
+这是 Harness 原生的 dotenv 格式，dshw 不定义额外配置文件或字段；启动环境中的变量优先于文件。每个 dsh 任务仍使用独立的 `DSH_HOME`，dshw 只复用这里的环境变量，不会读写或共享用户的全局 session 和 profile。
+
 ## 可选：安装全局命令
 
 一般不需要全局安装；从 clone 中运行 `pnpm dshw ...` 即可。如果希望直接使用 `dshw` 命令：

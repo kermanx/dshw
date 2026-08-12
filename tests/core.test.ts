@@ -14,23 +14,55 @@ import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
 import { HARNESS_RECONFIGURE_STEPS, observeBaseTip, scheduleBaseCheck, summarizePrDashboardErrors } from '../src/service.ts'
 import { pageJobs, readEventLogPage } from '../src/state.ts'
-import { cancelDshWorker, headlessDshArguments, inspectDshWorker, missingTypertRuntimeArtifacts, parseDshOutcome, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
-import { dshLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
+import { cancelDshWorker, dshWorkerLaunchSpec, headlessDshArguments, inspectDshWorker, missingTypertRuntimeArtifacts, parseDshOutcome, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
+import { dshLaunchEnvironmentXml, dshWorkerLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
 import { parseProgressOutput } from '../ui/src/progress-output.ts'
 import type { DshWorkerHandle, EventRecord, JobRecord } from '../src/types.ts'
 import { parseServiceOwner, renderServicePlist } from '../src/service-manager.ts'
 
-test('forwards only endpoint variables that Harness requires at launch', () => {
+test('forwards the Harness credential and endpoint launch variables', () => {
   assert.equal(dshLaunchEnvironmentXml({
+    DEEPSEEK_API_KEY: 'secret',
     DEEPSEEK_BASE_URL: 'https://chat.example.test?a=1&b=2',
     DEEPSEEK_SEARCH_BASE_URL: 'https://search.example.test',
-    DEEPSEEK_API_KEY: 'must-not-enter-plist',
   }), [
-    '<key>DEEPSEEK_BASE_URL</key><string>https://chat.example.test?a=1&amp;b=2</string>',
+    '<key>DEEPSEEK_API_KEY</key><string>secret</string>',
+    '    <key>DEEPSEEK_BASE_URL</key><string>https://chat.example.test?a=1&amp;b=2</string>',
     '    <key>DEEPSEEK_SEARCH_BASE_URL</key><string>https://search.example.test</string>',
   ].join('\n'))
   assert.equal(dshLaunchEnvironmentXml({}), '')
+})
+
+test('uses the standard Harness user .env as a worker fallback without overriding launch env', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-user-env-'))
+  const filename = join(root, '.env')
+  try {
+    await writeFile(filename, [
+      'DEEPSEEK_API_KEY=file-key',
+      'DEEPSEEK_BASE_URL=https://file.example.test',
+      '',
+    ].join('\n'))
+    assert.equal(dshWorkerLaunchEnvironmentXml({
+      DEEPSEEK_API_KEY: 'launch-key',
+    }, filename), [
+      '<key>DEEPSEEK_API_KEY</key><string>launch-key</string>',
+      '    <key>DEEPSEEK_BASE_URL</key><string>https://file.example.test</string>',
+    ].join('\n'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('launches dsh workers from the pinned runtime without a target-worktree tsx hook', () => {
+  assert.deepEqual(dshWorkerLaunchSpec('/runtime', '/worker/patch.yml', '/node'), {
+    workingDirectory: '/runtime',
+    programArguments: [
+      '/node',
+      '/runtime/apps/cli/lib/bin.js',
+      '--profile', 'headless', '--patch', '/worker/patch.yml',
+    ],
+  })
 })
 
 test('finds declared Host TypeRT runtime artifacts that a fresh clone still needs to build', async () => {

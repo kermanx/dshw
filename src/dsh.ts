@@ -1,12 +1,11 @@
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, open, readFile, writeFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
 import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DATA_ROOT, DSHW_ROOT, HOST, LOG_ROOT, PORT, SERVICE_LABEL, WORKER_ROOT } from './config.ts'
-import { dshLaunchEnvironmentXml } from './dsh-launch-env.ts'
+import { dshWorkerLaunchEnvironmentXml } from './dsh-launch-env.ts'
 import { formatProgressEvent } from './dsh-progress-plugin.ts'
 import { ensureHarnessRuntime, missingTypertRuntimeArtifacts } from './dsh-runtime.ts'
 export { missingTypertRuntimeArtifacts } from './dsh-runtime.ts'
@@ -46,6 +45,22 @@ export function headlessDshArguments(patchPath: string, prompt: string, usesRunS
     ...(usesRunSubcommand ? ['run'] : []),
     '--profile', 'headless', '--patch', patchPath, prompt,
   ]
+}
+
+/** Keep the control plane rooted in the pinned runtime, never the target PR's tsconfig. */
+export function dshWorkerLaunchSpec(
+  runtimePath: string,
+  patchPath: string,
+  executable = process.execPath,
+): { workingDirectory: string; programArguments: string[] } {
+  return {
+    workingDirectory: runtimePath,
+    programArguments: [
+      executable,
+      join(runtimePath, 'apps', 'cli', 'lib', 'bin.js'),
+      '--profile', 'headless', '--patch', patchPath,
+    ],
+  }
 }
 
 async function loadPrompt(sync: SyncRecord, kind: DshRunRecord['kind']): Promise<string> {
@@ -110,20 +125,18 @@ export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'
   const label = `${SERVICE_LABEL}.worker.${runId}`
   const domain = `gui/${uid()}/${label}`
   const path = process.env.PATH ?? '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
-  const runtimeRequire = createRequire(join(runtime.path, 'package.json'))
-  const cliPath = join(runtime.path, 'apps', 'cli', 'lib', 'bin.js')
-  const programArguments = [
-    process.execPath,
-    '--import', runtimeRequire.resolve('tsx/esm'),
-    cliPath,
-    '--profile', 'headless', '--patch', patchPath,
-  ]
+  // Node 24 loads dshw's TypeScript plugin natively. Installing tsx here
+  // would make its tsconfig-path hook inspect the PR worktree and redirect
+  // pinned runtime imports into the PR branch's uninstalled source tree.
+  const launch = dshWorkerLaunchSpec(runtime.path, patchPath)
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>${escapeXml(label)}</string>
-  <key>ProgramArguments</key><array>${programArguments.map(value => `<string>${escapeXml(value)}</string>`).join('')}</array>
-  <key>WorkingDirectory</key><string>${escapeXml(sync.clonePath)}</string>
+  <key>ProgramArguments</key><array>${launch.programArguments.map(value => `<string>${escapeXml(value)}</string>`).join('')}</array>
+  <!-- Keep process/package resolution inside the pinned runtime. The agent's
+       actual repository cwd is carried separately by session meta.cwd. -->
+  <key>WorkingDirectory</key><string>${escapeXml(launch.workingDirectory)}</string>
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>${escapeXml(path)}</string>
     <key>DSH_PERMISSION_MODE</key><string>danger-full-access</string>
@@ -131,14 +144,14 @@ export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'
     <key>DSHW_DATA_ROOT</key><string>${escapeXml(DATA_ROOT)}</string>
     <key>DSHW_HARNESS_RUNTIME_ROOT</key><string>${escapeXml(runtime.path)}</string>
     ${process.env.DSHW_INSTALLATION_ID === undefined ? '' : `<key>DSHW_INSTALLATION_ID</key><string>${escapeXml(process.env.DSHW_INSTALLATION_ID)}</string>`}
-    ${dshLaunchEnvironmentXml(process.env)}
+    ${dshWorkerLaunchEnvironmentXml(process.env)}
   </dict>
   <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>${escapeXml(join(directory, 'worker.stdout.log'))}</string>
   <key>StandardErrorPath</key><string>${escapeXml(join(directory, 'worker.stderr.log'))}</string>
 </dict></plist>
 `
-  await writeFile(plistPath, plist)
+  await writeFile(plistPath, plist, { mode: 0o600 })
   await runOrThrow('launchctl', ['bootstrap', `gui/${uid()}`, plistPath])
   try {
     await runOrThrow('launchctl', ['kickstart', domain])
