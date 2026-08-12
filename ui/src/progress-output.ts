@@ -1,4 +1,4 @@
-export type ProgressOutputKind = 'agent' | 'tool-call' | 'tool-result' | 'step' | 'stderr' | 'plain'
+export type ProgressOutputKind = 'agent' | 'user' | 'system' | 'tool-call' | 'tool-result' | 'step' | 'stderr' | 'plain'
 
 export interface ProgressOutputBlock {
   kind: ProgressOutputKind
@@ -37,6 +37,8 @@ export function parseProgressOutput(output: string): ProgressOutputBlock[] {
 
 function blockStart(line: string): ProgressOutputBlock | undefined {
   if (line.startsWith('Agent：')) return { kind: 'agent', title: 'Agent', body: line.slice('Agent：'.length) }
+  if (line.startsWith('用户指令：')) return { kind: 'user', title: '你', body: line.slice('用户指令：'.length) }
+  if (line.startsWith('系统：')) return { kind: 'system', title: '系统', body: line.slice('系统：'.length) }
 
   const toolCall = /^调用工具 (.+?)：(.*)$/u.exec(line)
   if (toolCall !== null) return { kind: 'tool-call', title: toolCall[1] ?? 'unknown', body: toolCall[2] ?? '' }

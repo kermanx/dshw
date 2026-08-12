@@ -559,6 +559,17 @@ test('groups live progress into lightweight display blocks', () => {
   ])
 })
 
+test('recognizes controls injected into live progress', () => {
+  assert.deepEqual(parseProgressOutput([
+    '用户指令：只修复这个测试',
+    '补充说明',
+    '系统：已请求暂停任务',
+  ].join('\n')), [
+    { kind: 'user', title: '你', body: '只修复这个测试\n补充说明', preview: '只修复这个测试' },
+    { kind: 'system', title: '系统', body: '已请求暂停任务', preview: '已请求暂停任务' },
+  ])
+})
+
 test('steers and pauses a persisted dsh session over its Unix JSON-RPC socket', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dshw-worker-rpc-'))
   const socketPath = join(tmpdir(), `dshw-rpc-${process.pid}-${Date.now()}.sock`)

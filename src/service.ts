@@ -1234,6 +1234,7 @@ class WorkflowService {
     if (related.length === 0) throw new Error('任务已经结束或当前不可终止')
     const requestedAt = now()
     for (const job of related) {
+      this.#appendDshOutput(job, '系统：已请求终止任务')
       job.cancelRequestedAt = requestedAt
       this.#jobControllers.get(job.id)?.abort()
     }
@@ -1245,6 +1246,7 @@ class WorkflowService {
   async #pauseDshJob(jobId: string | undefined): Promise<void> {
     const job = this.#activeDshJob(jobId)
     await cancelDshWorker(job.dshWorker!.handle)
+    this.#appendDshOutput(job, '系统：已请求暂停任务')
     this.#store.event('warning', 'dsh-control', `已请求暂停：${job.summary}`)
     await this.#store.changed()
   }
@@ -1253,6 +1255,7 @@ class WorkflowService {
     if (prompt === undefined || prompt.trim() === '') throw new Error('请输入要发送给 dsh 的内容')
     const job = this.#activeDshJob(jobId)
     await steerDshWorker(job.dshWorker!.handle, prompt.trim())
+    this.#appendDshOutput(job, `用户指令：${prompt.trim()}`)
     this.#store.event('info', 'dsh-control', `已 steer：${job.summary}`)
     await this.#store.changed()
   }
@@ -1264,6 +1267,21 @@ class WorkflowService {
     if (job.status !== 'running' || job.dshWorker === undefined) throw new Error('任务已结束或不是可控制的 dsh 任务')
     if (job.cancelRequestedAt !== undefined) throw new Error('任务正在终止')
     return job as JobRecord & { dshWorker: NonNullable<JobRecord['dshWorker']> }
+  }
+
+  #appendDshOutput(job: JobRecord, line: string): void {
+    const handle = job.dshWorker?.handle
+    if (handle === undefined) return
+    const previous = this.#workerProgress.get(handle.runId)
+    this.#workerProgress.set(handle.runId, {
+      runId: handle.runId,
+      phase: previous?.phase ?? 'running',
+      message: previous?.message ?? line,
+      startedAt: previous?.startedAt ?? handle.startedAt,
+      updatedAt: now(),
+      outputTail: `${previous?.outputTail ?? ''}${line}\n`.slice(-48_000),
+    })
+    this.#broadcastProgress()
   }
 
   #applyPr(sync: SyncRecord, pr: PullRequestInfo): void {
