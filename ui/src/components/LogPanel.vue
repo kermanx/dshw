@@ -11,6 +11,7 @@ const hasMore = ref(true)
 const loading = ref(false)
 const error = ref('')
 const scroller = ref<HTMLElement>()
+const initialized = ref(false)
 
 function levelTone(level: EventRecord['level']): 'bad' | 'warn' | 'neutral' {
   return level === 'error' ? 'bad' : level === 'warning' ? 'warn' : 'neutral'
@@ -57,6 +58,7 @@ async function loadOlder(preservePosition = true): Promise<void> {
 }
 
 async function loadInitial(): Promise<void> {
+  initialized.value = false
   loading.value = true
   error.value = ''
   try {
@@ -71,15 +73,17 @@ async function loadInitial(): Promise<void> {
     }
     await nextTick()
     if (scroller.value !== undefined) scroller.value.scrollTop = scroller.value.scrollHeight
+    initialized.value = true
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
     loading.value = false
+    initialized.value = true
   }
 }
 
 function onScroll(): void {
-  if ((scroller.value?.scrollTop ?? 100) < 48) void loadOlder()
+  if (initialized.value && (scroller.value?.scrollTop ?? 100) < 48) void loadOlder()
 }
 
 watch(() => props.recent, async recent => {

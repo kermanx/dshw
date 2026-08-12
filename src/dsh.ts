@@ -1,4 +1,5 @@
 import { createWriteStream } from 'node:fs'
+import { once } from 'node:events'
 import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
@@ -283,6 +284,7 @@ export async function executeDshWorker(request: DshWorkerRequest): Promise<DshRu
     progress.phase('finishing', controller.signal.aborted ? '正在终止并保存结果' : '正在保存最终结果')
     await progress.flush()
     logStream.end()
+    await once(logStream, 'finish')
     process.removeListener('SIGTERM', terminate)
     process.removeListener('SIGINT', terminate)
   }

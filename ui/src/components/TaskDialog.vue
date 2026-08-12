@@ -16,12 +16,14 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [], cancel: [jobId: string], toast: [message: string, bad?: boolean] }>()
 const now = ref(Date.now())
 const outputElement = ref<HTMLElement>()
+const persistedOutput = ref('')
+const outputLoading = ref(false)
 let timer: number | undefined
 
 const phase = computed(() => props.job.status === 'running'
   ? props.progress !== undefined ? phaseLabel(props.progress.phase) : props.job.dshWorker !== undefined ? 'Agent 运行中' : '后台检查中'
   : jobLabel(props.job.status))
-const output = computed(() => stripAnsi(props.progress?.outputTail || props.run?.finalOutput || props.job.output || ''))
+const output = computed(() => stripAnsi(props.progress?.outputTail || persistedOutput.value || props.job.output || props.run?.finalOutput || ''))
 const outputBlocks = computed(() => parseProgressOutput(output.value).filter(block => block.kind !== 'step'))
 const placeholder = computed(() => {
   if (props.job.status !== 'running') return '这个任务没有文本输出。'
@@ -64,9 +66,11 @@ watch(output, async () => {
 
 // 打开对话框或切换到另一个任务时，直接定位到末尾
 watch(() => props.job.id, async () => {
+  void loadPersistedOutput()
   await nextTick()
   scrollToEnd()
 })
+watch(() => props.job.status, () => void loadPersistedOutput())
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') emit('close')
@@ -81,10 +85,29 @@ async function copyOutput(): Promise<void> {
   }
 }
 
+async function loadPersistedOutput(): Promise<void> {
+  const jobId = props.job.id
+  persistedOutput.value = ''
+  outputLoading.value = false
+  if (props.job.status === 'running' || props.job.dshWorker === undefined) return
+  outputLoading.value = true
+  try {
+    const response = await fetch(`/api/jobs/output?jobId=${encodeURIComponent(jobId)}`)
+    const value = await response.json() as { output?: string, error?: string }
+    if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`)
+    if (props.job.id === jobId) persistedOutput.value = value.output ?? ''
+  } catch {
+    // The final result already carried by the Job remains a useful fallback.
+  } finally {
+    if (props.job.id === jobId) outputLoading.value = false
+  }
+}
+
 onMounted(() => {
   timer = window.setInterval(() => { now.value = Date.now() }, 1_000)
   window.addEventListener('keydown', onKeydown)
   void nextTick(scrollToEnd)
+  void loadPersistedOutput()
 })
 onBeforeUnmount(() => {
   if (timer !== undefined) window.clearInterval(timer)
@@ -163,7 +186,7 @@ onBeforeUnmount(() => {
       </div>
 
       <footer class="flex items-center gap-8px px-16px b-t b-t-solid b-t-line text-muted text-12px">
-        <span v-if="!running">任务已结束，显示最终结果</span>
+        <span v-if="!running">{{ job.dshWorker === undefined ? '任务已结束' : outputLoading ? '正在读取完整输出…' : '任务已结束 · 显示完整输出' }}</span>
         <button v-if="output" class="btn btn-ghost ml-auto" @click="copyOutput">复制输出</button>
         <button v-if="running" class="btn btn-danger" :class="{ 'ml-auto': !output }" :disabled="job.cancelRequestedAt !== undefined || cancelling" @click="emit('cancel', job.id)">{{ job.cancelRequestedAt || cancelling ? '终止中' : '终止任务' }}</button>
       </footer>

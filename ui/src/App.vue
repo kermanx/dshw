@@ -185,7 +185,14 @@ onBeforeUnmount(() => {
             @refresh="post('/api/prs/refresh', {}, 'prs-refresh')"
             @toggle-sync="(name, enabled) => post('/api/sync/toggle', { name, enabled }, `sync-toggle:${name}`)"
           />
-          <ReviewRequests v-else-if="view === 'reviews'" :requests="snapshot.reviewRequests" />
+          <ReviewRequests
+            v-else-if="view === 'reviews'"
+            :requests="snapshot.reviewRequests"
+            :status="snapshot.reviewRequestsStatus"
+            :pending="pending"
+            @refresh="post('/api/prs/refresh', {}, 'prs-refresh')"
+            @open-logs="select('logs')"
+          />
           <JobsTable
             v-else-if="view === 'jobs'"
             :jobs="snapshot.jobs"

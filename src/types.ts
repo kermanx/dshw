@@ -143,6 +143,11 @@ export interface ServiceState {
     records: PrDashboardRecord[]
     lastSuccessAt?: string
   }
+  /** Last usable review-request snapshot, retained across daemon restarts. */
+  reviewRequestsCache?: {
+    records: ReviewRequestRecord[]
+    lastSuccessAt?: string
+  }
 }
 
 export interface PullRequestInfo {

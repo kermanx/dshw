@@ -1,5 +1,5 @@
 import { createServer, type Server, type ServerResponse } from 'node:http'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   BASE_DEBOUNCE_MS,
@@ -9,6 +9,7 @@ import {
   DEV_MODE,
   HARNESS_ROOT,
   HOST,
+  LOG_ROOT,
   PORT,
   PR_DASHBOARD_INTERVAL_MS,
   PR_DISCOVERY_INTERVAL_MS,
@@ -102,7 +103,8 @@ class WorkflowService {
   #prDashboardRefreshPromise: Promise<void> | undefined
   #prDashboard: PrDashboardRecord[]
   #prDashboardStatus: PrDashboardStatus
-  #reviewRequests: ReviewRequestRecord[] = []
+  #reviewRequests: ReviewRequestRecord[]
+  #reviewRequestsStatus: PrDashboardStatus
   #rateLimited = false
   #rateLimitResetAt: string | undefined
   #lastDiscoveryAt = 0
@@ -117,6 +119,14 @@ class WorkflowService {
       refreshing: true,
       stale: cached !== undefined,
       ...(cached?.lastSuccessAt === undefined ? {} : { lastSuccessAt: cached.lastSuccessAt }),
+    }
+    const cachedReviews = store.state.reviewRequestsCache
+    this.#reviewRequests = cachedReviews?.records ?? []
+    this.#reviewRequestsStatus = {
+      state: 'loading',
+      refreshing: true,
+      stale: cachedReviews !== undefined,
+      ...(cachedReviews?.lastSuccessAt === undefined ? {} : { lastSuccessAt: cachedReviews.lastSuccessAt }),
     }
     store.onChange(() => this.#broadcast())
   }
@@ -163,12 +173,17 @@ class WorkflowService {
       response.on('close', () => this.#sse.delete(response))
       return
     }
-    if (method === 'GET' && url.startsWith('/api/logs')) {
+    if (method === 'GET' && new URL(url, `http://${HOST}:${PORT}`).pathname === '/api/logs') {
       const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
       this.#json(response, 200, await this.#store.logs(requestUrl.searchParams.get('before') ?? undefined, HISTORY_PAGE_SIZE))
       return
     }
-    if (method === 'GET' && url.startsWith('/api/jobs')) {
+    if (method === 'GET' && new URL(url, `http://${HOST}:${PORT}`).pathname === '/api/jobs/output') {
+      const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
+      this.#json(response, 200, { output: await this.#jobOutput(requestUrl.searchParams.get('jobId') ?? undefined) })
+      return
+    }
+    if (method === 'GET' && new URL(url, `http://${HOST}:${PORT}`).pathname === '/api/jobs') {
       const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
       this.#json(response, 200, this.#store.jobs(requestUrl.searchParams.get('before') ?? undefined, HISTORY_PAGE_SIZE))
       return
@@ -247,7 +262,7 @@ class WorkflowService {
   }
 
   async #snapshot(): Promise<object> {
-    const { prDashboardCache: _prDashboardCache, jobs, ...state } = this.#store.state
+    const { prDashboardCache: _prDashboardCache, reviewRequestsCache: _reviewRequestsCache, jobs, ...state } = this.#store.state
     const recentJobs = jobs.filter((job, index) => job.status === 'running' || index >= jobs.length - HISTORY_PAGE_SIZE)
     return {
       service: {
@@ -263,9 +278,25 @@ class WorkflowService {
       prs: this.#prDashboard,
       prDashboard: this.#prDashboardStatus,
       reviewRequests: this.#reviewRequests,
+      reviewRequestsStatus: this.#reviewRequestsStatus,
       jobProgress: this.#readJobProgress(),
       ...state,
       jobs: recentJobs,
+    }
+  }
+
+  async #jobOutput(jobId: string | undefined): Promise<string> {
+    if (jobId === undefined) throw new Error('缺少 jobId')
+    const job = this.#store.state.jobs.find(candidate => candidate.id === jobId)
+    if (job === undefined) throw new Error(`找不到任务：${jobId}`)
+    const runId = job.dshWorker?.handle.runId
+    if (runId === undefined) return job.output ?? ''
+    if (!/^dsh-[a-z0-9-]+$/u.test(runId)) throw new Error('任务包含无效的 runId')
+    try {
+      const output = await readFile(join(LOG_ROOT, `${runId}.log`), 'utf8')
+      return output.trimEnd() || job.output || ''
+    } catch {
+      return job.output ?? ''
     }
   }
 
@@ -298,8 +329,9 @@ class WorkflowService {
     this.#discoveryPromise = (async () => {
       try {
         const repoSlug = repoSlugFromRemote(await originUrl(HARNESS_ROOT))
+        const reviewRefresh = this.#refreshReviewRequests(repoSlug)
         const prs = await myOpenPullRequests(HARNESS_ROOT, repoSlug)
-        this.#reviewRequests = await reviewRequestedPullRequests(HARNESS_ROOT, repoSlug)
+        await reviewRefresh
         const clones = await listClones()
         let tracked = 0
         let cloned = 0
@@ -353,6 +385,14 @@ class WorkflowService {
         }
       } catch (error) {
         this.#noteGhFailure(error)
+        if (this.#reviewRequestsStatus.state === 'loading') {
+          this.#reviewRequestsStatus = {
+            state: 'error',
+            refreshing: false,
+            stale: this.#reviewRequests.length > 0,
+            error: messageOf(error),
+          }
+        }
         this.#store.event('warning', 'track', `自动发现 PR 失败：${messageOf(error)}`)
         await this.#store.changed()
       }
@@ -362,6 +402,42 @@ class WorkflowService {
     } finally {
       this.#discoveryPromise = undefined
     }
+  }
+
+  async #refreshReviewRequests(repoSlug: string): Promise<void> {
+    const attemptAt = now()
+    this.#reviewRequestsStatus = {
+      ...this.#reviewRequestsStatus,
+      refreshing: true,
+      lastAttemptAt: attemptAt,
+    }
+    this.#broadcast()
+    try {
+      const records = await reviewRequestedPullRequests(HARNESS_ROOT, repoSlug)
+      const completedAt = now()
+      this.#reviewRequests = records
+      this.#reviewRequestsStatus = {
+        state: 'ready',
+        refreshing: false,
+        stale: false,
+        lastAttemptAt: attemptAt,
+        lastSuccessAt: completedAt,
+      }
+      this.#store.state.reviewRequestsCache = { records, lastSuccessAt: completedAt }
+    } catch (error) {
+      this.#noteGhFailure(error)
+      const detail = messageOf(error)
+      this.#reviewRequestsStatus = {
+        state: 'error',
+        refreshing: false,
+        stale: this.#reviewRequests.length > 0,
+        lastAttemptAt: attemptAt,
+        ...(this.#reviewRequestsStatus.lastSuccessAt === undefined ? {} : { lastSuccessAt: this.#reviewRequestsStatus.lastSuccessAt }),
+        error: detail,
+      }
+      this.#store.event('warning', 'reviews', `待 review PR 刷新失败，保留旧数据：${detail}`)
+    }
+    await this.#store.changed()
   }
 
   async #tick(): Promise<void> {

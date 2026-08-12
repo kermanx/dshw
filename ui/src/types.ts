@@ -31,6 +31,7 @@ export interface WorkflowSnapshot extends Omit<ServiceState, 'prDashboardCache'>
   prs: PrDashboardRecord[]
   prDashboard: PrDashboardStatus
   reviewRequests: ReviewRequestRecord[]
+  reviewRequestsStatus: PrDashboardStatus
   jobProgress: Record<string, DshWorkerProgress>
 }
 
