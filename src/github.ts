@@ -147,3 +147,83 @@ export function summarizeChecks(checks: readonly CiCheck[]): { status: CiStatus;
   }
   return { status: 'passed', summary: `${checks.length} 个 checks 已通过或跳过` }
 }
+
+export interface CiAutoFixAssessment {
+  actionableChecks: CiCheck[]
+  failingBaseChecks: Array<Pick<CiCheck, 'name' | 'workflow'>>
+}
+
+export function selectCiAutoFixChecks(
+  checks: readonly CiCheck[],
+  failingBaseChecks: ReadonlyArray<Pick<CiCheck, 'name' | 'workflow'>>,
+): CiAutoFixAssessment {
+  const failedChecks = checks.filter(check => check.bucket === 'fail' || check.bucket === 'cancel')
+  const failingBaseCheckSet = new Set(failingBaseChecks.map(check => `${check.workflow}\n${check.name}`))
+  return {
+    actionableChecks: failedChecks.filter(check => (
+      check.workflow.trim() === '' || !failingBaseCheckSet.has(`${check.workflow.trim()}\n${check.name}`)
+    )),
+    failingBaseChecks: [...failingBaseChecks],
+  }
+}
+
+/**
+ * A failed PR check is not actionable when the latest decisive result for the
+ * same Actions job on the base branch is also a failure. Running, cancelled,
+ * and skipped jobs do not supersede the latest success/failure result.
+ */
+export async function assessCiAutoFix(
+  cwd: string,
+  repoSlug: string,
+  checks: readonly CiCheck[],
+  baseBranch: string,
+  signal?: AbortSignal,
+  execute: typeof runOrThrow = runOrThrow,
+): Promise<CiAutoFixAssessment> {
+  const failedChecks = checks.filter(check => check.bucket === 'fail' || check.bucket === 'cancel')
+  const checksByWorkflow = new Map<string, CiCheck[]>()
+  for (const check of failedChecks) {
+    const workflow = check.workflow.trim()
+    if (workflow === '') continue
+    const workflowChecks = checksByWorkflow.get(workflow) ?? []
+    workflowChecks.push(check)
+    checksByWorkflow.set(workflow, workflowChecks)
+  }
+  const failingBaseChecks = (await Promise.all([...checksByWorkflow].map(async ([workflow, workflowChecks]) => {
+    const runs = (await Promise.all(['success', 'failure'].map(async status => {
+      const result = await execute('gh', [
+        'run', 'list', '--repo', repoSlug,
+        '--branch', baseBranch,
+        '--workflow', workflow,
+        '--all',
+        '--status', status,
+        '--limit', '50',
+        '--json', 'databaseId,createdAt',
+      ], { cwd, timeoutMs: 30_000, signal })
+      return JSON.parse(result.stdout) as Array<{ databaseId: number; createdAt: string }>
+    }))).flat().sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    const unresolvedNames = new Set(workflowChecks.map(check => check.name))
+    const failedNames = new Set<string>()
+    for (const run of runs) {
+      if (unresolvedNames.size === 0) break
+      const result = await execute('gh', [
+        'run', 'view', String(run.databaseId), '--repo', repoSlug, '--json', 'jobs',
+      ], { cwd, timeoutMs: 30_000, signal })
+      const parsed = JSON.parse(result.stdout) as {
+        jobs?: Array<{ name?: string; status?: string; conclusion?: string }>
+      }
+      for (const job of parsed.jobs ?? []) {
+        const name = job.name ?? ''
+        if (!unresolvedNames.has(name) || job.status?.toUpperCase() !== 'COMPLETED') continue
+        const conclusion = job.conclusion?.toUpperCase()
+        if (conclusion !== 'SUCCESS' && conclusion !== 'FAILURE') continue
+        unresolvedNames.delete(name)
+        if (conclusion === 'FAILURE') failedNames.add(name)
+      }
+    }
+    return workflowChecks
+      .filter(check => failedNames.has(check.name))
+      .map(check => ({ name: check.name, workflow }))
+  }))).flat()
+  return selectCiAutoFixChecks(checks, failingBaseChecks)
+}

@@ -25,11 +25,11 @@ import {
 import { createPrClone, listClones, removeClone } from './clone.ts'
 import { readDshwRepositoryStatus } from './dshw-repository.ts'
 import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
-import { ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
+import { assessCiAutoFix, ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { readHarnessRepositoryStatus } from './harness-repository.ts'
 import { mergePrDashboardSyncState } from './pr-dashboard.ts'
 import { StateStore } from './state.ts'
-import type { CloneGitStatus, CloneRecord, DshwRepositoryStatus, DshWorkerProgress, HarnessRepositoryStatus, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord, WorkerConfigInput, WorkerExecutionConfig, WorktreeCleanupCandidate, WorktreeCleanupPreview } from './types.ts'
+import type { CiCheck, CloneGitStatus, CloneRecord, DshwRepositoryStatus, DshWorkerProgress, HarnessRepositoryStatus, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord, WorkerConfigInput, WorkerExecutionConfig, WorktreeCleanupCandidate, WorktreeCleanupPreview } from './types.ts'
 import { after, id, isTaskCancelled, messageOf, now, run, runOrThrow, TaskCancelledError } from './util.ts'
 import { refreshCodeWorkspace } from './workspace.ts'
 import { serveUiAsset } from './ui-static.ts'
@@ -1280,7 +1280,7 @@ class WorkflowService {
       sync.nextCiCheckAt = after(CI_WATCH_INTERVAL_MS)
       sync.noChecksSince = undefined
     } else if (summary.status === 'failed' && sync.lastFixedHeadOid !== sync.headOid) {
-      await this.#runAgent(sync, 'fix-ci')
+      await this.#autoFixCi(sync, checks, signal)
     } else if (summary.status === 'none' && postPush) {
       sync.ciMonitorHeadOid = sync.headOid
       sync.noChecksSince ??= now()
@@ -1322,7 +1322,7 @@ class WorkflowService {
       }
     } else if (summary.status === 'failed') {
       sync.nextCiCheckAt = undefined
-      if (sync.lastFixedHeadOid !== sync.headOid) await this.#runAgent(sync, 'fix-ci')
+      if (sync.lastFixedHeadOid !== sync.headOid) await this.#autoFixCi(sync, checks)
     } else {
       sync.nextCiCheckAt = undefined
       sync.ciMonitorHeadOid = undefined
@@ -1331,6 +1331,25 @@ class WorkflowService {
     }
     sync.updatedAt = now()
     await this.#store.changed()
+  }
+
+  async #autoFixCi(sync: SyncRecord, checks: readonly CiCheck[], signal?: AbortSignal): Promise<void> {
+    const assessment = await assessCiAutoFix(sync.clonePath, sync.repoSlug, checks, 'master', signal)
+    if (assessment.failingBaseChecks.length > 0) {
+      this.#store.event(
+        'warning',
+        'ci',
+        `PR #${sync.prNumber}: ${assessment.failingBaseChecks.map(check => check.name).join('、')} 在 master 上最近一次明确结果也失败，不作为自动修复触发项`,
+      )
+    }
+    if (assessment.actionableChecks.length === 0) return
+    const additionalInstruction = assessment.failingBaseChecks.length === 0
+      ? undefined
+      : [
+          `本次自动修复只由这些失败 checks 触发：${assessment.actionableChecks.map(check => check.name).join('、')}。`,
+          `以下 checks 在 master 上最近一次明确结果也失败，不属于本次修复范围：${assessment.failingBaseChecks.map(check => check.name).join('、')}。`,
+        ].join('\n')
+    await this.#runAgent(sync, 'fix-ci', undefined, additionalInstruction)
   }
 
   async #runAgent(sync: SyncRecord, kind: 'merge-base' | 'fix-ci' | 'resolve-comments', selectedWorker?: WorkerExecutionConfig, additionalInstruction?: string): Promise<void> {

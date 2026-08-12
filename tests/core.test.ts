@@ -7,18 +7,18 @@ import test from 'node:test'
 import { removeCloneRecord, validateCloneName } from '../src/clone.ts'
 import { resolveCommandTarget } from '../src/command-target.ts'
 import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, repoSlugFromRemote } from '../src/git.ts'
-import { rollupChecks, summarizeChecks } from '../src/github.ts'
-import { CLONES_ROOT, DSHW_ROOT } from '../src/config.ts'
+import { assessCiAutoFix, rollupChecks, selectCiAutoFixChecks, summarizeChecks } from '../src/github.ts'
+import { AGENT_STEER_INTERVAL_MS, CLONES_ROOT, DSHW_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
 import { DSHW_UPDATE_STEPS, HARNESS_RECONFIGURE_STEPS, observeBaseTip, readOutputPage, scheduleBaseCheck, summarizePrDashboardErrors, worktreeNeedsCleanupDecision } from '../src/service.ts'
 import { pageJobs, readEventLogPage } from '../src/state.ts'
-import { appendAdditionalInstruction, cancelDshWorker, dshWorkerLaunchSpec, headlessDshArguments, inspectDshWorker, missingTypertRuntimeArtifacts, parseDshOutcome, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
+import { appendAdditionalInstruction, cancelDshWorker, dshWorkerLaunchSpec, headlessDshArguments, inspectDshWorker, missingTypertRuntimeArtifacts, parseDshOutcome, renderPeriodicAgentReminder, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
 import { dshLaunchEnvironmentXml, dshWorkerLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
 import { mergeProgressOutput, parseProgressOutput } from '../ui/src/progress-output.ts'
-import type { DshWorkerHandle, EventRecord, JobRecord } from '../src/types.ts'
+import type { DshWorkerHandle, EventRecord, JobRecord, SyncRecord } from '../src/types.ts'
 import { parseServiceOwner, renderServicePlist } from '../src/service-manager.ts'
 import { WorkerConfigStore } from '../src/worker-config.ts'
 import { codexModelCatalogFrom, findCodexExecutable } from '../src/codex-runtime.ts'
@@ -143,6 +143,11 @@ test('configures ephemeral Codex threads and formats native items', () => {
     '工具结果 完成：37 passed',
   ])
   assert.deepEqual(formatCodexThreadItem({ type: 'agentMessage', text: '完成。' }), ['Agent：完成。'])
+  assert.deepEqual(formatCodexThreadItem({
+    type: 'reasoning',
+    summary: [{ type: 'summary_text', text: '先检查失败测试' }],
+    content: [],
+  }), ['思考：先检查失败测试'])
   assert.deepEqual(codexTurnStartParams('thread-1', '继续', { model: 'gpt-5.4', reasoningEffort: 'xhigh' }), {
     threadId: 'thread-1',
     input: [{ type: 'text', text: '继续' }],
@@ -567,6 +572,59 @@ test('waits for all CI checks before classifying a completed failure', () => {
   ]).status, 'passed')
 })
 
+test('does not auto-fix a check that is also failing on the base branch', () => {
+  const check = (name: string, bucket: string, workflow: string) => ({ name, bucket, workflow, state: '', link: '' })
+  assert.deepEqual(selectCiAutoFixChecks([
+    check('lint', 'fail', 'CI'),
+  ], [{ name: 'lint', workflow: 'CI' }]).actionableChecks, [])
+  assert.deepEqual(selectCiAutoFixChecks([
+    check('lint', 'fail', 'CI'),
+    check('test', 'fail', 'Tests'),
+    check('external', 'fail', ''),
+    check('still running', 'pending', 'CI'),
+  ], [{ name: 'lint', workflow: 'CI' }]), {
+    actionableChecks: [
+      check('test', 'fail', 'Tests'),
+      check('external', 'fail', ''),
+    ],
+    failingBaseChecks: [{ name: 'lint', workflow: 'CI' }],
+  })
+})
+
+test('compares each check with its latest decisive base result', async () => {
+  const check = (name: string) => ({ name, bucket: 'fail', workflow: 'CI', state: 'FAILURE', link: '' })
+  const calls: string[][] = []
+  const execute: typeof runOrThrow = async (_command, args) => {
+    calls.push([...args])
+    const json = args.includes('list')
+      ? args.includes('failure')
+        ? [{ databaseId: 2, createdAt: '2026-08-12T11:00:00Z' }]
+        : [{ databaseId: 1, createdAt: '2026-08-12T10:00:00Z' }]
+      : args.includes('2')
+        ? { jobs: [
+            { name: 'windows', status: 'completed', conclusion: 'failure' },
+            { name: 'linux', status: 'completed', conclusion: 'cancelled' },
+          ] }
+        : { jobs: [
+            { name: 'windows', status: 'completed', conclusion: 'success' },
+            { name: 'linux', status: 'completed', conclusion: 'success' },
+          ] }
+    return { code: 0, stdout: JSON.stringify(json), stderr: '', cancelled: false }
+  }
+  assert.deepEqual(await assessCiAutoFix('/repo', 'owner/repo', [
+    check('windows'),
+    check('linux'),
+  ], 'master', undefined, execute), {
+    actionableChecks: [check('linux')],
+    failingBaseChecks: [{ name: 'windows', workflow: 'CI' }],
+  })
+  assert.deepEqual(calls.filter(args => args.includes('list')).map(args => args[args.indexOf('--status') + 1]).sort(), [
+    'failure',
+    'success',
+  ])
+  assert.deepEqual(calls.filter(args => args.includes('view')).map(args => args[2]), ['2', '1'])
+})
+
 test('normalizes GitHub PR status rollups for the live dashboard', () => {
   assert.deepEqual(rollupChecks([
     { __typename: 'CheckRun', name: 'test', status: 'IN_PROGRESS', conclusion: '', detailsUrl: 'https://ci/test' },
@@ -604,6 +662,31 @@ test('renders editable dsh markdown prompt placeholders', () => {
     clonePath: '/tmp/clone',
   }), 'PR 42 at /tmp/clone')
   assert.throws(() => renderPromptTemplate('{{unknown}}', {}), /未知占位符/)
+})
+
+test('allows every dsh worker to initialize its worktree dependencies', async () => {
+  for (const filename of ['fix-ci.md', 'resolve-comments.md', 'merge-base.md']) {
+    const prompt = await readFile(join(DSHW_ROOT, 'prompts', filename), 'utf8')
+    assert.match(prompt, /你可以自行运行 `pnpm install` 等必要的初始化命令/, filename)
+    assert.match(prompt, /push 成功后立即输出最终结果并结束本次 agent 任务/, filename)
+    assert.match(prompt, /不得等待、轮询、重跑或尝试触发 push 后的新 CI/, filename)
+  }
+})
+
+test('steers running agents every 20 minutes with the original task boundary', () => {
+  assert.equal(AGENT_STEER_INTERVAL_MS, 20 * 60 * 1000)
+  const prompt = renderPeriodicAgentReminder({
+    handle: {} as DshWorkerHandle,
+    kind: 'fix-ci',
+    sync: { prNumber: 1768 } as SyncRecord,
+    oldHead: 'old-head',
+    label: '修复 CI',
+  })
+  assert.match(prompt, /这不是新任务/)
+  assert.match(prompt, /PR #1768.*失败的 CI checks/)
+  assert.match(prompt, /立即提交并 push.*结束本次 agent 任务/)
+  assert.match(prompt, /不得等待、轮询、重跑或尝试触发 push 后的新 CI/)
+  assert.match(prompt, /由 dshw 负责/)
 })
 
 test('appends optional user instructions to the worker prompt', () => {
@@ -675,13 +758,17 @@ test('formats dsh session steps as plain-text progress', () => {
   }), '调用工具 bash：{\n  "cmd": "pnpm test"\n}')
   assert.equal(formatProgressEvent({
     type: 'assistant/message',
-    data: { message: { content: [{ type: 'text', text: '正在检查失败日志' }] } },
-  }), 'Agent：正在检查失败日志')
+    data: { message: { content: [
+      { type: 'reasoning', text: '先定位失败测试' },
+      { type: 'text', text: '正在检查失败日志' },
+    ] } },
+  }), '思考：先定位失败测试\nAgent：正在检查失败日志')
 })
 
 test('groups live progress into lightweight display blocks', () => {
   assert.deepEqual(parseProgressOutput([
     '步骤 2 开始',
+    '思考：先定位测试范围',
     'Agent：正在检查失败日志',
     '下一行说明',
     '调用工具 bash：{',
@@ -690,6 +777,7 @@ test('groups live progress into lightweight display blocks', () => {
     '工具结果 完成：18 tests passed',
   ].join('\n')), [
     { kind: 'step', body: '步骤 2 开始', preview: '步骤 2 开始' },
+    { kind: 'thinking', title: '思考', body: '先定位测试范围', preview: '先定位测试范围' },
     { kind: 'agent', title: 'Agent', body: '正在检查失败日志\n下一行说明', preview: '正在检查失败日志' },
     { kind: 'tool-call', title: 'bash', body: '{\n  "cmd": "pnpm test"\n}', preview: '"cmd": "pnpm test"' },
     { kind: 'tool-result', title: '完成', body: '18 tests passed', failed: false, preview: '18 tests passed' },
