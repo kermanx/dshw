@@ -171,6 +171,8 @@ export interface JobRecord {
   startedAt?: string
   finishedAt?: string
   cancelRequestedAt?: string
+  /** Next periodic task-boundary reminder for a running Worker. */
+  nextAgentSteerAt?: string
   summary: string
   output?: string
   /** Persisted field name retained for compatibility; may contain any Worker type. */

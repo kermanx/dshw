@@ -2,6 +2,7 @@ import { createServer, type Server, type ServerResponse } from 'node:http'
 import { appendFile, mkdir, open, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
+  AGENT_STEER_INTERVAL_MS,
   BASE_DEBOUNCE_MS,
   BASE_DEBOUNCE_MAX_MS,
   CI_WATCH_INTERVAL_MS,
@@ -35,6 +36,7 @@ import { serveUiAsset } from './ui-static.ts'
 import { assertManagedHarnessOwned, ensureInstallation, ensureManagedHarness, requireDaemonInstallation, type InstallationRecord } from './install.ts'
 import { WorkerConfigStore } from './worker-config.ts'
 import { WorkerRegistry } from './worker-driver.ts'
+import { renderPeriodicAgentReminder } from './dsh.ts'
 
 const NO_CHECKS_GRACE_MS = 5 * 60 * 1000
 const HISTORY_PAGE_SIZE = 35
@@ -145,6 +147,7 @@ class WorkflowService {
   readonly #jobControllers = new Map<string, AbortController>()
   readonly #sse = new Set<ServerResponse>()
   readonly #workerProgress = new Map<string, DshWorkerProgress>()
+  readonly #agentSteersInFlight = new Set<string>()
   readonly #conflictPathsCache = new Map<string, Promise<string[]>>()
   #server: Server | undefined
   #timer: NodeJS.Timeout | undefined
@@ -756,6 +759,7 @@ class WorkflowService {
   async #tick(): Promise<void> {
     if (this.#draining) return
     const currentTime = Date.now()
+    void this.#steerDueAgents(currentTime)
     if (currentTime - this.#lastDshwRepositoryRefreshAt >= DSHW_UPDATE_CHECK_INTERVAL_MS && !this.#updatingDshw) {
       this.#lastDshwRepositoryRefreshAt = currentTime
       void this.#refreshDshwRepository(true)
@@ -794,6 +798,38 @@ class WorkflowService {
       }
       if (Date.parse(sync.nextPrRefreshAt) <= currentTime) {
         void this.#withSyncLock(sync, () => this.#refreshPrLifecycle(sync))
+      }
+    }
+  }
+
+  async #steerDueAgents(currentTime: number): Promise<void> {
+    const jobs = this.#store.state.jobs.filter(job => (
+      job.status === 'running'
+      && job.dshWorker !== undefined
+      && job.cancelRequestedAt === undefined
+      && job.nextAgentSteerAt !== undefined
+      && Date.parse(job.nextAgentSteerAt) <= currentTime
+      && !this.#agentSteersInFlight.has(job.id)
+    ))
+    for (const job of jobs) {
+      const worker = job.dshWorker
+      if (worker === undefined) continue
+      const phase = this.#workerProgress.get(worker.handle.runId)?.phase
+      if (phase === undefined || phase === 'paused' || phase === 'cancelling' || phase === 'finishing') continue
+      this.#agentSteersInFlight.add(job.id)
+      try {
+        const prompt = renderPeriodicAgentReminder(worker)
+        await this.#workerRegistry.steer(worker.handle, prompt)
+        await this.#appendDshOutput(job, `系统定时 steer：${prompt}`)
+        this.#store.event('info', 'dsh-control', `已发送 20 分钟任务边界提醒：${job.summary}`)
+      } catch (error) {
+        if (job.status === 'running') {
+          this.#store.event('warning', 'dsh-control', `20 分钟任务边界提醒发送失败：${job.summary}：${messageOf(error)}`)
+        }
+      } finally {
+        this.#agentSteersInFlight.delete(job.id)
+        job.nextAgentSteerAt = job.status === 'running' ? after(AGENT_STEER_INTERVAL_MS) : undefined
+        await this.#store.changed()
       }
     }
   }
@@ -1317,6 +1353,7 @@ class WorkflowService {
       job.executor = workerConfig.name
       const handle = await this.#workerRegistry.start(sync, kind, workerConfig, additionalInstruction)
       job.dshWorker = { handle, kind, sync: structuredClone(sync), oldHead, label }
+      job.nextAgentSteerAt = after(AGENT_STEER_INTERVAL_MS)
       await this.#store.changed()
       await this.#completeDshJob(job, sync)
     } catch (error) {
@@ -1390,6 +1427,7 @@ class WorkflowService {
     for (const job of jobs) {
       const worker = job.dshWorker
       if (worker === undefined) continue
+      job.nextAgentSteerAt ??= new Date(Date.parse(job.startedAt ?? worker.handle.startedAt) + AGENT_STEER_INTERVAL_MS).toISOString()
       const sync = this.#store.state.syncs.find(candidate => candidate.id === job.syncId) ?? structuredClone(worker.sync)
       if (this.#syncLocks.has(sync.id)) {
         job.status = 'failed'
@@ -1506,6 +1544,7 @@ class WorkflowService {
   async #pauseDshJob(jobId: string | undefined): Promise<void> {
     const job = this.#activeDshJob(jobId)
     await this.#workerRegistry.cancel(job.dshWorker!.handle)
+    job.nextAgentSteerAt = undefined
     await this.#appendDshOutput(job, '系统：已请求暂停任务')
     this.#store.event('warning', 'dsh-control', `已请求暂停：${job.summary}`)
     await this.#store.changed()
@@ -1515,6 +1554,7 @@ class WorkflowService {
     if (prompt === undefined || prompt.trim() === '') throw new Error('请输入要发送给 dsh 的内容')
     const job = this.#activeDshJob(jobId)
     await this.#workerRegistry.steer(job.dshWorker!.handle, prompt.trim())
+    job.nextAgentSteerAt ??= after(AGENT_STEER_INTERVAL_MS)
     await this.#appendDshOutput(job, `用户指令：${prompt.trim()}`)
     this.#store.event('info', 'dsh-control', `已 steer：${job.summary}`)
     await this.#store.changed()
@@ -1740,6 +1780,7 @@ class WorkflowService {
   #finishJob(job: JobRecord, status: 'succeeded' | 'blocked' | 'failed' | 'cancelled', summary: string): void {
     job.status = status
     job.finishedAt = now()
+    job.nextAgentSteerAt = undefined
     job.summary = summary
     this.#jobControllers.delete(job.id)
   }

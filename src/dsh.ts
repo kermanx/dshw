@@ -9,7 +9,7 @@ import { dshWorkerLaunchEnvironmentXml } from './dsh-launch-env.ts'
 import { formatProgressEvent } from './dsh-progress-plugin.ts'
 import { ensureHarnessRuntime, missingTypertRuntimeArtifacts } from './dsh-runtime.ts'
 export { missingTypertRuntimeArtifacts } from './dsh-runtime.ts'
-import type { DshRunRecord, DshWorkerHandle, DshWorkerProgress, SyncRecord, WorkerExecutionConfig } from './types.ts'
+import type { DshRunRecord, DshWorkerHandle, DshWorkerProgress, DshWorkerState, SyncRecord, WorkerExecutionConfig } from './types.ts'
 import { escapeXml, id, now, readJson, run, runOrThrow, writeJsonAtomic } from './util.ts'
 
 export interface DshWorkerRequest {
@@ -39,6 +39,27 @@ export function appendAdditionalInstruction(prompt: string, additionalInstructio
   const instruction = additionalInstruction?.trim()
   if (instruction === undefined || instruction === '') return prompt
   return `${prompt.trim()}\n\n## 用户额外指令\n\n${instruction}`
+}
+
+export function renderPeriodicAgentReminder(worker: DshWorkerState): string {
+  const objective = worker.kind === 'merge-base'
+    ? `把 origin/${worker.sync.baseRefName} 合并到 PR #${worker.sync.prNumber} 的当前分支并解决冲突`
+    : worker.kind === 'fix-ci'
+      ? `修复 PR #${worker.sync.prNumber} 启动本任务时已经失败的 CI checks`
+      : `处理 PR #${worker.sync.prNumber} 启动本任务时尚未解决的 review threads`
+  return [
+    '# 20 分钟任务边界提醒',
+    '',
+    '这不是新任务。请继续执行最初的任务 prompt，并重新收敛到它规定的范围。',
+    '',
+    `当前唯一目标：${objective}。`,
+    '',
+    '完成必要修改和最小验证后，立即提交并 push 当前分支，然后输出最初 prompt 要求的最终结果并结束本次 agent 任务。',
+    '',
+    '不得等待、轮询、重跑或尝试触发 push 后的新 CI；新 CI 的等待、状态检查和后续任务派发全部由 dshw 负责。',
+    '',
+    '如果确认无法安全完成，请按最初 prompt 的 blocked 格式立即结束，不要扩展为其他任务。',
+  ].join('\n')
 }
 
 export function parseDshOutcome(output: string): { blocked: false } | { blocked: true, reason: string } {

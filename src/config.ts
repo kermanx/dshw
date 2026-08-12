@@ -39,6 +39,7 @@ export const PR_REVIEW_INTERVAL_MS = 5 * 60 * 1000
 export const DSHW_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000
 export const WORKSPACE_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 export const CI_WATCH_INTERVAL_MS = 30 * 1000
+export const AGENT_STEER_INTERVAL_MS = 20 * 60 * 1000
 export const BASE_DEBOUNCE_MS = 10 * 60 * 1000
 export const BASE_DEBOUNCE_MAX_MS = 30 * 60 * 1000
 
