@@ -24,7 +24,7 @@ export interface DshWorkerRequest {
   sync: SyncRecord
   kind: DshRunRecord['kind']
   prompt: string
-  worker?: { provider?: string; model?: string }
+  worker?: { provider?: string; model?: string; reasoningEffort?: string }
 }
 
 export function renderPromptTemplate(template: string, values: Readonly<Record<string, string>>): string {
@@ -33,6 +33,12 @@ export function renderPromptTemplate(template: string, values: Readonly<Record<s
     if (value === undefined) throw new Error(`dsh prompt 使用了未知占位符：${key}`)
     return value
   }).trim()
+}
+
+export function appendAdditionalInstruction(prompt: string, additionalInstruction?: string): string {
+  const instruction = additionalInstruction?.trim()
+  if (instruction === undefined || instruction === '') return prompt
+  return `${prompt.trim()}\n\n## 用户额外指令\n\n${instruction}`
 }
 
 export function parseDshOutcome(output: string): { blocked: false } | { blocked: true, reason: string } {
@@ -64,18 +70,18 @@ export function dshWorkerLaunchSpec(
   }
 }
 
-async function loadPrompt(sync: SyncRecord, kind: DshRunRecord['kind']): Promise<string> {
+export async function loadWorkerPrompt(sync: SyncRecord, kind: DshRunRecord['kind'], additionalInstruction?: string): Promise<string> {
   const filename = kind === 'merge-base' ? 'merge-base.md' : kind === 'fix-ci' ? 'fix-ci.md' : 'resolve-comments.md'
   const template = await readFile(join(DSHW_ROOT, 'prompts', filename), 'utf8')
-  return renderPromptTemplate(template, {
+  return appendAdditionalInstruction(renderPromptTemplate(template, {
     clonePath: sync.clonePath,
     prNumber: String(sync.prNumber),
     branch: sync.branch,
     baseRefName: sync.baseRefName,
-  })
+  }), additionalInstruction)
 }
 
-export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'], worker: WorkerExecutionConfig): Promise<DshWorkerHandle> {
+export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'], worker: WorkerExecutionConfig, additionalInstruction?: string): Promise<DshWorkerHandle> {
   if (worker.type !== 'dsh') throw new Error(`${worker.type} worker 尚未实现`)
   const runId = id('dsh')
   const directory = join(WORKER_ROOT, runId)
@@ -96,7 +102,7 @@ export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'
   await mkdir(controlRoot, { recursive: true, mode: 0o700 })
   await chmod(controlRoot, 0o700)
   const runtime = await ensureHarnessRuntime()
-  const prompt = await loadPrompt(sync, kind)
+  const prompt = await loadWorkerPrompt(sync, kind, additionalInstruction)
   const pluginUrl = pathToFileURL(fileURLToPath(new URL('./dsh-session-plugin.ts', import.meta.url))).href
   await writeFile(patchPath, [
     '- id: headless-startup',
@@ -122,7 +128,7 @@ export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'
     sync: structuredClone(sync),
     kind,
     prompt,
-    worker: { provider: worker.provider, model: worker.model },
+    worker: { provider: worker.provider, model: worker.model, reasoningEffort: worker.reasoningEffort },
   }
   await writeJsonAtomic(requestPath, request)
   const label = `${SERVICE_LABEL}.worker.${runId}`
@@ -176,6 +182,7 @@ export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'
     controlSocketPath,
     eventLogPath,
     runtimeCommit: runtime.commit,
+    workerType: 'dsh',
     progressProtocol: 'session-control-v1',
     startedAt: now(),
   }
@@ -193,7 +200,9 @@ export async function inspectDshWorker(handle: DshWorkerHandle): Promise<DshWork
   const result = await requestWorker(handle, 'session.status', {}) as {
     phase?: DshWorkerProgress['phase']
   }
-  const lines = await readWorkerEventTail(handle.eventLogPath)
+  const lines = handle.workerType === 'codex'
+    ? await readWorkerOutputTail(handle.runId)
+    : await readWorkerEventTail(handle.eventLogPath)
   const phase = ['starting', 'running', 'cancelling', 'paused', 'finishing'].includes(result.phase ?? '')
     ? result.phase!
     : 'running'
@@ -233,6 +242,16 @@ async function readWorkerEventTail(path: string | undefined): Promise<string[]> 
   }
 }
 
+async function readWorkerOutputTail(runId: string): Promise<string[]> {
+  try {
+    const source = await readFile(join(LOG_ROOT, `${runId}.log`), 'utf8')
+    return source.slice(-256 * 1024).split('\n').filter(Boolean)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+}
+
 export async function terminateDshWorker(handle: DshWorkerHandle): Promise<void> {
   try {
     await requestWorker(handle, 'runtime.terminate', {}, 1_500)
@@ -261,7 +280,7 @@ async function requestWorker(
       else reject(error)
     }
     socket.setEncoding('utf8')
-    socket.once('error', error => finish(new Error(`无法连接 dsh worker：${error.message}`)))
+    socket.once('error', error => finish(new Error(`无法连接 Worker：${error.message}`)))
     socket.once('connect', () => {
       socket.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
     })
@@ -322,15 +341,16 @@ export async function waitForDshWorker(handle: DshWorkerHandle, signal?: AbortSi
 }
 
 async function recordInterruptedWorker(handle: DshWorkerHandle, cancelled: boolean): Promise<DshRunRecord> {
-  let output = cancelled ? '任务已被手动终止' : 'dsh worker 意外退出，未写入结果'
+  const workerName = handle.workerType ?? 'dsh'
+  let output = cancelled ? '任务已被手动终止' : `${workerName} worker 意外退出，未写入结果`
   if (!cancelled) {
     try {
       const stderr = (await readFile(join(dirname(handle.requestPath), 'worker.stderr.log'), 'utf8')).trim()
-      if (stderr !== '') output = `dsh worker 意外退出：${stderr.slice(-4_000)}`
+      if (stderr !== '') output = `${workerName} worker 意外退出：${stderr.slice(-4_000)}`
     } catch { /* the generic reason still explains that the worker died before persisting a result */ }
   }
   const request = await readJson<DshWorkerRequest>(handle.requestPath)
-  if (request === undefined) throw new Error(`dsh worker request 不存在：${handle.requestPath}`)
+  if (request === undefined) throw new Error(`Worker request 不存在：${handle.requestPath}`)
   const record: DshRunRecord = {
     id: handle.runId,
     syncId: request.sync.id,

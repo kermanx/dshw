@@ -13,7 +13,7 @@ export async function runDevPreview(): Promise<void> {
   })
   await server.listen()
   server.printUrls()
-  console.log('dshw Vue UI dev server：Vite HMR 已启用；API 只读代理到正式 daemon')
+  console.log('dshw Vue UI dev server：Vite HMR 已启用；API 代理到 daemon')
   await run('open', [`http://${HOST}:${port}`])
   await new Promise<void>(resolve => {
     process.once('SIGINT', resolve)

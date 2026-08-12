@@ -57,8 +57,9 @@ export class WorkerConfigStore {
         createdAt,
         updatedAt: createdAt,
       }]
-      await store.#saveConfigs()
     }
+    store.#normalizeDefault()
+    await store.#saveConfigs()
     return store
   }
 
@@ -69,11 +70,13 @@ export class WorkerConfigStore {
     })
   }
 
-  executionConfig(): WorkerExecutionConfig {
-    const config = this.#configs.find(candidate => candidate.enabled && candidate.isDefault)
-      ?? this.#configs.find(candidate => candidate.enabled)
-    if (config === undefined) throw new Error('没有启用的 worker 配置；请先在 Settings 中添加或启用一个配置')
-    if (config.type !== 'dsh') throw new Error(`${config.name} 的 ${config.type} worker 尚未实现；请选择 dsh 配置`)
+  executionConfig(configId?: string): WorkerExecutionConfig {
+    const config = configId === undefined
+      ? this.#configs.find(candidate => candidate.enabled)
+      : this.#configs.find(candidate => candidate.id === configId)
+    if (config === undefined) throw new Error(configId === undefined ? '没有启用的 worker 配置；请先在 Settings 中添加或启用一个配置' : '找不到指定的 worker 配置')
+    if (!config.enabled) throw new Error(`worker 配置「${config.name}」未启用`)
+    if (config.type === 'claude-code') throw new Error(`${config.name} 的 Claude Code worker 尚未实现`)
     return { ...config, apiKeyMode: config.apiKeyMode ?? 'environment', apiKey: this.#secret(config) }
   }
 
@@ -84,10 +87,11 @@ export class WorkerConfigStore {
       id: id('worker'),
       name: required(input.name, '配置名称'),
       type,
-      enabled: type === 'dsh' && input.enabled !== false,
+      enabled: type !== 'claude-code' && input.enabled !== false,
       isDefault: !this.#configs.some(candidate => candidate.enabled && candidate.isDefault),
       ...optional('provider', input.provider),
       ...optional('model', input.model),
+      ...optional('reasoningEffort', input.reasoningEffort),
       ...optionalUrl('baseUrl', input.baseUrl, 'Base URL'),
       ...optionalUrl('searchBaseUrl', input.searchBaseUrl, 'Search Base URL'),
       apiKeyMode: apiKeyMode(input.apiKeyMode ?? (input.apiKey?.trim() ? 'value' : 'environment')),
@@ -95,7 +99,7 @@ export class WorkerConfigStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     }
-    this.#applyCredential(config, input, true)
+    if (type === 'dsh') this.#applyCredential(config, input, true)
     if (config.isDefault) for (const candidate of this.#configs) candidate.isDefault = false
     this.#configs.push(config)
     this.#normalizeDefault()
@@ -111,16 +115,18 @@ export class WorkerConfigStore {
       ...config,
       name: required(input.name, '配置名称'),
       type,
-      enabled: type === 'dsh' && input.enabled !== false,
+      enabled: type !== 'claude-code' && input.enabled !== false,
       provider: clean(input.provider),
       model: clean(input.model),
+      reasoningEffort: clean(input.reasoningEffort),
       baseUrl: cleanUrl(input.baseUrl, 'Base URL'),
       searchBaseUrl: cleanUrl(input.searchBaseUrl, 'Search Base URL'),
       apiKeyMode: apiKeyMode(input.apiKeyMode ?? config.apiKeyMode ?? 'environment'),
       apiKeyEnv: cleanEnv(input.apiKeyEnv),
       updatedAt: now(),
     }
-    this.#applyCredential(updated, input, false)
+    if (type === 'dsh') this.#applyCredential(updated, input, false)
+    else delete this.#secrets[secretName(updated)]
     Object.assign(config, updated)
     this.#normalizeDefault()
     await this.#save()
@@ -131,10 +137,21 @@ export class WorkerConfigStore {
     const config = this.#configs.find(candidate => candidate.id === configId)
     if (config === undefined) throw new Error('找不到 worker 配置')
     if (!config.enabled) throw new Error('不能将未启用的 worker 设为默认')
-    for (const candidate of this.#configs) candidate.isDefault = candidate.id === config.id
+    this.#configs = [config, ...this.#configs.filter(candidate => candidate.id !== configId)]
+    this.#normalizeDefault()
     config.updatedAt = now()
     await this.#saveConfigs()
     return this.list().find(candidate => candidate.id === config.id)!
+  }
+
+  async reorder(configIds: string[]): Promise<WorkerConfig[]> {
+    if (configIds.length !== this.#configs.length || new Set(configIds).size !== configIds.length) throw new Error('worker 排序列表无效')
+    const configs = new Map(this.#configs.map(config => [config.id, config]))
+    if (configIds.some(configId => !configs.has(configId))) throw new Error('worker 排序包含未知配置')
+    this.#configs = configIds.map(configId => configs.get(configId)!)
+    this.#normalizeDefault()
+    await this.#saveConfigs()
+    return this.list()
   }
 
   async remove(configId: string): Promise<void> {
@@ -156,6 +173,7 @@ export class WorkerConfigStore {
   }
 
   #credentialSource(config: StoredWorkerConfig): CredentialSource {
+    if (config.type === 'codex') return 'local'
     if (config.apiKeyMode === 'value') return this.#secrets[secretName(config)] === undefined ? 'missing' : 'saved'
     return this.#secret(config) === undefined ? 'missing' : 'environment'
   }
@@ -183,13 +201,10 @@ export class WorkerConfigStore {
   }
 
   #normalizeDefault(): void {
-    const current = this.#configs.find(candidate => candidate.enabled && candidate.isDefault)
-    if (current !== undefined) {
-      for (const candidate of this.#configs) candidate.isDefault = candidate.id === current.id
-      return
-    }
-    const replacement = this.#configs.find(candidate => candidate.enabled)
-    for (const candidate of this.#configs) candidate.isDefault = candidate.id === replacement?.id
+    const enabled = this.#configs.filter(candidate => candidate.enabled)
+    const disabled = this.#configs.filter(candidate => !candidate.enabled)
+    this.#configs = [...enabled, ...disabled]
+    for (const [index, candidate] of this.#configs.entries()) candidate.isDefault = index === 0 && candidate.enabled
   }
 
   async #saveConfigs(): Promise<void> {
@@ -206,6 +221,7 @@ function validateStored(value: StoredWorkerConfig): StoredWorkerConfig {
     isDefault: value.isDefault === true,
     provider: clean(value.provider),
     model: clean(value.model),
+    reasoningEffort: clean(value.reasoningEffort),
     baseUrl: cleanUrl(value.baseUrl, 'Base URL'),
     searchBaseUrl: cleanUrl(value.searchBaseUrl, 'Search Base URL'),
     apiKeyMode: value.apiKeyMode === undefined ? undefined : apiKeyMode(value.apiKeyMode),
@@ -260,7 +276,7 @@ function cleanUrl(value: string | undefined, label: string): string | undefined 
   return result
 }
 
-function optional<K extends 'provider' | 'model'>(key: K, value: string | undefined): Partial<Record<K, string>> {
+function optional<K extends 'provider' | 'model' | 'reasoningEffort'>(key: K, value: string | undefined): Partial<Record<K, string>> {
   const result = clean(value)
   return result === undefined ? {} : { [key]: result } as Partial<Record<K, string>>
 }

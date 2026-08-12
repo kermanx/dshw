@@ -5,8 +5,9 @@ import { createServer, type Socket } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { formatProgressEvent } from './dsh-progress-plugin.ts'
-import type { DshRunRecord, DshWorkerProgress } from './types.ts'
+import type { DshRunRecord } from './types.ts'
 import { now, readJson, writeJsonAtomic } from './util.ts'
+import { createWorkerProgressReporter } from './worker-progress.ts'
 
 export const name = 'dshw-session-worker'
 export const inject = ['agentDefaultModel', 'agents', 'sessions']
@@ -25,7 +26,7 @@ interface WorkerRequest {
   sync: { id: string; clonePath: string }
   kind: DshRunRecord['kind']
   prompt: string
-  worker?: { provider?: string; model?: string }
+  worker?: { provider?: string; model?: string; reasoningEffort?: string }
 }
 
 interface RuntimeModules {
@@ -102,7 +103,7 @@ async function startSessionWorker(ctx: ContextLike, config: Config): Promise<() 
   await rm(request.controlSocketPath, { force: true })
   const eventStream = createWriteStream(request.eventLogPath, { flags: 'a' })
   const outputStream = createWriteStream(request.outputLogPath, { flags: 'a' })
-  const progress = createProgressReporter(request.runId, request.progressUrl)
+  const progress = createWorkerProgressReporter(request.runId, request.progressUrl)
   const transports = new Set<InstanceType<RuntimeModules['JsonRpcLineTransport']>>()
   const sockets = new Set<Socket>()
   let phase: WorkerPhase = 'starting'
@@ -116,11 +117,12 @@ async function startSessionWorker(ctx: ContextLike, config: Config): Promise<() 
   const selection = {
     provider: request.worker?.provider ?? fallbackSelection.provider,
     model: request.worker?.model ?? fallbackSelection.model,
+    ...(request.worker?.reasoningEffort === undefined ? {} : { reasoningEffort: request.worker.reasoningEffort }),
   }
   const handle = await ctx.agents.create({
     sessionId: modules.SessionId(`dshw-${request.runId}`),
     meta: { cwd: request.sync.clonePath },
-    agentOptions: { provider: selection.provider, model: selection.model },
+    agentOptions: selection,
     setup: (agentCtx: unknown) => {
       modules.installModelSelection(agentCtx, { current: selection, assembled: undefined })
     },
@@ -384,57 +386,5 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message:
     ])
   } finally {
     if (timer !== undefined) clearTimeout(timer)
-  }
-}
-
-function createProgressReporter(runId: string, progressUrl: string): {
-  startedAt: string
-  phase(phase: DshWorkerProgress['phase'], message: string): void
-  line(text: string): void
-  flush(): Promise<void>
-} {
-  const startedAt = now()
-  let phase: DshWorkerProgress['phase'] = 'starting'
-  let message = 'worker 正在启动'
-  const queue: Array<Record<string, string>> = []
-  let draining: Promise<void> | undefined
-  const drain = async (): Promise<void> => {
-    while (queue.length > 0) {
-      const payload = queue.shift()
-      if (payload === undefined) continue
-      try {
-        await fetch(progressUrl, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(750),
-        })
-      } catch {
-        queue.length = 0
-      }
-    }
-  }
-  const startDrain = (): void => {
-    if (draining !== undefined) return
-    draining = drain().finally(() => {
-      draining = undefined
-      if (queue.length > 0) startDrain()
-    })
-  }
-  const send = (line?: string): void => {
-    queue.push({ runId, phase, message, startedAt, ...(line === undefined ? {} : { line }) })
-    startDrain()
-  }
-  const heartbeat = setInterval(send, 5_000)
-  heartbeat.unref()
-  return {
-    startedAt,
-    phase(next, text) { phase = next; message = text; send() },
-    line(text) { message = text.split('\n', 1)[0] ?? text; send(text) },
-    async flush() {
-      clearInterval(heartbeat)
-      send()
-      while (draining !== undefined) await draining
-    },
   }
 }

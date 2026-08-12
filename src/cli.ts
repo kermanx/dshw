@@ -250,7 +250,7 @@ Commands:
   ui                 在浏览器打开状态页
   code [arg]         用 VS Code 打开当前分支对应的 worktree
   doctor             检查本机依赖、登录和服务状态
-  dev                启动只读 Vite 开发预览（端口 7850）
+  dev                启动 Vite 开发预览（端口 7850）
   help               显示帮助
 
 运行数据保存在 ${DSHW_ROOT}/.dshw；服务只注册到当前用户的 launchd。
