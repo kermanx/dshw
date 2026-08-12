@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { reviewLabel, reviewTone } from '../format.ts'
 import type { PrDashboardRecord, PullRequestReview } from '../types.ts'
 import StatusIcon from './StatusIcon.vue'
@@ -25,6 +25,7 @@ const summary = computed(() => {
   if (reviewed.value.length > 0) parts.push(`${reviewed.value.length} 人已 review`)
   return parts.join(' · ') || '尚未 request review'
 })
+let closeTimer: number | undefined
 
 function avatar(login: string): string { return `https://github.com/${encodeURIComponent(login)}.png?size=64` }
 function reviewState(review: PullRequestReview): string {
@@ -37,7 +38,15 @@ function reviewStateTone(review: PullRequestReview): 'ok' | 'warn' | 'bad' | 'ne
   if (progress !== undefined && progress.total > 0) return progress.resolved === progress.total ? 'ok' : 'warn'
   return review.state === 'APPROVED' ? 'ok' : review.state === 'CHANGES_REQUESTED' ? 'bad' : 'neutral'
 }
-async function toggle(): Promise<void> { open.value = !open.value; if (open.value) await nextTick(updatePosition) }
+async function show(): Promise<void> {
+  if (closeTimer !== undefined) window.clearTimeout(closeTimer)
+  open.value = true
+  await nextTick(updatePosition)
+}
+function hideSoon(): void {
+  if (closeTimer !== undefined) window.clearTimeout(closeTimer)
+  closeTimer = window.setTimeout(() => { open.value = false }, 80)
+}
 function updatePosition(): void {
   const rect = trigger.value?.getBoundingClientRect()
   if (rect === undefined) return
@@ -47,27 +56,22 @@ function updatePosition(): void {
     left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
   }
 }
-function closeOutside(event: PointerEvent): void {
-  if (!open.value) return
-  const target = event.target
-  if (target instanceof Element && (trigger.value?.contains(target) || target.closest('[data-review-popover]'))) return
-  open.value = false
-}
-onMounted(() => {
-  window.addEventListener('pointerdown', closeOutside, true)
-  window.addEventListener('resize', updatePosition)
-  window.addEventListener('scroll', updatePosition, true)
-})
 onBeforeUnmount(() => {
-  window.removeEventListener('pointerdown', closeOutside, true)
-  window.removeEventListener('resize', updatePosition)
-  window.removeEventListener('scroll', updatePosition, true)
+  if (closeTimer !== undefined) window.clearTimeout(closeTimer)
 })
 </script>
 
 <template>
   <div class="h-42px flex flex-col justify-center gap-2px min-w-0">
-    <button ref="trigger" class="inline-flex items-center gap-6px w-fit max-w-full cursor-pointer text-secondary text-12.5px hover:underline hover:text-fg" @click="toggle">
+    <button
+      ref="trigger"
+      type="button"
+      class="inline-flex items-center gap-6px w-fit max-w-full cursor-pointer text-secondary text-12.5px hover:underline hover:text-fg"
+      @mouseenter="show"
+      @mouseleave="hideSoon"
+      @focus="show"
+      @blur="hideSoon"
+    >
       <StatusIcon :tone="reviewTone(pr.reviewDecision)" />
       <span class="whitespace-nowrap">{{ reviewLabel(pr.reviewDecision) }}</span>
       <span v-if="people.length" class="inline-flex flex-none items-center pl-3px" aria-hidden="true">
@@ -92,6 +96,10 @@ onBeforeUnmount(() => {
       data-review-popover
       class="fixed z-40 w-[min(380px,calc(100vw-16px))] max-h-340px overflow-auto p-5px b b-solid b-line rounded bg-surface shadow-pop"
       :style="{ top: `${position.top}px`, left: `${position.left}px` }"
+      @mouseenter="show"
+      @mouseleave="hideSoon"
+      @focusin="show"
+      @focusout="hideSoon"
     >
       <div v-if="requested.length === 0 && reviewed.length === 0" class="px-8px py-10px text-muted text-12px">尚未 request review</div>
 

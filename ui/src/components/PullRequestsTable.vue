@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { mergeLabel, mergeTone } from '../format.ts'
+import { findBusyJob, findWorkingAgent } from '../pr-job-state.ts'
 import type { JobRecord, PrDashboardRecord, PrDashboardStatus } from '../types.ts'
 import CiChecks from './CiChecks.vue'
 import ConflictDetails from './ConflictDetails.vue'
@@ -17,20 +18,15 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   action: [cloneName: string, action: 'merge-base' | 'merge-base-direct' | 'fix-ci' | 'resolve-comments']
+  chooseWorker: [cloneName: string, action: 'merge-base' | 'fix-ci' | 'resolve-comments']
   openJob: [jobId: string]
-  openActivity: []
+  openActivity: [eventId?: string]
   refresh: []
   toggleSync: [cloneName: string, enabled: boolean]
 }>()
 
-const busyByPr = computed(() => new Map(props.prs.map(pr => [pr.number, findBusyJob(pr)])))
-
-function findBusyJob(pr: PrDashboardRecord): JobRecord | undefined {
-  const running = props.jobs.filter(job => job.status === 'running' && (
-    job.syncId === pr.syncId || job.summary.startsWith(`${pr.cloneName} / PR #${pr.number}`)
-  ))
-  return running.find(job => job.type === 'fix-ci' || job.type === 'merge-base') ?? running[0]
-}
+const busyByPr = computed(() => new Map(props.prs.map(pr => [pr, findBusyJob(pr, props.jobs)])))
+const workingAgentByPr = computed(() => new Map(props.prs.map(pr => [pr, findWorkingAgent(pr, props.jobs)])))
 
 function busyLabel(job?: JobRecord): string {
   return job?.type === 'fix-ci' ? '修复 CI' : job?.type === 'merge-base' ? '合并 base' : job?.type === 'resolve-comments' ? '解决评论' : '检查状态'
@@ -67,6 +63,16 @@ function mergeAction(pr: PrDashboardRecord): 'merge-base' | 'merge-base-direct' 
   return undefined
 }
 
+function chooseWorker(event: MouseEvent, pr: PrDashboardRecord, action: 'merge-base' | 'merge-base-direct' | 'fix-ci' | 'resolve-comments' | undefined): void {
+  if (action === undefined || action === 'merge-base-direct') return
+  event.preventDefault()
+  if (workingAgentByPr.value.get(pr) !== undefined) return
+  emit('chooseWorker', pr.cloneName, action)
+}
+
+const workerActionTitle = '单击使用默认 Worker · 右键选择 Worker'
+const agentBusyTitle = '该 PR 已有 Agent 正在工作'
+
 /** 最近一次自动/手动合并任务失败（且当前可重试）时返回该任务，用于在 Merge 列提示。 */
 function lastFailedMerge(pr: PrDashboardRecord): JobRecord | undefined {
   const failed = props.jobs.filter(job => (
@@ -90,7 +96,7 @@ function autoMergeMinutes(pr: PrDashboardRecord): number {
 
 const thClass = 'h-30px px-12px b-b b-b-solid b-b-line bg-surface text-secondary text-11px font-500 uppercase tracking-[0.05em] text-left whitespace-nowrap sticky top-0 z-1'
 const tdClass = 'h-54px px-12px py-5px align-middle'
-const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5px cursor-pointer whitespace-nowrap hover:underline disabled:opacity-45 disabled:pointer-events-none'
+const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5px cursor-pointer whitespace-nowrap hover:underline disabled:text-muted disabled:opacity-60 disabled:pointer-events-none'
 </script>
 
 <template>
@@ -107,7 +113,7 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
     <span class="inline-flex items-center gap-8px">
       <button :class="actionClass" :disabled="pending.has('prs-refresh')" @click="emit('refresh')">重试</button>
       <span class="text-faint">·</span>
-      <button :class="actionClass" @click="emit('openActivity')">查看 Activity</button>
+      <button :class="actionClass" @click="emit('openActivity', status.errorEventId)">查看 Activity</button>
     </span>
   </div>
   <div v-else-if="prs.length === 0" class="empty-state">
@@ -119,7 +125,7 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
       <Icon class="flex-none text-warn" name="alert" :size="13" />
       <span class="flex-none text-secondary">PR 状态刷新失败，正在显示上次可用数据</span>
       <span class="min-w-0 truncate text-muted" :title="status.error">{{ status.error }}</span>
-      <button class="ml-auto flex-none text-link cursor-pointer hover:underline" @click="emit('openActivity')">详细原因</button>
+      <button class="ml-auto flex-none text-link cursor-pointer hover:underline" @click="emit('openActivity', status.errorEventId)">详细原因</button>
     </div>
     <div v-else-if="status.state === 'loading'" class="flex items-center gap-7px px-12px min-h-32px b-b b-b-solid b-b-line bg-alt text-12px">
       <StatusDot tone="accent" pulse />
@@ -137,7 +143,12 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
         </tr>
       </thead>
       <tbody class="[&>tr]:transition-colors [&>tr]:duration-100 [&>tr:hover]:bg-alt">
-        <tr v-for="pr in prs" :key="`${pr.repoSlug}-${pr.number}-${pr.cloneName}`" class="group">
+        <tr
+          v-for="pr in prs"
+          :key="`${pr.repoSlug}-${pr.number}-${pr.cloneName}`"
+          class="group"
+          :class="{ 'opacity-70 saturate-50': pr.isDraft }"
+        >
           <td :class="tdClass">
             <div class="cell-main">
               <a class="flex items-center gap-6px min-w-0 truncate" :href="pr.url" :title="pr.title" target="_blank">
@@ -158,7 +169,7 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
           <td :class="tdClass">
             <CiChecks :pr="pr">
               <template #default="{ note }">
-                <button v-if="busyByPr.get(pr.number)?.type === 'fix-ci'" :class="actionClass" @click="emit('openJob', busyByPr.get(pr.number)!.id)">
+                <button v-if="busyByPr.get(pr)?.type === 'fix-ci'" :class="actionClass" @click="emit('openJob', busyByPr.get(pr)!.id)">
                   <StatusDot tone="accent" pulse />
                   修复中 · 查看
                 </button>
@@ -168,8 +179,10 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
                     <span v-if="note" class="flex-none text-faint text-11.5px">·</span>
                     <button
                       :class="actionClass"
-                      :disabled="pending.has(`fix-ci:${pr.cloneName}`)"
+                      :disabled="workingAgentByPr.get(pr) !== undefined || pending.has(`fix-ci:${pr.cloneName}`)"
+                      :title="workingAgentByPr.get(pr) !== undefined ? agentBusyTitle : workerActionTitle"
                       @click="emit('action', pr.cloneName, 'fix-ci')"
+                      @contextmenu="chooseWorker($event, pr, 'fix-ci')"
                     >修 CI</button>
                   </template>
                 </div>
@@ -179,7 +192,7 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
           <td :class="tdClass">
             <ReviewDetails :pr="pr">
               <template #default="{ summary }">
-                <button v-if="busyByPr.get(pr.number)?.type === 'resolve-comments'" :class="actionClass" @click="emit('openJob', busyByPr.get(pr.number)!.id)">
+                <button v-if="busyByPr.get(pr)?.type === 'resolve-comments'" :class="actionClass" @click="emit('openJob', busyByPr.get(pr)!.id)">
                   <StatusDot tone="accent" pulse />
                   解决评论中 · 查看
                 </button>
@@ -189,8 +202,10 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
                     <span class="flex-none text-faint text-11.5px">·</span>
                     <button
                       :class="actionClass"
-                      :disabled="pending.has(`resolve-comments:${pr.cloneName}`)"
+                      :disabled="workingAgentByPr.get(pr) !== undefined || pending.has(`resolve-comments:${pr.cloneName}`)"
+                      :title="workingAgentByPr.get(pr) !== undefined ? agentBusyTitle : workerActionTitle"
                       @click="emit('action', pr.cloneName, 'resolve-comments')"
+                      @contextmenu="chooseWorker($event, pr, 'resolve-comments')"
                     >解决 {{ pr.unresolvedComments }} 条评论</button>
                   </template>
                 </div>
@@ -204,28 +219,36 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
                 <StatusIcon :tone="mergeTone(pr.mergeable)" />
                 {{ mergeLabel(pr.mergeable) }}
               </span>
-              <button v-if="busyByPr.get(pr.number) && busyByPr.get(pr.number)!.type !== 'fix-ci' && busyByPr.get(pr.number)!.type !== 'resolve-comments'" :class="actionClass" @click="emit('openJob', busyByPr.get(pr.number)!.id)">
+              <button v-if="busyByPr.get(pr) && busyByPr.get(pr)!.type !== 'fix-ci' && busyByPr.get(pr)!.type !== 'resolve-comments'" :class="actionClass" @click="emit('openJob', busyByPr.get(pr)!.id)">
                 <StatusDot tone="accent" pulse />
-                {{ busyLabel(busyByPr.get(pr.number)) }} · 查看
+                {{ busyLabel(busyByPr.get(pr)) }} · 查看
               </button>
               <div v-else-if="autoMergeAt(pr) !== undefined" class="flex items-center gap-5px min-w-0 text-11.5px">
                 <span class="flex-none text-muted whitespace-nowrap">约 {{ autoMergeMinutes(pr) }} 分钟</span>
                 <span class="flex-none text-faint">·</span>
                 <button
                   :class="actionClass"
-                  :disabled="pending.has(`merge-base:${pr.cloneName}`)"
+                  :disabled="workingAgentByPr.get(pr) !== undefined || pending.has(`merge-base:${pr.cloneName}`)"
+                  :title="workingAgentByPr.get(pr) !== undefined ? agentBusyTitle : workerActionTitle"
                   @click="emit('action', pr.cloneName, 'merge-base')"
+                  @contextmenu="chooseWorker($event, pr, 'merge-base')"
                 >立即合并</button>
               </div>
               <div v-else-if="mergeAction(pr) !== undefined" class="flex items-center gap-5px min-w-0">
-                <template v-if="lastFailedMerge(pr) !== undefined">
+                <template v-if="pr.autoMergeSkippedReason !== undefined">
+                  <span class="flex-none text-muted text-11.5px whitespace-nowrap" :title="pr.autoMergeSkippedReason">{{ pr.autoMergeSkippedReason }}</span>
+                  <span class="flex-none text-faint text-11.5px">·</span>
+                </template>
+                <template v-else-if="lastFailedMerge(pr) !== undefined">
                   <span class="flex-none text-warn text-11.5px whitespace-nowrap" :title="lastFailedMerge(pr)!.summary">上次合并失败</span>
                   <span class="flex-none text-faint text-11.5px">·</span>
                 </template>
                 <button
                   :class="actionClass"
-                  :disabled="pending.has(`merge-base:${pr.cloneName}`) || pending.has(`merge-base-direct:${pr.cloneName}`)"
+                  :disabled="(mergeAction(pr) === 'merge-base' && workingAgentByPr.get(pr) !== undefined) || pending.has(`merge-base:${pr.cloneName}`) || pending.has(`merge-base-direct:${pr.cloneName}`)"
+                  :title="mergeAction(pr) === 'merge-base' ? (workingAgentByPr.get(pr) !== undefined ? agentBusyTitle : workerActionTitle) : undefined"
                   @click="emit('action', pr.cloneName, mergeAction(pr)!)"
+                  @contextmenu="chooseWorker($event, pr, mergeAction(pr))"
                 >合并 {{ pr.baseRefName }}</button>
               </div>
             </div>

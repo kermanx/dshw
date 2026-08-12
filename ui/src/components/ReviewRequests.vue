@@ -10,7 +10,7 @@ const props = defineProps<{
   status: PrDashboardStatus
   pending: ReadonlySet<string>
 }>()
-const emit = defineEmits<{ refresh: [], openLogs: [] }>()
+const emit = defineEmits<{ refresh: [], openLogs: [eventId?: string] }>()
 const ordered = computed(() => [...props.requests].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)))
 
 const thClass = 'h-30px px-12px b-b b-b-solid b-b-line bg-surface text-secondary text-11px font-500 uppercase tracking-[0.05em] text-left whitespace-nowrap sticky top-0 z-1'
@@ -32,7 +32,7 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
     <span class="inline-flex items-center gap-8px">
       <button :class="actionClass" :disabled="pending.has('prs-refresh')" @click="emit('refresh')">重试</button>
       <span class="text-faint">·</span>
-      <button :class="actionClass" @click="emit('openLogs')">查看日志</button>
+      <button :class="actionClass" @click="emit('openLogs', status.errorEventId)">查看日志</button>
     </span>
   </div>
   <div v-else-if="requests.length === 0" class="empty-state">
@@ -44,7 +44,7 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
       <Icon class="flex-none text-warn" name="alert" :size="13" />
       <span class="flex-none text-secondary">Reviews 刷新失败，正在显示上次可用数据</span>
       <span class="min-w-0 truncate text-muted" :title="status.error">{{ status.error }}</span>
-      <button class="ml-auto flex-none text-link cursor-pointer hover:underline" @click="emit('openLogs')">详细原因</button>
+      <button class="ml-auto flex-none text-link cursor-pointer hover:underline" @click="emit('openLogs', status.errorEventId)">详细原因</button>
     </div>
     <div v-else-if="status.state === 'loading'" class="flex items-center gap-7px px-12px min-h-32px b-b b-b-solid b-b-line bg-alt text-12px">
       <StatusDot tone="accent" pulse />

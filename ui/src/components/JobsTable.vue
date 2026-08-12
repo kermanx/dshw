@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { jobLabel, jobTone, kindLabel, shortTime } from '../format.ts'
+import { jobExecutor, jobLabel, jobTone, kindLabel, shortTime } from '../format.ts'
 import type { JobPage, JobRecord, SyncRecord } from '../types.ts'
 import StatusDot from './StatusDot.vue'
 
@@ -101,11 +101,12 @@ const tdClass = 'h-32px px-12px align-middle'
     <button v-if="error" class="text-link cursor-pointer hover:underline" @click="loadInitial">重试</button>
   </div>
   <div v-else ref="scroller" class="h-full overflow-auto" @scroll="onScroll">
-    <table class="w-full min-w-760px border-collapse table-fixed">
+    <table class="w-full min-w-880px border-collapse table-fixed">
       <thead>
         <tr>
           <th class="w-110px" :class="thClass">状态</th>
           <th class="w-100px" :class="thClass">目标</th>
+          <th class="w-120px" :class="thClass">执行者</th>
           <th :class="thClass">任务</th>
           <th class="w-100px" :class="thClass">时间</th>
         </tr>
@@ -127,6 +128,9 @@ const tdClass = 'h-32px px-12px align-middle'
           </td>
           <td :class="tdClass">
             <span class="block truncate font-mono text-11.5px text-secondary" :title="jobTargetTitle(job)">{{ jobTarget(job) }}</span>
+          </td>
+          <td :class="tdClass">
+            <span class="block truncate text-11.5px text-secondary" :title="jobExecutor(job)">{{ jobExecutor(job) }}</span>
           </td>
           <td :class="tdClass">
             <div class="flex items-center gap-8px min-w-0">

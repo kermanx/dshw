@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import { shortTime } from '../format.ts'
 import type { EventRecord, LogPage } from '../types.ts'
+import LogDetailsDialog from './LogDetailsDialog.vue'
 import StatusDot from './StatusDot.vue'
 
-const props = defineProps<{ recent: EventRecord[] }>()
+const props = defineProps<{ recent: EventRecord[], focusId?: string }>()
 const records = ref<EventRecord[]>([])
 const cursor = ref<string>()
 const hasMore = ref(true)
 const loading = ref(false)
 const error = ref('')
 const scroller = ref<HTMLElement>()
+const focusedId = ref<string>()
+const selectedRecord = ref<EventRecord>()
 
 function levelTone(level: EventRecord['level']): 'bad' | 'warn' | 'neutral' {
   return level === 'error' ? 'bad' : level === 'warning' ? 'warn' : 'neutral'
@@ -66,6 +69,30 @@ async function loadMore(): Promise<void> {
   }
 }
 
+async function revealRecord(id: string): Promise<void> {
+  if (loading.value) return
+  error.value = ''
+  let record = records.value.find(candidate => candidate.id === id)
+  while (record === undefined && hasMore.value && error.value === '') {
+    const previousCursor = cursor.value
+    await loadMore()
+    record = records.value.find(candidate => candidate.id === id)
+    if (record === undefined && cursor.value === previousCursor) break
+  }
+  if (record === undefined) {
+    error.value = '找不到对应的日志条目'
+    return
+  }
+  focusedId.value = id
+  await nextTick()
+  const row = [...(scroller.value?.querySelectorAll<HTMLElement>('[data-log-id]') ?? [])]
+    .find(element => element.dataset.logId === id)
+  const element = scroller.value
+  if (row !== undefined && element !== undefined) {
+    element.scrollTop = Math.max(0, row.offsetTop - element.clientHeight / 2 + row.offsetHeight / 2)
+  }
+}
+
 async function loadInitial(): Promise<void> {
   loading.value = true
   error.value = ''
@@ -87,8 +114,14 @@ function onScroll(): void {
 }
 
 watch(() => props.recent, mergeLive)
+watch(() => props.focusId, id => {
+  if (id !== undefined) void revealRecord(id)
+})
 
-onMounted(() => void loadInitial())
+onMounted(async () => {
+  await loadInitial()
+  if (props.focusId !== undefined) await revealRecord(props.focusId)
+})
 
 const thClass = 'h-30px px-12px b-b b-b-solid b-b-line bg-surface text-secondary text-11px font-500 uppercase tracking-[0.05em] text-left whitespace-nowrap sticky top-0 z-1'
 const tdClass = 'h-32px px-12px align-middle'
@@ -110,7 +143,19 @@ const tdClass = 'h-32px px-12px align-middle'
         </tr>
       </thead>
       <tbody>
-        <tr v-for="record in records" :key="record.id" class="transition-colors duration-100 hover:bg-alt">
+        <tr
+          v-for="record in records"
+          :key="record.id"
+          :data-log-id="record.id"
+          tabindex="0"
+          role="button"
+          :aria-label="`查看 ${levelLabel(record.level)}日志详情：${record.message}`"
+          class="cursor-pointer transition-colors duration-100 hover:bg-alt focus-visible:outline focus-visible:outline-1 focus-visible:outline-focus focus-visible:outline-offset-[-1px]"
+          :class="{ 'log-row-focused': record.id === focusedId }"
+          @click="selectedRecord = record"
+          @keydown.enter.prevent="selectedRecord = record"
+          @keydown.space.prevent="selectedRecord = record"
+        >
           <td :class="tdClass">
             <span class="inline-flex items-center gap-6px text-11.5px whitespace-nowrap" :class="`st-${levelTone(record.level)}`">
               <StatusDot :tone="levelTone(record.level)" />
@@ -130,4 +175,14 @@ const tdClass = 'h-32px px-12px align-middle'
       <button v-else class="text-link cursor-pointer hover:underline" @click="loadMore">加载更多日志</button>
     </div>
   </div>
+
+  <LogDetailsDialog v-if="selectedRecord" :record="selectedRecord" @close="selectedRecord = undefined" />
 </template>
+
+<style scoped>
+.log-row-focused { animation: log-row-focus 2.4s ease-out; }
+@keyframes log-row-focus {
+  0%, 28% { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
+  100% { background: transparent; box-shadow: inset 3px 0 transparent; }
+}
+</style>

@@ -4,6 +4,46 @@ import { CLONES_ROOT } from './config.ts'
 import type { CloneGitStatus } from './types.ts'
 import { run, runOrThrow, TaskCancelledError } from './util.ts'
 
+const TRANSIENT_GIT_NETWORK_RETRY_DELAYS_MS = [250, 500, 1_000] as const
+
+export function isTransientGitNetworkError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /\bSSL_ERROR_SYSCALL\b/iu.test(message)
+}
+
+async function waitForGitNetworkRetry(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted === true) throw new TaskCancelledError()
+  await new Promise<void>((resolvePromise, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', cancel)
+      resolvePromise()
+    }, milliseconds)
+    const cancel = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', cancel)
+      reject(new TaskCancelledError())
+    }
+    signal?.addEventListener('abort', cancel, { once: true })
+    if (signal?.aborted === true) cancel()
+  })
+}
+
+export async function retryTransientGitNetworkOperation<T>(
+  operation: () => Promise<T>,
+  options: { signal?: AbortSignal, retryDelaysMs?: readonly number[] } = {},
+): Promise<T> {
+  const retryDelaysMs = options.retryDelaysMs ?? TRANSIENT_GIT_NETWORK_RETRY_DELAYS_MS
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      const retryDelayMs = retryDelaysMs[attempt]
+      if (retryDelayMs === undefined || !isTransientGitNetworkError(error)) throw error
+      await waitForGitNetworkRetry(retryDelayMs, options.signal)
+    }
+  }
+}
+
 export async function gitRoot(cwd: string): Promise<string> {
   const result = await runOrThrow('git', ['rev-parse', '--show-toplevel'], { cwd })
   return await realpath(result.stdout.trim())
@@ -62,20 +102,26 @@ export async function commitOid(root: string, ref: string): Promise<string> {
 }
 
 export async function fetchBranch(root: string, branch: string, signal?: AbortSignal): Promise<void> {
-  await runOrThrow('git', ['fetch', '--no-tags', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
-    cwd: root,
-    timeoutMs: 5 * 60 * 1000,
-    signal,
-  })
+  await retryTransientGitNetworkOperation(
+    () => runOrThrow('git', ['fetch', '--no-tags', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
+      cwd: root,
+      timeoutMs: 5 * 60 * 1000,
+      signal,
+    }),
+    { signal },
+  )
 }
 
 /** Resolve the current remote branch tip and ensure that exact commit exists locally. */
 export async function fetchRemoteBranchTip(root: string, branch: string, signal?: AbortSignal): Promise<string> {
-  const result = await runOrThrow('git', ['ls-remote', 'origin', `refs/heads/${branch}`], {
-    cwd: root,
-    timeoutMs: 30_000,
-    signal,
-  })
+  const result = await retryTransientGitNetworkOperation(
+    () => runOrThrow('git', ['ls-remote', 'origin', `refs/heads/${branch}`], {
+      cwd: root,
+      timeoutMs: 30_000,
+      signal,
+    }),
+    { signal },
+  )
   const oid = result.stdout.trim().split(/\s+/u)[0]
   if (oid === undefined || oid === '') throw new Error(`origin 的 target branch ${branch} 不存在`)
   try {
