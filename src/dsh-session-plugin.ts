@@ -25,6 +25,7 @@ interface WorkerRequest {
   sync: { id: string; clonePath: string }
   kind: DshRunRecord['kind']
   prompt: string
+  worker?: { provider?: string; model?: string }
 }
 
 interface RuntimeModules {
@@ -111,7 +112,11 @@ async function startSessionWorker(ctx: ContextLike, config: Config): Promise<() 
   let cleanup: () => Promise<void> = async () => {}
 
   progress.phase('starting', '正在创建隔离的 Harness session')
-  const selection = ctx.agentDefaultModel.currentSelection()
+  const fallbackSelection = ctx.agentDefaultModel.currentSelection()
+  const selection = {
+    provider: request.worker?.provider ?? fallbackSelection.provider,
+    model: request.worker?.model ?? fallbackSelection.model,
+  }
   const handle = await ctx.agents.create({
     sessionId: modules.SessionId(`dshw-${request.runId}`),
     meta: { cwd: request.sync.clonePath },

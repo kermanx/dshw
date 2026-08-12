@@ -76,11 +76,21 @@ dshw/
     clones/                    worktree 元数据
     logs/                      服务和任务日志
     workers/                   独立后台任务数据
+    workers.json               worker 配置（不含密钥）
+    worker-secrets.env         设置页保存的 worker 密钥（权限 0600）
     state.json                 持久化状态
     dshw.code-workspace        VS Code workspace
 ```
 
 `.dshw/` 已被 Git 忽略。
+
+## Worker 配置
+
+看板的 **Settings** 页可以维护多个 worker 配置、查看模型和凭据状态，并选择默认配置。当前可运行的类型是 dsh；Codex 和 Claude Code 已预留配置类型，暂时以未启用状态保存，后续接入执行器时不需要改变配置页结构。
+
+新建 dsh Worker 时，可以直接填写 Provider、模型、API Key、API Base URL 和 Search Base URL，不需要额外配置环境变量。API Key 也可以改为从指定环境变量读取；此时沿用启动环境或 Harness 原生的 `~/.dsh/.env`。
+
+直接输入的 API Key 不会出现在状态 API 或 `workers.json` 中，而是单独保存在权限为 `0600` 的 `worker-secrets.env`。Base URL 留空时继续使用对应的 Harness 环境变量。
 
 ## dsh 任务控制
 

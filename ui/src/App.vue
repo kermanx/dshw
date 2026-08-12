@@ -8,12 +8,13 @@ import PullRequestsTable from './components/PullRequestsTable.vue'
 import ReviewRequests from './components/ReviewRequests.vue'
 import StatusDot from './components/StatusDot.vue'
 import TaskDialog from './components/TaskDialog.vue'
+import WorkerSettings from './components/WorkerSettings.vue'
 import { relativeTime, shortTime } from './format.ts'
 import type { JobRecord, Tone } from './types.ts'
 import { useWorkflow } from './use-workflow.ts'
 
-const { snapshot, connection } = useWorkflow()
-const views = ['prs', 'reviews', 'jobs', 'logs'] as const
+const { snapshot, connection, load } = useWorkflow()
+const views = ['prs', 'reviews', 'jobs', 'logs', 'settings'] as const
 type View = typeof views[number]
 const initialHash = location.hash.slice(1)
 const initialView = (initialHash === 'activity' ? 'logs' : initialHash) as View
@@ -72,6 +73,7 @@ const tabs = computed(() => [
   { id: 'reviews', icon: 'review', label: 'Reviews', count: snapshot.value?.reviewRequests.length ?? 0 },
   { id: 'jobs', icon: 'list', label: 'Jobs', count: runningJobs.value },
   { id: 'logs', icon: 'history', label: 'Logs', count: 0 },
+  { id: 'settings', icon: 'settings', label: 'Settings', count: 0 },
 ] as const)
 
 function openJob(job: JobRecord | string): void {
@@ -201,7 +203,13 @@ onBeforeUnmount(() => {
             @open="openJob"
             @cancel="id => post('/api/jobs/cancel', { jobId: id }, `cancel:${id}`)"
           />
-          <LogPanel v-else :recent="snapshot.events" />
+          <LogPanel v-else-if="view === 'logs'" :recent="snapshot.events" />
+          <WorkerSettings
+            v-else
+            :workers="snapshot.workers"
+            @changed="load"
+            @toast="showToast"
+          />
         </div>
       </template>
       <div v-else class="flex-1 flex items-center justify-center gap-8px text-muted text-13px">

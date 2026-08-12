@@ -13,9 +13,11 @@ import type {
   ReviewRequestRecord,
   ServiceState,
   SyncRecord,
+  WorkerConfig,
+  WorkerConfigInput,
 } from '../../src/types.ts'
 
-export type { CiCheck, DshRunRecord, DshWorkerProgress, EventRecord, JobPage, JobRecord, LogPage, PrDashboardRecord, PrDashboardStatus, PullRequestReview, ReviewRequestRecord, SyncRecord }
+export type { CiCheck, DshRunRecord, DshWorkerProgress, EventRecord, JobPage, JobRecord, LogPage, PrDashboardRecord, PrDashboardStatus, PullRequestReview, ReviewRequestRecord, SyncRecord, WorkerConfig, WorkerConfigInput }
 
 export interface WorkflowSnapshot extends Omit<ServiceState, 'prDashboardCache'> {
   service: {
@@ -33,6 +35,7 @@ export interface WorkflowSnapshot extends Omit<ServiceState, 'prDashboardCache'>
   reviewRequests: ReviewRequestRecord[]
   reviewRequestsStatus: PrDashboardStatus
   jobProgress: Record<string, DshWorkerProgress>
+  workers: WorkerConfig[]
 }
 
 export type UpdateState = ServiceState['update']

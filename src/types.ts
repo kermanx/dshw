@@ -1,6 +1,53 @@
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'blocked' | 'failed' | 'cancelled'
 export type SyncStatus = 'active' | 'draft' | 'closed' | 'error'
 export type CiStatus = 'none' | 'pending' | 'passed' | 'failed'
+export type WorkerType = 'dsh' | 'codex' | 'claude-code'
+export type ApiKeyMode = 'value' | 'environment'
+export type CredentialSource = 'saved' | 'environment' | 'missing'
+
+export interface WorkerConfig {
+  id: string
+  name: string
+  type: WorkerType
+  enabled: boolean
+  isDefault: boolean
+  provider?: string
+  model?: string
+  baseUrl?: string
+  searchBaseUrl?: string
+  apiKeyMode: ApiKeyMode
+  apiKeyEnv?: string
+  hasApiKey: boolean
+  credentialSource: CredentialSource
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkerConfigInput {
+  name: string
+  type: WorkerType
+  enabled?: boolean
+  provider?: string
+  model?: string
+  baseUrl?: string
+  searchBaseUrl?: string
+  apiKeyMode?: ApiKeyMode
+  apiKeyEnv?: string
+  apiKey?: string
+}
+
+export interface WorkerExecutionConfig {
+  id: string
+  name: string
+  type: WorkerType
+  provider?: string
+  model?: string
+  baseUrl?: string
+  searchBaseUrl?: string
+  apiKeyMode: ApiKeyMode
+  apiKeyEnv?: string
+  apiKey?: string
+}
 
 export interface CloneRecord {
   name: string

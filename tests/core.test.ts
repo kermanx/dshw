@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -20,6 +20,7 @@ import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
 import { parseProgressOutput } from '../ui/src/progress-output.ts'
 import type { DshWorkerHandle, EventRecord, JobRecord } from '../src/types.ts'
 import { parseServiceOwner, renderServicePlist } from '../src/service-manager.ts'
+import { WorkerConfigStore } from '../src/worker-config.ts'
 
 test('forwards the Harness credential and endpoint launch variables', () => {
   assert.equal(dshLaunchEnvironmentXml({
@@ -49,6 +50,54 @@ test('uses the standard Harness user .env as a worker fallback without overridin
       '<key>DEEPSEEK_API_KEY</key><string>launch-key</string>',
       '    <key>DEEPSEEK_BASE_URL</key><string>https://file.example.test</string>',
     ].join('\n'))
+    assert.equal(dshWorkerLaunchEnvironmentXml({}, filename, {
+      DEEPSEEK_BASE_URL: 'https://worker.example.test/v1',
+      DEEPSEEK_SEARCH_BASE_URL: 'https://worker-search.example.test',
+    }), [
+      '<key>DEEPSEEK_API_KEY</key><string>file-key</string>',
+      '    <key>DEEPSEEK_BASE_URL</key><string>https://worker.example.test/v1</string>',
+      '    <key>DEEPSEEK_SEARCH_BASE_URL</key><string>https://worker-search.example.test</string>',
+    ].join('\n'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('stores multiple worker configs separately from owner-only API keys', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-worker-config-'))
+  const configFile = join(root, 'workers.json')
+  const secretFile = join(root, 'worker-secrets.env')
+  try {
+    const store = await WorkerConfigStore.open({ configFile, secretFile, userEnvFile: join(root, 'missing.env') })
+    assert.equal(store.list().length, 1)
+    const codex = await store.create({
+      name: 'Codex preview', type: 'codex', enabled: true, model: 'gpt-5', apiKeyEnv: 'OPENAI_API_KEY', apiKey: 'secret-value',
+    })
+    assert.equal(codex.enabled, false)
+    assert.equal(codex.hasApiKey, true)
+    assert.equal(codex.apiKeyMode, 'value')
+    assert.equal(codex.credentialSource, 'saved')
+    assert.doesNotMatch(await readFile(configFile, 'utf8'), /secret-value/u)
+    assert.match(await readFile(secretFile, 'utf8'), /secret-value/u)
+    assert.equal((await stat(secretFile)).mode & 0o777, 0o600)
+    const dsh = store.list().find(config => config.type === 'dsh')!
+    const secondDsh = await store.create({ name: 'Second dsh', type: 'dsh', enabled: true, apiKeyMode: 'environment', apiKeyEnv: 'DEEPSEEK_API_KEY' })
+    await store.update(secondDsh.id, {
+      ...secondDsh,
+      baseUrl: 'https://api.example.test/v1',
+      searchBaseUrl: 'https://search.example.test',
+    })
+    await store.setDefault(secondDsh.id)
+    assert.equal(store.executionConfig().name, 'Second dsh')
+    assert.equal(store.executionConfig().baseUrl, 'https://api.example.test/v1')
+    assert.equal(store.executionConfig().searchBaseUrl, 'https://search.example.test')
+    await store.update(dsh.id, { ...dsh, name: 'Primary dsh', apiKeyMode: 'value', apiKey: 'dsh-secret' })
+    assert.equal(store.executionConfig().name, 'Second dsh')
+    await store.setDefault(dsh.id)
+    assert.equal(store.executionConfig().apiKey, 'dsh-secret')
+    assert.equal(store.list().find(config => config.id === dsh.id)?.credentialSource, 'saved')
+    await store.remove(codex.id)
+    assert.equal(store.list().length, 2)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

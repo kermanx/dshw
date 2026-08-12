@@ -9,7 +9,7 @@ import { dshWorkerLaunchEnvironmentXml } from './dsh-launch-env.ts'
 import { formatProgressEvent } from './dsh-progress-plugin.ts'
 import { ensureHarnessRuntime, missingTypertRuntimeArtifacts } from './dsh-runtime.ts'
 export { missingTypertRuntimeArtifacts } from './dsh-runtime.ts'
-import type { DshRunRecord, DshWorkerHandle, DshWorkerProgress, SyncRecord } from './types.ts'
+import type { DshRunRecord, DshWorkerHandle, DshWorkerProgress, SyncRecord, WorkerExecutionConfig } from './types.ts'
 import { escapeXml, id, now, readJson, run, runOrThrow, writeJsonAtomic } from './util.ts'
 
 export interface DshWorkerRequest {
@@ -24,6 +24,7 @@ export interface DshWorkerRequest {
   sync: SyncRecord
   kind: DshRunRecord['kind']
   prompt: string
+  worker?: { provider?: string; model?: string }
 }
 
 export function renderPromptTemplate(template: string, values: Readonly<Record<string, string>>): string {
@@ -74,7 +75,8 @@ async function loadPrompt(sync: SyncRecord, kind: DshRunRecord['kind']): Promise
   })
 }
 
-export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind']): Promise<DshWorkerHandle> {
+export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'], worker: WorkerExecutionConfig): Promise<DshWorkerHandle> {
+  if (worker.type !== 'dsh') throw new Error(`${worker.type} worker 尚未实现`)
   const runId = id('dsh')
   const directory = join(WORKER_ROOT, runId)
   const requestPath = join(directory, 'request.json')
@@ -120,6 +122,7 @@ export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'
     sync: structuredClone(sync),
     kind,
     prompt,
+    worker: { provider: worker.provider, model: worker.model },
   }
   await writeJsonAtomic(requestPath, request)
   const label = `${SERVICE_LABEL}.worker.${runId}`
@@ -144,7 +147,11 @@ export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'
     <key>DSHW_DATA_ROOT</key><string>${escapeXml(DATA_ROOT)}</string>
     <key>DSHW_HARNESS_RUNTIME_ROOT</key><string>${escapeXml(runtime.path)}</string>
     ${process.env.DSHW_INSTALLATION_ID === undefined ? '' : `<key>DSHW_INSTALLATION_ID</key><string>${escapeXml(process.env.DSHW_INSTALLATION_ID)}</string>`}
-    ${dshWorkerLaunchEnvironmentXml(process.env)}
+    ${dshWorkerLaunchEnvironmentXml(process.env, undefined, {
+      ...(worker.apiKeyEnv === undefined ? {} : { [worker.apiKeyEnv]: worker.apiKey }),
+      DEEPSEEK_BASE_URL: worker.baseUrl,
+      DEEPSEEK_SEARCH_BASE_URL: worker.searchBaseUrl,
+    })}
   </dict>
   <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>${escapeXml(join(directory, 'worker.stdout.log'))}</string>

@@ -24,11 +24,12 @@ import { cancelDshWorker, inspectDshWorker, startDshWorker, steerDshWorker, wait
 import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
 import { ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { StateStore } from './state.ts'
-import type { CloneRecord, DshWorkerProgress, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord } from './types.ts'
+import type { CloneRecord, DshWorkerProgress, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord, WorkerConfigInput } from './types.ts'
 import { after, id, isTaskCancelled, messageOf, now, run, runOrThrow, TaskCancelledError } from './util.ts'
 import { refreshCodeWorkspace } from './workspace.ts'
 import { serveUiAsset } from './ui-static.ts'
 import { assertManagedHarnessOwned, ensureInstallation, ensureManagedHarness, requireDaemonInstallation, type InstallationRecord } from './install.ts'
+import { WorkerConfigStore } from './worker-config.ts'
 
 const NO_CHECKS_GRACE_MS = 5 * 60 * 1000
 const HISTORY_PAGE_SIZE = 35
@@ -78,16 +79,18 @@ export async function runService(): Promise<void> {
   if (DEV_MODE) await ensureManagedHarness(installation)
   await mkdir(CLONES_ROOT, { recursive: true })
   const store = await StateStore.open()
+  const workers = await WorkerConfigStore.open()
   store.state.serviceStartedAt = now()
   store.event('info', 'service', `后台服务已启动，监听 http://${HOST}:${PORT}`)
   await store.changed()
-  const service = new WorkflowService(store, installation)
+  const service = new WorkflowService(store, installation, workers)
   await service.start()
 }
 
 class WorkflowService {
   readonly #store: StateStore
   readonly #installation: InstallationRecord
+  readonly #workers: WorkerConfigStore
   readonly #syncLocks = new Set<string>()
   readonly #externalDshSyncs = new Set<string>()
   readonly #jobControllers = new Map<string, AbortController>()
@@ -116,9 +119,10 @@ class WorkflowService {
   #lastDiscoveryAt = 0
   #discoveryPromise: Promise<void> | undefined
 
-  constructor(store: StateStore, installation: InstallationRecord) {
+  constructor(store: StateStore, installation: InstallationRecord, workers: WorkerConfigStore) {
     this.#store = store
     this.#installation = installation
+    this.#workers = workers
     const cached = store.state.prDashboardCache
     this.#prDashboard = cached?.records ?? []
     this.#prDashboardStatus = {
@@ -203,6 +207,40 @@ class WorkflowService {
     if (method === 'GET' && new URL(url, `http://${HOST}:${PORT}`).pathname === '/api/jobs') {
       const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
       this.#json(response, 200, this.#store.jobs(requestUrl.searchParams.get('before') ?? undefined, HISTORY_PAGE_SIZE))
+      return
+    }
+    if (method === 'GET' && url === '/api/workers') {
+      this.#json(response, 200, { workers: this.#workers.list() })
+      return
+    }
+    if (method === 'POST' && url === '/api/workers') {
+      const created = await this.#workers.create(await readBody(request) as unknown as WorkerConfigInput)
+      this.#store.event('info', 'settings', `已添加 worker 配置「${created.name}」`)
+      await this.#store.changed()
+      this.#json(response, 201, { worker: created })
+      return
+    }
+    if (method === 'PUT' && url.startsWith('/api/workers/') && url.endsWith('/default')) {
+      const configId = decodeURIComponent(url.slice('/api/workers/'.length, -'/default'.length))
+      const selected = await this.#workers.setDefault(configId)
+      this.#store.event('info', 'settings', `默认 worker 已切换为「${selected.name}」`)
+      await this.#store.changed()
+      this.#json(response, 200, { worker: selected })
+      return
+    }
+    if ((method === 'PUT' || method === 'DELETE') && url.startsWith('/api/workers/')) {
+      const configId = decodeURIComponent(url.slice('/api/workers/'.length))
+      if (method === 'DELETE') {
+        await this.#workers.remove(configId)
+        this.#store.event('info', 'settings', '已删除 worker 配置')
+        await this.#store.changed()
+        this.#json(response, 200, { deleted: true })
+      } else {
+        const updated = await this.#workers.update(configId, await readBody(request) as unknown as WorkerConfigInput)
+        this.#store.event('info', 'settings', `已更新 worker 配置「${updated.name}」`)
+        await this.#store.changed()
+        this.#json(response, 200, { worker: updated })
+      }
       return
     }
     if (method === 'POST' && url === '/api/worker-progress') {
@@ -310,6 +348,7 @@ class WorkflowService {
       reviewRequests: this.#reviewRequests,
       reviewRequestsStatus: this.#reviewRequestsStatus,
       jobProgress: this.#readJobProgress(),
+      workers: this.#workers.list(),
       ...state,
       jobs: recentJobs,
     }
@@ -1016,7 +1055,7 @@ class WorkflowService {
     const oldHead = sync.headOid
     try {
       if (kind === 'fix-ci') sync.lastFixedHeadOid = oldHead
-      const handle = await startDshWorker(sync, kind)
+      const handle = await startDshWorker(sync, kind, this.#workers.executionConfig())
       job.dshWorker = { handle, kind, sync: structuredClone(sync), oldHead, label }
       await this.#store.changed()
       await this.#completeDshJob(job, sync)

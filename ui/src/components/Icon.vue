@@ -21,6 +21,14 @@ const icons: Record<string, string> = {
   pending: 'i-lucide:circle-dashed',
   neutral: 'i-lucide:circle-dot',
   alert: 'i-lucide:circle-alert',
+  settings: 'i-lucide:settings',
+  plus: 'i-lucide:plus',
+  edit: 'i-lucide:pencil',
+  trash: 'i-lucide:trash-2',
+  key: 'i-lucide:key-round',
+  send: 'i-lucide:send-horizontal',
+  pause: 'i-lucide:pause',
+  stop: 'i-lucide:square',
 }
 
 const cls = computed(() => icons[props.name] ?? '')
