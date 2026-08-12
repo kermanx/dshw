@@ -3,7 +3,37 @@ export type SyncStatus = 'active' | 'draft' | 'closed' | 'error'
 export type CiStatus = 'none' | 'pending' | 'passed' | 'failed'
 export type WorkerType = 'dsh' | 'codex' | 'claude-code'
 export type ApiKeyMode = 'value' | 'environment'
-export type CredentialSource = 'saved' | 'environment' | 'missing'
+export type CredentialSource = 'saved' | 'environment' | 'local' | 'missing'
+
+export interface WorkerTypeAvailability {
+  type: WorkerType
+  available: boolean
+  version?: string
+  reason?: string
+}
+
+export interface WorkerReasoningEffort {
+  id: string
+  name: string
+  description?: string
+}
+
+export interface WorkerModelOption {
+  id: string
+  name: string
+  description?: string
+  isDefault?: boolean
+  reasoningEfforts: WorkerReasoningEffort[]
+  defaultReasoningEffort?: string
+}
+
+export interface WorkerModelCatalog {
+  type: WorkerType
+  provider?: string
+  defaultModel?: string
+  defaultReasoningEffort?: string
+  models: WorkerModelOption[]
+}
 
 export interface WorkerConfig {
   id: string
@@ -13,6 +43,7 @@ export interface WorkerConfig {
   isDefault: boolean
   provider?: string
   model?: string
+  reasoningEffort?: string
   baseUrl?: string
   searchBaseUrl?: string
   apiKeyMode: ApiKeyMode
@@ -29,11 +60,43 @@ export interface WorkerConfigInput {
   enabled?: boolean
   provider?: string
   model?: string
+  reasoningEffort?: string
   baseUrl?: string
   searchBaseUrl?: string
   apiKeyMode?: ApiKeyMode
   apiKeyEnv?: string
   apiKey?: string
+}
+
+export interface HarnessRepositoryStatus {
+  state: 'ready' | 'error'
+  checkedAt: string
+  behind?: number
+  error?: string
+}
+
+export interface DshwRepositoryStatus extends HarnessRepositoryStatus {
+  dirty?: boolean
+  upstream?: string
+}
+
+export interface WorktreeCleanupCandidate {
+  name: string
+  branch: string
+  staged: boolean
+  unstaged: boolean
+  merging: boolean
+  ahead: number
+  behind: number
+  needsDecision: boolean
+  inspectionError?: string
+}
+
+export interface WorktreeCleanupPreview {
+  total: number
+  active: number
+  busy: number
+  candidates: WorktreeCleanupCandidate[]
 }
 
 export interface WorkerExecutionConfig {
@@ -42,6 +105,7 @@ export interface WorkerExecutionConfig {
   type: WorkerType
   provider?: string
   model?: string
+  reasoningEffort?: string
   baseUrl?: string
   searchBaseUrl?: string
   apiKeyMode: ApiKeyMode
@@ -98,19 +162,22 @@ export interface SyncRecord {
 
 export interface JobRecord {
   id: string
-  type: 'update-harness' | 'reconfigure-harness' | 'sync-check' | 'merge-base' | 'fix-ci' | 'resolve-comments'
+  type: 'update-dshw' | 'update-harness' | 'reconfigure-harness' | 'sync-check' | 'merge-base' | 'fix-ci' | 'resolve-comments'
   status: JobStatus
   syncId?: string
+  /** Worker configuration name captured when the job starts. Missing for built-in and legacy jobs. */
+  executor?: string
   createdAt: string
   startedAt?: string
   finishedAt?: string
   cancelRequestedAt?: string
   summary: string
   output?: string
-  dshWorker?: DshWorkerState
+  /** Persisted field name retained for compatibility; may contain any Worker type. */
+  dshWorker?: WorkerState
 }
 
-export interface DshWorkerHandle {
+export interface WorkerHandle {
   runId: string
   label: string
   domain: string
@@ -120,13 +187,15 @@ export interface DshWorkerHandle {
   controlSocketPath?: string
   eventLogPath?: string
   runtimeCommit?: string
+  /** Missing on older persisted handles, which are always dsh. */
+  workerType?: WorkerType
   progressProtocol?: 'memory-events-v1' | 'session-control-v1'
   /** Legacy file-backed progress handle, retained only for state compatibility. */
   progressPath?: string
   startedAt: string
 }
 
-export interface DshWorkerProgress {
+export interface WorkerProgress {
   runId: string
   phase: 'starting' | 'running' | 'cancelling' | 'paused' | 'finishing'
   message: string
@@ -135,15 +204,15 @@ export interface DshWorkerProgress {
   outputTail: string
 }
 
-export interface DshWorkerState {
-  handle: DshWorkerHandle
-  kind: DshRunRecord['kind']
+export interface WorkerState {
+  handle: WorkerHandle
+  kind: WorkerRunRecord['kind']
   sync: SyncRecord
   oldHead: string
   label: string
 }
 
-export interface DshRunRecord {
+export interface WorkerRunRecord {
   id: string
   syncId: string
   kind: 'merge-base' | 'fix-ci' | 'resolve-comments'
@@ -154,6 +223,12 @@ export interface DshRunRecord {
   finalOutput: string
   blockedReason?: string
 }
+
+/** Legacy type aliases retained for persisted state and older modules. */
+export type DshWorkerHandle = WorkerHandle
+export type DshWorkerProgress = WorkerProgress
+export type DshWorkerState = WorkerState
+export type DshRunRecord = WorkerRunRecord
 
 export interface EventRecord {
   id: string
@@ -299,6 +374,7 @@ export interface PrDashboardRecord {
   mergeable: string
   mergeStateStatus: string
   conflictPaths?: string[]
+  autoMergeSkippedReason?: string
   baseBehind?: boolean
   reviewDecision: string
   reviewRequests: string[]
@@ -323,4 +399,6 @@ export interface PrDashboardStatus {
   lastAttemptAt?: string
   lastSuccessAt?: string
   error?: string
+  /** Exact event-log record containing the reason for the current error. */
+  errorEventId?: string
 }

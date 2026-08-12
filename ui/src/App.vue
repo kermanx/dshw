@@ -9,6 +9,7 @@ import ReviewRequests from './components/ReviewRequests.vue'
 import StatusDot from './components/StatusDot.vue'
 import TaskDialog from './components/TaskDialog.vue'
 import WorkerSettings from './components/WorkerSettings.vue'
+import WorkerLaunchDialog from './components/WorkerLaunchDialog.vue'
 import { relativeTime, shortTime } from './format.ts'
 import type { JobRecord, Tone } from './types.ts'
 import { useWorkflow } from './use-workflow.ts'
@@ -19,8 +20,11 @@ type View = typeof views[number]
 const initialHash = location.hash.slice(1)
 const initialView = (initialHash === 'activity' ? 'logs' : initialHash) as View
 const view = ref<View>(views.includes(initialView) ? initialView : 'prs')
+const focusedLogId = ref<string>()
 const activeJobId = ref<string>()
 const selectedJob = ref<JobRecord>()
+type WorkerAction = 'merge-base' | 'fix-ci' | 'resolve-comments'
+const workerLaunch = ref<{ name: string, action: WorkerAction }>()
 const pending = reactive(new Set<string>())
 const currentTime = ref(Date.now())
 const toast = reactive({ message: '', bad: false, visible: false })
@@ -54,18 +58,20 @@ const prRefreshTitle = computed(() => [
 const prCount = computed(() => snapshot.value?.prs.length ?? 0)
 const runningJobs = computed(() => snapshot.value?.service.activeJobs ?? 0)
 const updateFailed = computed(() => snapshot.value?.update.lastStatus === 'failed')
+const updatingDshw = computed(() => pending.has('update-dshw') || snapshot.value?.service.updatingDshw === true)
 const updating = computed(() => pending.has('update-harness') || (snapshot.value?.jobs.some(job => job.type === 'update-harness' && job.status === 'running') ?? false))
 const reconfiguring = computed(() => pending.has('reconfigure-harness') || (snapshot.value?.jobs.some(job => job.type === 'reconfigure-harness' && job.status === 'running') ?? false))
-const harnessMaintenanceRunning = computed(() => updating.value || reconfiguring.value)
-const updateTitle = computed(() => {
-  const update = snapshot.value?.update
-  if (update?.lastAt === undefined) return '更新托管的 deepseek-harness（dsh 命令来源）'
-  return `上次更新：${shortTime(update.lastAt)} · ${update.lastMessage ?? ''}`
-})
 
 function select(id: View): void {
+  if (id === 'logs') focusedLogId.value = undefined
   view.value = id
   history.replaceState(null, '', `#${id}`)
+}
+
+function openLogs(eventId?: string): void {
+  focusedLogId.value = eventId
+  view.value = 'logs'
+  history.replaceState(null, '', '#logs')
 }
 
 const tabs = computed(() => [
@@ -86,6 +92,46 @@ function closeJob(): void {
   selectedJob.value = undefined
 }
 
+function runPrAction(name: string, action: WorkerAction | 'merge-base-direct'): void {
+  if (action === 'merge-base-direct') {
+    void post('/api/pr-action', { name, action }, `${action}:${name}`)
+    return
+  }
+  const defaultWorker = snapshot.value?.workers.find(worker => worker.enabled)
+  if (defaultWorker === undefined) {
+    select('settings')
+    showToast('请先添加可用的 Worker', true)
+    return
+  }
+  if (snapshot.value?.workerTypes.find(status => status.type === defaultWorker.type)?.available !== true) {
+    chooseWorker(name, action)
+    return
+  }
+  void post('/api/pr-action', { name, action }, `${action}:${name}`)
+}
+
+function chooseWorker(name: string, action: WorkerAction): void {
+  const usable = snapshot.value?.workers.some(worker => worker.enabled && snapshot.value?.workerTypes.find(status => status.type === worker.type)?.available === true) === true
+  if (!usable) {
+    select('settings')
+    showToast('请先添加可用的 Worker', true)
+    return
+  }
+  workerLaunch.value = { name, action }
+}
+
+function startWithWorker(workerConfigId: string, additionalInstruction: string): void {
+  const launch = workerLaunch.value
+  if (launch === undefined) return
+  workerLaunch.value = undefined
+  void post('/api/pr-action', {
+    name: launch.name,
+    action: launch.action,
+    workerConfigId,
+    additionalInstruction: additionalInstruction.trim(),
+  }, `${launch.action}:${launch.name}`)
+}
+
 async function post(path: string, body: object, key: string): Promise<void> {
   if (pending.has(key)) return
   pending.add(key)
@@ -101,23 +147,43 @@ async function post(path: string, body: object, key: string): Promise<void> {
   }
 }
 
+async function updateDshw(): Promise<void> {
+  const key = 'update-dshw'
+  if (pending.has(key)) return
+  pending.add(key)
+  const previousStartedAt = snapshot.value?.service.startedAt
+  try {
+    const response = await fetch('/api/dshw/update', { method: 'POST' })
+    const value = await response.json() as { error?: string }
+    if (!response.ok) throw new Error(value.error ?? '请求失败')
+    showToast('dshw 已更新，正在重启服务')
+    const deadline = Date.now() + 30_000
+    while (Date.now() < deadline) {
+      await new Promise(resolve => window.setTimeout(resolve, 500))
+      try {
+        const stateResponse = await fetch('/api/state', { cache: 'no-store', signal: AbortSignal.timeout(2_000) })
+        if (!stateResponse.ok) continue
+        const state = await stateResponse.json() as { service?: { startedAt?: string } }
+        if (previousStartedAt === undefined || state.service?.startedAt !== previousStartedAt) {
+          window.location.reload()
+          return
+        }
+      } catch {}
+    }
+    showToast('dshw 已更新；服务恢复后请刷新页面')
+  } catch (error) {
+    showToast(`更新失败：${error instanceof Error ? error.message : String(error)}`, true)
+  } finally {
+    pending.delete(key)
+  }
+}
+
 function showToast(message: string, bad = false): void {
   toast.message = message
   toast.bad = bad
   toast.visible = true
   if (toastTimer !== undefined) window.clearTimeout(toastTimer)
   toastTimer = window.setTimeout(() => { toast.visible = false }, 2_600)
-}
-
-function reconfigureHarness(): void {
-  const confirmed = window.confirm([
-    '从头配置托管的 deepseek-harness？',
-    '',
-    '这会在主仓库执行两次 git clean -fdx，删除所有未跟踪和 ignored 文件（包括 .env、node_modules 和构建产物），然后拉取 origin/master、重新安装依赖并运行 typecheck。',
-    '',
-    'clones/ 和 dshw 不受影响；主仓库若有 tracked/staged 修改，后台会拒绝执行。',
-  ].join('\n'))
-  if (confirmed) void post('/api/reconfigure', {}, 'reconfigure-harness')
 }
 
 onMounted(() => { clock = window.setInterval(() => { currentTime.value = Date.now() }, 1_000) })
@@ -181,9 +247,10 @@ onBeforeUnmount(() => {
             :status="snapshot.prDashboard"
             :jobs="snapshot.jobs"
             :pending="pending"
-            @action="(name, action) => post('/api/pr-action', { name, action }, `${action}:${name}`)"
+            @action="runPrAction"
+            @choose-worker="chooseWorker"
             @open-job="openJob"
-            @open-activity="select('logs')"
+            @open-activity="openLogs"
             @refresh="post('/api/prs/refresh', {}, 'prs-refresh')"
             @toggle-sync="(name, enabled) => post('/api/sync/toggle', { name, enabled }, `sync-toggle:${name}`)"
           />
@@ -193,7 +260,7 @@ onBeforeUnmount(() => {
             :status="snapshot.reviewRequestsStatus"
             :pending="pending"
             @refresh="post('/api/prs/refresh', {}, 'prs-refresh')"
-            @open-logs="select('logs')"
+            @open-logs="openLogs"
           />
           <JobsTable
             v-else-if="view === 'jobs'"
@@ -203,12 +270,25 @@ onBeforeUnmount(() => {
             @open="openJob"
             @cancel="id => post('/api/jobs/cancel', { jobId: id }, `cancel:${id}`)"
           />
-          <LogPanel v-else-if="view === 'logs'" :recent="snapshot.events" />
+          <LogPanel v-else-if="view === 'logs'" :recent="snapshot.events" :focus-id="focusedLogId" />
           <WorkerSettings
             v-else
             :workers="snapshot.workers"
+            :worker-types="snapshot.workerTypes"
+            :dshw-repository="snapshot.dshwRepository"
+            :repository="snapshot.harnessRepository"
+            :update="snapshot.update"
+            :updating="updating"
+            :reconfiguring="reconfiguring"
+            :updating-dshw="updatingDshw"
+            :dev-mode="snapshot.service.devMode"
+            :worktree-count="snapshot.clones.length"
+            :worktree-cleanup-count="snapshot.worktreeCleanupCount"
             @changed="load"
             @toast="showToast"
+            @update-dshw="updateDshw"
+            @update-harness="post('/api/update', {}, 'update-harness')"
+            @reconfigure-harness="post('/api/reconfigure', {}, 'reconfigure-harness')"
           />
         </div>
       </template>
@@ -225,26 +305,6 @@ onBeforeUnmount(() => {
       </div>
       <div class="flex items-center min-w-0">
         <span v-if="updateFailed" class="inline-flex items-center gap-5px h-full px-10px whitespace-nowrap bg-statusbar-alert">更新失败</span>
-        <button
-          v-if="snapshot"
-          class="inline-flex items-center gap-5px h-full px-10px whitespace-nowrap cursor-pointer transition-colors duration-100 hover:bg-statusbar-item-hover disabled:opacity-55 disabled:pointer-events-none"
-          :disabled="harnessMaintenanceRunning"
-          :title="updateTitle"
-          @click="post('/api/update', {}, 'update-harness')"
-        >
-          <Icon name="sync" :size="11" :class="{ 'animate-spin': updating }" />
-          <span>{{ updating ? '更新 dsh 中' : '更新 dsh' }}</span>
-        </button>
-        <button
-          v-if="snapshot"
-          class="inline-flex items-center gap-5px h-full px-10px whitespace-nowrap cursor-pointer transition-colors duration-100 hover:bg-statusbar-item-hover disabled:opacity-55 disabled:pointer-events-none"
-          :disabled="harnessMaintenanceRunning"
-          title="清理托管主仓库、拉取最新 master，并从头安装和配置"
-          @click="reconfigureHarness"
-        >
-          <Icon name="reset" :size="11" :class="{ 'animate-spin': reconfiguring }" />
-          <span>{{ reconfiguring ? '配置 dsh 中' : '从头配置 dsh' }}</span>
-        </button>
         <span v-if="snapshot?.service.devMode" class="inline-flex items-center gap-5px h-full px-10px whitespace-nowrap transition-colors duration-100 hover:bg-statusbar-item-hover">dev</span>
         <span v-if="snapshot" class="inline-flex items-center gap-5px h-full px-10px whitespace-nowrap font-mono transition-colors duration-100 hover:bg-statusbar-item-hover">:{{ snapshot.service.port }}</span>
       </div>
@@ -265,6 +325,15 @@ onBeforeUnmount(() => {
     @pause="id => post('/api/jobs/pause', { jobId: id }, `pause:${id}`)"
     @steer="(id, prompt) => post('/api/jobs/steer', { jobId: id, prompt }, `steer:${id}`)"
     @toast="showToast"
+  />
+
+  <WorkerLaunchDialog
+    v-if="workerLaunch && snapshot"
+    :action="workerLaunch.action"
+    :workers="snapshot.workers"
+    :worker-types="snapshot.workerTypes"
+    @close="workerLaunch = undefined"
+    @start="startWithWorker"
   />
 
   <div

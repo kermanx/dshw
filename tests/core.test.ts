@@ -1,26 +1,30 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { validateCloneName } from '../src/clone.ts'
+import { removeCloneRecord, validateCloneName } from '../src/clone.ts'
 import { resolveCommandTarget } from '../src/command-target.ts'
-import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
+import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, repoSlugFromRemote } from '../src/git.ts'
 import { rollupChecks, summarizeChecks } from '../src/github.ts'
 import { CLONES_ROOT, DSHW_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
-import { HARNESS_RECONFIGURE_STEPS, observeBaseTip, scheduleBaseCheck, summarizePrDashboardErrors } from '../src/service.ts'
+import { DSHW_UPDATE_STEPS, HARNESS_RECONFIGURE_STEPS, observeBaseTip, readOutputPage, scheduleBaseCheck, summarizePrDashboardErrors, worktreeNeedsCleanupDecision } from '../src/service.ts'
 import { pageJobs, readEventLogPage } from '../src/state.ts'
-import { cancelDshWorker, dshWorkerLaunchSpec, headlessDshArguments, inspectDshWorker, missingTypertRuntimeArtifacts, parseDshOutcome, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
+import { appendAdditionalInstruction, cancelDshWorker, dshWorkerLaunchSpec, headlessDshArguments, inspectDshWorker, missingTypertRuntimeArtifacts, parseDshOutcome, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
 import { dshLaunchEnvironmentXml, dshWorkerLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
-import { parseProgressOutput } from '../ui/src/progress-output.ts'
+import { mergeProgressOutput, parseProgressOutput } from '../ui/src/progress-output.ts'
 import type { DshWorkerHandle, EventRecord, JobRecord } from '../src/types.ts'
 import { parseServiceOwner, renderServicePlist } from '../src/service-manager.ts'
 import { WorkerConfigStore } from '../src/worker-config.ts'
+import { codexModelCatalogFrom, findCodexExecutable } from '../src/codex-runtime.ts'
+import { codexThreadStartParams, codexTurnStartParams, formatCodexThreadItem } from '../src/codex-session-worker.ts'
+import { dshModelCatalog } from '../src/worker-driver.ts'
+import { jobExecutor } from '../ui/src/format.ts'
 
 test('forwards the Harness credential and endpoint launch variables', () => {
   assert.equal(dshLaunchEnvironmentXml({
@@ -70,15 +74,12 @@ test('stores multiple worker configs separately from owner-only API keys', async
   try {
     const store = await WorkerConfigStore.open({ configFile, secretFile, userEnvFile: join(root, 'missing.env') })
     assert.equal(store.list().length, 1)
-    const codex = await store.create({
-      name: 'Codex preview', type: 'codex', enabled: true, model: 'gpt-5', apiKeyEnv: 'OPENAI_API_KEY', apiKey: 'secret-value',
-    })
-    assert.equal(codex.enabled, false)
+    const codex = await store.create({ name: 'Local Codex', type: 'codex', enabled: true, model: 'gpt-5', reasoningEffort: 'high' })
+    assert.equal(codex.enabled, true)
     assert.equal(codex.hasApiKey, true)
-    assert.equal(codex.apiKeyMode, 'value')
-    assert.equal(codex.credentialSource, 'saved')
+    assert.equal(codex.credentialSource, 'local')
+    assert.equal(store.executionConfig(codex.id).reasoningEffort, 'high')
     assert.doesNotMatch(await readFile(configFile, 'utf8'), /secret-value/u)
-    assert.match(await readFile(secretFile, 'utf8'), /secret-value/u)
     assert.equal((await stat(secretFile)).mode & 0o777, 0o600)
     const dsh = store.list().find(config => config.type === 'dsh')!
     const secondDsh = await store.create({ name: 'Second dsh', type: 'dsh', enabled: true, apiKeyMode: 'environment', apiKeyEnv: 'DEEPSEEK_API_KEY' })
@@ -87,20 +88,98 @@ test('stores multiple worker configs separately from owner-only API keys', async
       baseUrl: 'https://api.example.test/v1',
       searchBaseUrl: 'https://search.example.test',
     })
-    await store.setDefault(secondDsh.id)
+    await store.reorder([secondDsh.id, dsh.id, codex.id])
+    assert.deepEqual(store.list().map(config => config.id), [secondDsh.id, dsh.id, codex.id])
+    assert.equal(store.list()[0]?.isDefault, true)
     assert.equal(store.executionConfig().name, 'Second dsh')
     assert.equal(store.executionConfig().baseUrl, 'https://api.example.test/v1')
     assert.equal(store.executionConfig().searchBaseUrl, 'https://search.example.test')
     await store.update(dsh.id, { ...dsh, name: 'Primary dsh', apiKeyMode: 'value', apiKey: 'dsh-secret' })
+    assert.match(await readFile(secretFile, 'utf8'), /dsh-secret/u)
     assert.equal(store.executionConfig().name, 'Second dsh')
-    await store.setDefault(dsh.id)
+    await store.reorder([dsh.id, codex.id, secondDsh.id])
     assert.equal(store.executionConfig().apiKey, 'dsh-secret')
+    assert.equal(store.executionConfig(codex.id).name, 'Local Codex')
     assert.equal(store.list().find(config => config.id === dsh.id)?.credentialSource, 'saved')
+    await assert.rejects(store.reorder([dsh.id, codex.id]), /排序列表无效/u)
     await store.remove(codex.id)
     assert.equal(store.list().length, 2)
+    const reopened = await WorkerConfigStore.open({ configFile, secretFile, userEnvFile: join(root, 'missing.env') })
+    assert.deepEqual(reopened.list().map(config => config.id), [dsh.id, secondDsh.id])
+    assert.equal(reopened.list()[0]?.isDefault, true)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('finds an executable Codex CLI on PATH', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-codex-path-'))
+  const executable = join(root, 'codex')
+  try {
+    await writeFile(executable, '#!/bin/sh\nexit 0\n')
+    await chmod(executable, 0o755)
+    assert.equal(await findCodexExecutable(root), executable)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('configures ephemeral Codex threads and formats native items', () => {
+  assert.deepEqual(codexThreadStartParams({
+    sync: { clonePath: '/repo' } as never,
+    worker: { model: 'gpt-5.4' },
+  }), {
+    cwd: '/repo',
+    ephemeral: true,
+    approvalPolicy: 'never',
+    sandbox: 'danger-full-access',
+    serviceName: 'dshw',
+    model: 'gpt-5.4',
+  })
+  assert.deepEqual(formatCodexThreadItem({
+    type: 'commandExecution', command: 'pnpm test', status: 'completed', exitCode: 0, aggregatedOutput: '37 passed',
+  }), [
+    '调用工具 exec_command：pnpm test',
+    '工具结果 完成：37 passed',
+  ])
+  assert.deepEqual(formatCodexThreadItem({ type: 'agentMessage', text: '完成。' }), ['Agent：完成。'])
+  assert.deepEqual(codexTurnStartParams('thread-1', '继续', { model: 'gpt-5.4', reasoningEffort: 'xhigh' }), {
+    threadId: 'thread-1',
+    input: [{ type: 'text', text: '继续' }],
+    effort: 'xhigh',
+  })
+})
+
+test('normalizes native Worker model and reasoning catalogs', () => {
+  assert.deepEqual(codexModelCatalogFrom({ config: { model: 'gpt-current', model_reasoning_effort: 'high' } }, [{
+    id: 'gpt-current',
+    model: 'gpt-current',
+    displayName: 'GPT Current',
+    description: 'Current model',
+    isDefault: false,
+    defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: [
+      { reasoningEffort: 'medium', description: 'Balanced' },
+      { reasoningEffort: 'high', description: 'More reasoning' },
+    ],
+  }]), {
+    type: 'codex',
+    defaultModel: 'gpt-current',
+    defaultReasoningEffort: 'high',
+    models: [{
+      id: 'gpt-current',
+      name: 'GPT Current',
+      description: 'Current model',
+      reasoningEfforts: [
+        { id: 'medium', name: 'medium', description: 'Balanced' },
+        { id: 'high', name: 'high', description: 'More reasoning' },
+      ],
+      defaultReasoningEffort: 'medium',
+    }],
+  })
+  const dsh = dshModelCatalog('deepseek-official')
+  assert.deepEqual(dsh.models.map(model => model.id), ['deepseek-v4-flash', 'deepseek-v4-pro'])
+  assert.deepEqual(dsh.models[0]?.reasoningEfforts.map(effort => effort.id), ['off', 'high', 'max'])
 })
 
 test('launches dsh workers from the pinned runtime without a target-worktree tsx hook', () => {
@@ -143,6 +222,22 @@ test('defines the destructive main-repository reset as clean, pull, clean, and f
     ['node', 'scripts/install-lefthook.mjs'],
     ['pnpm', 'run', 'typecheck'],
   ])
+})
+
+test('updates dshw with a fast-forward pull before installing, checking, and rebuilding', () => {
+  assert.deepEqual(DSHW_UPDATE_STEPS.map(step => [step.command, ...step.args]), [
+    ['git', 'pull', '--ff-only'],
+    ['pnpm', 'install', '--frozen-lockfile'],
+    ['pnpm', 'run', 'typecheck'],
+    ['pnpm', 'run', 'build:ui'],
+  ])
+})
+
+test('requires an explicit cleanup decision for local worktree content', () => {
+  assert.equal(worktreeNeedsCleanupDecision({ staged: false, unstaged: false, merging: false, ahead: 0, behind: 3 }), false)
+  assert.equal(worktreeNeedsCleanupDecision({ staged: true, unstaged: false, merging: false, ahead: 0, behind: 0 }), true)
+  assert.equal(worktreeNeedsCleanupDecision({ staged: false, unstaged: true, merging: false, ahead: 0, behind: 0 }), true)
+  assert.equal(worktreeNeedsCleanupDecision({ staged: false, unstaged: false, merging: false, ahead: 1, behind: 0 }), true)
 })
 
 test('treats a numeric command argument as a workspace repository id', () => {
@@ -196,6 +291,22 @@ test('pages jobs from newest to oldest without overlaps', () => {
   assert.equal(third.hasMore, false)
 })
 
+test('labels job executors with the selected Worker name and legacy fallbacks', () => {
+  const job: JobRecord = {
+    id: 'job-executor',
+    type: 'fix-ci',
+    status: 'succeeded',
+    createdAt: new Date(0).toISOString(),
+    summary: 'test',
+  }
+  assert.equal(jobExecutor({ ...job, executor: 'Local Codex' }), 'Local Codex')
+  assert.equal(jobExecutor(job), '内置')
+  assert.equal(jobExecutor({
+    ...job,
+    dshWorker: { handle: { workerType: 'codex' } } as JobRecord['dshWorker'],
+  }), 'Codex')
+})
+
 test('reads append-only event logs backwards in pages of 35', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dshw-event-log-'))
   const path = join(root, 'events.ndjson')
@@ -216,6 +327,26 @@ test('reads append-only event logs backwards in pages of 35', async () => {
     const third = await readEventLogPage(path, Number(second.nextCursor), 35)
     assert.deepEqual(third.records.map(record => record.id), Array.from({ length: 10 }, (_, index) => `event-${9 - index}`))
     assert.equal(third.hasMore, false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('reads durable worker output backwards without dropping earlier lines', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-output-page-'))
+  const path = join(root, 'output.log')
+  const expected = Array.from({ length: 20 }, (_, index) => `第 ${index + 1} 行 output`).join('\n')
+  try {
+    await writeFile(path, `${expected}\n`)
+    const pages: string[] = []
+    let before: number | undefined
+    do {
+      const page = await readOutputPage(path, before, 48)
+      pages.unshift(page.output)
+      before = page.nextBefore
+      if (!page.hasMore) break
+    } while (before !== undefined)
+    assert.equal(pages.filter(Boolean).join('\n'), expected)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -475,6 +606,12 @@ test('renders editable dsh markdown prompt placeholders', () => {
   assert.throws(() => renderPromptTemplate('{{unknown}}', {}), /未知占位符/)
 })
 
+test('appends optional user instructions to the worker prompt', () => {
+  assert.equal(appendAdditionalInstruction('Base prompt', '  Keep the API stable.  '), 'Base prompt\n\n## 用户额外指令\n\nKeep the API stable.')
+  assert.equal(appendAdditionalInstruction('Base prompt', '   '), 'Base prompt')
+  assert.equal(appendAdditionalInstruction('Base prompt'), 'Base prompt')
+})
+
 test('recognizes a machine-readable blocked dsh result and its reason', () => {
   assert.deepEqual(parseDshOutcome('无法安全解决\nDSHW_RESULT: blocked\nDSHW_REASON: 缺少上游生成文件'), {
     blocked: true,
@@ -568,6 +705,11 @@ test('recognizes controls injected into live progress', () => {
     { kind: 'user', title: '你', body: '只修复这个测试\n补充说明', preview: '只修复这个测试' },
     { kind: 'system', title: '系统', body: '已请求暂停任务', preview: '已请求暂停任务' },
   ])
+})
+
+test('merges durable output pages with their overlapping live tail', () => {
+  assert.equal(mergeProgressOutput('一\n二\n三\n', '二\n三\n四\n'), '一\n二\n三\n四\n')
+  assert.equal(mergeProgressOutput('一\n二', '三\n四'), '一\n二\n三\n四')
 })
 
 test('steers and pauses a persisted dsh session over its Unix JSON-RPC socket', async () => {
@@ -684,7 +826,9 @@ test('creates worktrees with a unique local branch tracking the PR branch', asyn
   const remote = join(root, 'remote.git')
   const source = join(root, 'source')
   const managed = join(root, 'managed')
-  const worktree = join(root, 'worktree')
+  const clonesRoot = join(root, 'worktrees')
+  const metadataRoot = join(root, 'metadata')
+  const worktree = join(clonesRoot, 'dsh-1')
   try {
     await runOrThrow('git', ['init', '--bare', remote])
     await mkdir(source)
@@ -698,6 +842,8 @@ test('creates worktrees with a unique local branch tracking the PR branch', asyn
     await runOrThrow('git', ['remote', 'add', 'origin', remote], { cwd: source })
     await runOrThrow('git', ['push', 'origin', 'master', 'feature/test'], { cwd: source })
     await runOrThrow('git', ['clone', remote, managed])
+    await mkdir(clonesRoot)
+    await mkdir(metadataRoot)
 
     const branch = await addSharedWorktree(managed, 'feature/test', 'dsh-1', worktree)
     assert.equal(branch, 'dshw/dsh-1')
@@ -707,8 +853,15 @@ test('creates worktrees with a unique local branch tracking the PR branch', asyn
     assert.equal((await runOrThrow('git', ['config', '--worktree', 'push.default'], { cwd: worktree })).stdout.trim(), 'upstream')
     assert.equal(await gitCommonDir(worktree), await gitCommonDir(managed))
 
-    await removeSharedWorktree(managed, branch, worktree)
+    const clone = {
+      name: 'dsh-1', path: worktree, sourcePath: managed, remoteUrl: remote,
+      repoSlug: 'deepseek-harness/deepseek-harness', branch: 'feature/test', worktreeBranch: branch, createdAt: new Date().toISOString(),
+    }
+    await writeFile(join(metadataRoot, 'dsh-1.json'), JSON.stringify(clone))
+    await removeCloneRecord(clone, { managedRoot: managed, clonesRoot, metadataRoot })
     await assert.rejects(readFile(join(worktree, '.git'), 'utf8'))
+    await assert.rejects(readFile(join(metadataRoot, 'dsh-1.json'), 'utf8'))
+    assert.notEqual((await run('git', ['show-ref', '--verify', '--quiet', 'refs/heads/dshw/dsh-1'], { cwd: managed })).code, 0)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

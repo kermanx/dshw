@@ -5,6 +5,8 @@ const props = withDefaults(defineProps<{ name: string, size?: number }>(), { siz
 
 const icons: Record<string, string> = {
   branch: 'i-lucide:git-pull-request',
+  repository: 'i-lucide:folder-git-2',
+  worktree: 'i-lucide:git-fork',
   review: 'i-lucide:eye',
   list: 'i-lucide:list',
   terminal: 'i-lucide:square-terminal',
@@ -15,6 +17,7 @@ const icons: Record<string, string> = {
   code: 'i-lucide:code-xml',
   external: 'i-lucide:arrow-up-right',
   sync: 'i-lucide:refresh-cw',
+  download: 'i-lucide:download',
   reset: 'i-lucide:rotate-ccw',
   ok: 'i-lucide:circle-check',
   bad: 'i-lucide:circle-x',
@@ -29,6 +32,7 @@ const icons: Record<string, string> = {
   send: 'i-lucide:send-horizontal',
   pause: 'i-lucide:pause',
   stop: 'i-lucide:square',
+  grip: 'i-lucide:grip-vertical',
 }
 
 const cls = computed(() => icons[props.name] ?? '')

@@ -1,5 +1,5 @@
 import { createServer, type Server, type ServerResponse } from 'node:http'
-import { mkdir, readFile } from 'node:fs/promises'
+import { appendFile, mkdir, open, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   BASE_DEBOUNCE_MS,
@@ -7,6 +7,8 @@ import {
   CI_WATCH_INTERVAL_MS,
   CLONES_ROOT,
   DEV_MODE,
+  DSHW_ROOT,
+  DSHW_UPDATE_CHECK_INTERVAL_MS,
   HARNESS_ROOT,
   HOST,
   LOG_ROOT,
@@ -19,20 +21,54 @@ import {
   SERVICE_LABEL,
   WORKSPACE_REFRESH_INTERVAL_MS,
 } from './config.ts'
-import { createPrClone, listClones } from './clone.ts'
-import { cancelDshWorker, inspectDshWorker, startDshWorker, steerDshWorker, waitForDshWorker } from './dsh.ts'
+import { createPrClone, listClones, removeClone } from './clone.ts'
+import { readDshwRepositoryStatus } from './dshw-repository.ts'
 import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
 import { ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
+import { readHarnessRepositoryStatus } from './harness-repository.ts'
+import { mergePrDashboardSyncState } from './pr-dashboard.ts'
 import { StateStore } from './state.ts'
-import type { CloneRecord, DshWorkerProgress, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord, WorkerConfigInput } from './types.ts'
+import type { CloneGitStatus, CloneRecord, DshwRepositoryStatus, DshWorkerProgress, HarnessRepositoryStatus, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord, WorkerConfigInput, WorkerExecutionConfig, WorktreeCleanupCandidate, WorktreeCleanupPreview } from './types.ts'
 import { after, id, isTaskCancelled, messageOf, now, run, runOrThrow, TaskCancelledError } from './util.ts'
 import { refreshCodeWorkspace } from './workspace.ts'
 import { serveUiAsset } from './ui-static.ts'
 import { assertManagedHarnessOwned, ensureInstallation, ensureManagedHarness, requireDaemonInstallation, type InstallationRecord } from './install.ts'
 import { WorkerConfigStore } from './worker-config.ts'
+import { WorkerRegistry } from './worker-driver.ts'
 
 const NO_CHECKS_GRACE_MS = 5 * 60 * 1000
 const HISTORY_PAGE_SIZE = 35
+const OUTPUT_PAGE_BYTES = 64 * 1024
+
+interface OutputPage {
+  output: string
+  nextBefore?: number
+  hasMore: boolean
+}
+
+export async function readOutputPage(path: string, before?: number, pageBytes = OUTPUT_PAGE_BYTES): Promise<OutputPage> {
+  const file = await open(path, 'r')
+  try {
+    const { size } = await file.stat()
+    const end = Math.min(before ?? size, size)
+    const start = Math.max(0, end - pageBytes)
+    const buffer = Buffer.alloc(end - start)
+    await file.read(buffer, 0, buffer.length, start)
+    let contentStart = 0
+    if (start > 0) {
+      const newline = buffer.indexOf(0x0a)
+      contentStart = newline < 0 ? 0 : newline + 1
+    }
+    const pageStart = start + contentStart
+    return {
+      output: buffer.subarray(contentStart).toString('utf8').trimEnd(),
+      ...(pageStart > 0 ? { nextBefore: pageStart } : {}),
+      hasMore: pageStart > 0,
+    }
+  } finally {
+    await file.close()
+  }
+}
 
 export function observeBaseTip(sync: SyncRecord, oid: string): 'initialized' | 'unchanged' | 'changed' {
   const previous = sync.observedBaseOid
@@ -60,6 +96,10 @@ export function summarizePrDashboardErrors(messages: readonly string[]): string 
   return `${unique.length} 项刷新失败；${unique[0]}`
 }
 
+export function worktreeNeedsCleanupDecision(status: CloneGitStatus): boolean {
+  return status.staged || status.unstaged || status.merging || status.ahead > 0
+}
+
 export const HARNESS_RECONFIGURE_STEPS = [
   { command: 'git', args: ['clean', '-fdx'] },
   { command: 'git', args: ['pull', '--ff-only', 'origin', 'master'], timeoutMs: 5 * 60 * 1000 },
@@ -67,6 +107,13 @@ export const HARNESS_RECONFIGURE_STEPS = [
   { command: 'pnpm', args: ['install', '--frozen-lockfile'], timeoutMs: 10 * 60 * 1000 },
   { command: process.execPath, args: ['scripts/install-lefthook.mjs'] },
   { command: 'pnpm', args: ['run', 'typecheck'], timeoutMs: 10 * 60 * 1000 },
+] as const
+
+export const DSHW_UPDATE_STEPS = [
+  { command: 'git', args: ['pull', '--ff-only'], timeoutMs: 5 * 60 * 1000 },
+  { command: 'pnpm', args: ['install', '--frozen-lockfile'], timeoutMs: 10 * 60 * 1000 },
+  { command: 'pnpm', args: ['run', 'typecheck'], timeoutMs: 10 * 60 * 1000 },
+  { command: 'pnpm', args: ['run', 'build:ui'], timeoutMs: 2 * 60 * 1000 },
 ] as const
 
 function clearPendingBaseCheck(sync: SyncRecord): void {
@@ -80,10 +127,11 @@ export async function runService(): Promise<void> {
   await mkdir(CLONES_ROOT, { recursive: true })
   const store = await StateStore.open()
   const workers = await WorkerConfigStore.open()
+  const workerRegistry = await WorkerRegistry.create()
   store.state.serviceStartedAt = now()
   store.event('info', 'service', `后台服务已启动，监听 http://${HOST}:${PORT}`)
   await store.changed()
-  const service = new WorkflowService(store, installation, workers)
+  const service = new WorkflowService(store, installation, workers, workerRegistry)
   await service.start()
 }
 
@@ -91,6 +139,7 @@ class WorkflowService {
   readonly #store: StateStore
   readonly #installation: InstallationRecord
   readonly #workers: WorkerConfigStore
+  readonly #workerRegistry: WorkerRegistry
   readonly #syncLocks = new Set<string>()
   readonly #externalDshSyncs = new Set<string>()
   readonly #jobControllers = new Map<string, AbortController>()
@@ -101,6 +150,8 @@ class WorkflowService {
   #timer: NodeJS.Timeout | undefined
   #progressFingerprint = ''
   #runningUpdate = false
+  #updatingDshw = false
+  #cleaningWorktrees = false
   #updatePromise: Promise<void> | undefined
   #draining = false
   #lastRefWatchAt = 0
@@ -114,15 +165,20 @@ class WorkflowService {
   #prDashboardStatus: PrDashboardStatus
   #reviewRequests: ReviewRequestRecord[]
   #reviewRequestsStatus: PrDashboardStatus
+  #harnessRepository: HarnessRepositoryStatus
+  #dshwRepository: DshwRepositoryStatus
+  #lastDshwRepositoryRefreshAt = 0
+  #dshwRepositoryRefreshPromise: Promise<void> | undefined
   #rateLimited = false
   #rateLimitResetAt: string | undefined
   #lastDiscoveryAt = 0
   #discoveryPromise: Promise<void> | undefined
 
-  constructor(store: StateStore, installation: InstallationRecord, workers: WorkerConfigStore) {
+  constructor(store: StateStore, installation: InstallationRecord, workers: WorkerConfigStore, workerRegistry: WorkerRegistry) {
     this.#store = store
     this.#installation = installation
     this.#workers = workers
+    this.#workerRegistry = workerRegistry
     const cached = store.state.prDashboardCache
     this.#prDashboard = cached?.records ?? []
     this.#prDashboardStatus = {
@@ -139,10 +195,14 @@ class WorkflowService {
       stale: cachedReviews !== undefined,
       ...(cachedReviews?.lastSuccessAt === undefined ? {} : { lastSuccessAt: cachedReviews.lastSuccessAt }),
     }
+    this.#harnessRepository = { state: 'error', checkedAt: now(), error: '正在检查仓库' }
+    this.#dshwRepository = { state: 'error', checkedAt: now(), error: '正在检查 dshw 更新' }
     store.onChange(() => this.#broadcast())
   }
 
   async start(): Promise<void> {
+    this.#harnessRepository = await readHarnessRepositoryStatus()
+    this.#dshwRepository = await readDshwRepositoryStatus(false)
     this.#server = createServer((request, response) => {
       void this.#route(request.method ?? 'GET', request.url ?? '/', request, response)
         .catch(error => this.#json(response, 500, { error: messageOf(error) }))
@@ -157,6 +217,8 @@ class WorkflowService {
     process.on('SIGINT', () => void this.#drainAndExit())
     this.#resumeDshJobs()
     await this.#tick()
+    await this.#refreshHarnessRepository()
+    this.#broadcast()
   }
 
   async #route(
@@ -179,10 +241,6 @@ class WorkflowService {
       this.#json(response, 200, await this.#snapshot())
       return
     }
-    if (DEV_MODE && method === 'POST') {
-      this.#json(response, 403, { error: 'dev kernel 是只读的；生产操作请使用正式服务' })
-      return
-    }
     if (method === 'GET' && url === '/api/events') {
       response.writeHead(200, {
         'content-type': 'text/event-stream',
@@ -201,7 +259,10 @@ class WorkflowService {
     }
     if (method === 'GET' && new URL(url, `http://${HOST}:${PORT}`).pathname === '/api/jobs/output') {
       const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
-      this.#json(response, 200, { output: await this.#jobOutput(requestUrl.searchParams.get('jobId') ?? undefined) })
+      const beforeValue = requestUrl.searchParams.get('before')
+      const before = beforeValue === null ? undefined : Number(beforeValue)
+      if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new Error('输出分页游标无效')
+      this.#json(response, 200, await this.#jobOutput(requestUrl.searchParams.get('jobId') ?? undefined, before))
       return
     }
     if (method === 'GET' && new URL(url, `http://${HOST}:${PORT}`).pathname === '/api/jobs') {
@@ -209,15 +270,34 @@ class WorkflowService {
       this.#json(response, 200, this.#store.jobs(requestUrl.searchParams.get('before') ?? undefined, HISTORY_PAGE_SIZE))
       return
     }
+    if (method === 'GET' && new URL(url, `http://${HOST}:${PORT}`).pathname === '/api/worker-models') {
+      const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
+      const type = requestUrl.searchParams.get('type')
+      if (type !== 'dsh' && type !== 'codex' && type !== 'claude-code') throw new Error('未知 worker 类型')
+      const provider = requestUrl.searchParams.get('provider') ?? undefined
+      this.#json(response, 200, { catalog: await this.#workerRegistry.modelCatalog(type, provider) })
+      return
+    }
     if (method === 'GET' && url === '/api/workers') {
       this.#json(response, 200, { workers: this.#workers.list() })
       return
     }
     if (method === 'POST' && url === '/api/workers') {
-      const created = await this.#workers.create(await readBody(request) as unknown as WorkerConfigInput)
+      const input = await readBody(request) as unknown as WorkerConfigInput
+      this.#workerRegistry.assertAvailable(input.type)
+      const created = await this.#workers.create(input)
       this.#store.event('info', 'settings', `已添加 worker 配置「${created.name}」`)
       await this.#store.changed()
       this.#json(response, 201, { worker: created })
+      return
+    }
+    if (method === 'PUT' && url === '/api/workers/order') {
+      const body = await readBody(request)
+      if (!Array.isArray(body.ids) || body.ids.some(value => typeof value !== 'string')) throw new Error('ids must be a string array')
+      const workers = await this.#workers.reorder(body.ids)
+      this.#store.event('info', 'settings', `worker 顺序已更新；默认使用「${workers[0]?.name ?? '无'}」`)
+      await this.#store.changed()
+      this.#json(response, 200, { workers })
       return
     }
     if (method === 'PUT' && url.startsWith('/api/workers/') && url.endsWith('/default')) {
@@ -236,7 +316,9 @@ class WorkflowService {
         await this.#store.changed()
         this.#json(response, 200, { deleted: true })
       } else {
-        const updated = await this.#workers.update(configId, await readBody(request) as unknown as WorkerConfigInput)
+        const input = await readBody(request) as unknown as WorkerConfigInput
+        this.#workerRegistry.assertAvailable(input.type)
+        const updated = await this.#workers.update(configId, input)
         this.#store.event('info', 'settings', `已更新 worker 配置「${updated.name}」`)
         await this.#store.changed()
         this.#json(response, 200, { worker: updated })
@@ -267,6 +349,27 @@ class WorkflowService {
       this.#json(response, 202, { accepted: true, prs: this.#prDashboard.length })
       return
     }
+    if (method === 'POST' && url === '/api/worktrees/cleanup/preview') {
+      if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
+      if (this.#updatePromise !== undefined || this.#updatingDshw || this.#cleaningWorktrees) throw new Error('仓库维护任务正在运行，请等待完成')
+      this.#json(response, 200, await this.#scanWorktreeCleanup())
+      return
+    }
+    if (method === 'POST' && url === '/api/worktrees/cleanup') {
+      if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
+      if (this.#updatePromise !== undefined || this.#updatingDshw || this.#cleaningWorktrees) throw new Error('仓库维护任务正在运行，请等待完成')
+      const body = await readBody(request)
+      if (!Array.isArray(body.deleteDirty) || body.deleteDirty.some(value => typeof value !== 'string')) {
+        throw new Error('deleteDirty must be a string array')
+      }
+      this.#cleaningWorktrees = true
+      try {
+        this.#json(response, 200, await this.#cleanupWorktrees(body.deleteDirty))
+      } finally {
+        this.#cleaningWorktrees = false
+      }
+      return
+    }
     if (method === 'POST' && url === '/api/jobs/cancel') {
       const body = await readBody(request)
       const cancelled = await this.#cancelJob(bodyString(body, 'jobId'))
@@ -294,7 +397,13 @@ class WorkflowService {
       const clone = await findClone(name)
       const sync = await this.#manualSync(clone)
       if (action === 'merge-base-direct') this.#startDirectMergeBase(sync)
-      else this.#startManualAction(sync, action)
+      else {
+        const workerConfig = this.#workers.executionConfig(bodyString(body, 'workerConfigId'))
+        const additionalInstruction = bodyString(body, 'additionalInstruction')?.trim()
+        if ((additionalInstruction?.length ?? 0) > 4_000) throw new Error('额外指令不能超过 4000 个字符')
+        this.#workerRegistry.assertAvailable(workerConfig.type)
+        this.#startManualAction(sync, action, workerConfig, additionalInstruction)
+      }
       this.#json(response, 202, { accepted: true, syncId: sync.id })
       return
     }
@@ -303,8 +412,18 @@ class WorkflowService {
       setImmediate(() => void this.#drainAndExit())
       return
     }
+    if (method === 'POST' && url === '/api/dshw/update') {
+      if (DEV_MODE) throw new Error('开发模式下不能从页面更新 dshw')
+      if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
+      if (this.#updatingDshw || this.#updatePromise !== undefined || this.#cleaningWorktrees) throw new Error('仓库维护任务正在运行，请等待完成')
+      await this.#updateDshw()
+      this.#json(response, 200, { updated: true, restarting: true })
+      setImmediate(() => void this.#drainAndExit())
+      return
+    }
     if (method === 'POST' && url === '/api/update') {
       if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
+      if (this.#updatingDshw || this.#cleaningWorktrees) throw new Error('仓库维护任务正在运行，请等待完成')
       // 失败状态已在 #updateHarness 内记录并广播，这里只需避免 unhandled rejection
       void this.#ensureHarnessUpdated().catch(() => {})
       this.#json(response, 202, { accepted: true })
@@ -312,6 +431,7 @@ class WorkflowService {
     }
     if (method === 'POST' && url === '/api/reconfigure') {
       if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
+      if (this.#updatingDshw || this.#cleaningWorktrees) throw new Error('仓库维护任务正在运行，请等待完成')
       if (this.#updatePromise !== undefined) throw new Error('主仓库维护任务正在运行，请等待完成')
       const promise = this.#reconfigureHarness()
       this.#updatePromise = promise
@@ -331,42 +451,146 @@ class WorkflowService {
   async #snapshot(): Promise<object> {
     const { prDashboardCache: _prDashboardCache, reviewRequestsCache: _reviewRequestsCache, jobs, ...state } = this.#store.state
     const recentJobs = jobs.filter((job, index) => job.status === 'running' || index >= jobs.length - HISTORY_PAGE_SIZE)
+    const clones = await listClones()
+    const worktreeCleanupCount = this.#prDashboardStatus.state === 'ready' && !this.#prDashboardStatus.stale
+      ? this.#worktreeCleanupState(clones).inactive.length
+      : undefined
     return {
       service: {
         startedAt: this.#store.state.serviceStartedAt,
         installationId: this.#installation.id,
         draining: this.#draining,
-        activeJobs: this.#syncLocks.size + (this.#runningUpdate ? 1 : 0),
+        activeJobs: this.#syncLocks.size + (this.#runningUpdate ? 1 : 0) + (this.#updatingDshw ? 1 : 0) + (this.#cleaningWorktrees ? 1 : 0),
+        updatingDshw: this.#updatingDshw,
         port: PORT,
         devMode: DEV_MODE,
         rateLimited: this.#rateLimited,
         ...(this.#rateLimitResetAt === undefined ? {} : { rateLimitResetAt: this.#rateLimitResetAt }),
       },
-      clones: await listClones(),
-      prs: this.#prDashboard,
+      clones,
+      ...(worktreeCleanupCount === undefined ? {} : { worktreeCleanupCount }),
+      prs: mergePrDashboardSyncState(this.#prDashboard, this.#store.state.syncs),
       prDashboard: this.#prDashboardStatus,
       reviewRequests: this.#reviewRequests,
       reviewRequestsStatus: this.#reviewRequestsStatus,
       jobProgress: this.#readJobProgress(),
       workers: this.#workers.list(),
+      workerTypes: this.#workerRegistry.availability(),
+      harnessRepository: this.#harnessRepository,
+      dshwRepository: this.#dshwRepository,
       ...state,
       jobs: recentJobs,
     }
   }
 
-  async #jobOutput(jobId: string | undefined): Promise<string> {
+  async #jobOutput(jobId: string | undefined, before?: number): Promise<OutputPage> {
     if (jobId === undefined) throw new Error('缺少 jobId')
     const job = this.#store.state.jobs.find(candidate => candidate.id === jobId)
     if (job === undefined) throw new Error(`找不到任务：${jobId}`)
     const runId = job.dshWorker?.handle.runId
-    if (runId === undefined) return job.output ?? ''
-    if (!/^dsh-[a-z0-9-]+$/u.test(runId)) throw new Error('任务包含无效的 runId')
+    if (runId === undefined) return { output: job.output ?? '', hasMore: false }
+    if (!/^[a-z]+-[a-z0-9-]+$/u.test(runId)) throw new Error('任务包含无效的 runId')
     try {
-      const output = await readFile(join(LOG_ROOT, `${runId}.log`), 'utf8')
-      return output.trimEnd() || job.output || ''
+      const page = await readOutputPage(join(LOG_ROOT, `${runId}.log`), before)
+      return page.output === '' && !page.hasMore
+        ? { output: job.output ?? '', hasMore: false }
+        : page
     } catch {
-      return job.output ?? ''
+      return { output: job.output ?? '', hasMore: false }
     }
+  }
+
+  async #scanWorktreeCleanup(): Promise<WorktreeCleanupPreview> {
+    await this.#discoverMyPrs()
+    await this.#refreshPrDashboard()
+    if (this.#prDashboardStatus.state !== 'ready' || this.#prDashboardStatus.stale) {
+      throw new Error(`无法确认 active PR，已取消清理：${this.#prDashboardStatus.error ?? 'PR 状态不是最新'}`)
+    }
+    const clones = await listClones()
+    const { activeNames, busyPaths, inactive } = this.#worktreeCleanupState(clones)
+    const candidates = await Promise.all(inactive.map(async clone => {
+      try {
+        const status = await cloneGitStatus(clone.path, '@{upstream}')
+        return {
+          name: clone.name,
+          branch: clone.branch,
+          ...status,
+          needsDecision: worktreeNeedsCleanupDecision(status),
+        } satisfies WorktreeCleanupCandidate
+      } catch (error) {
+        return {
+          name: clone.name,
+          branch: clone.branch,
+          staged: false,
+          unstaged: false,
+          merging: false,
+          ahead: 0,
+          behind: 0,
+          needsDecision: true,
+          inspectionError: messageOf(error),
+        } satisfies WorktreeCleanupCandidate
+      }
+    }))
+    return {
+      total: clones.length,
+      active: clones.filter(clone => activeNames.has(clone.name)).length,
+      busy: clones.filter(clone => busyPaths.has(clone.path) && !activeNames.has(clone.name)).length,
+      candidates: candidates.sort((left, right) => Number(left.needsDecision) - Number(right.needsDecision) || left.name.localeCompare(right.name)),
+    }
+  }
+
+  #worktreeCleanupState(clones: CloneRecord[]): {
+    activeNames: Set<string>
+    busyPaths: Set<string>
+    inactive: CloneRecord[]
+  } {
+    const activeNames = new Set(this.#prDashboard.map(record => record.cloneName))
+    const busyPaths = new Set(this.#store.state.syncs
+      .filter(sync => this.#syncLocks.has(sync.id))
+      .map(sync => sync.clonePath))
+    for (const job of this.#store.state.jobs) {
+      if (job.status === 'running' && job.dshWorker !== undefined) busyPaths.add(job.dshWorker.sync.clonePath)
+    }
+    return {
+      activeNames,
+      busyPaths,
+      inactive: clones.filter(clone => !activeNames.has(clone.name) && !busyPaths.has(clone.path)),
+    }
+  }
+
+  async #cleanupWorktrees(deleteDirty: string[]): Promise<{
+    deleted: string[]
+    kept: string[]
+    failed: Array<{ name: string, error: string }>
+  }> {
+    const preview = await this.#scanWorktreeCleanup()
+    const forceDelete = new Set(deleteDirty)
+    const deletable = preview.candidates.filter(candidate => !candidate.needsDecision || forceDelete.has(candidate.name))
+    const deleted: string[] = []
+    const removedPaths = new Set<string>()
+    const failed: Array<{ name: string, error: string }> = []
+    for (const candidate of deletable) {
+      try {
+        const clone = await removeClone(candidate.name)
+        deleted.push(candidate.name)
+        removedPaths.add(clone.path)
+      } catch (error) {
+        failed.push({ name: candidate.name, error: messageOf(error) })
+      }
+    }
+    const kept = preview.candidates
+      .filter(candidate => candidate.needsDecision && !forceDelete.has(candidate.name))
+      .map(candidate => candidate.name)
+    if (removedPaths.size > 0) {
+      this.#store.state.syncs = this.#store.state.syncs.filter(sync => !removedPaths.has(sync.clonePath))
+      this.#lastWorkspaceRefreshAt = 0
+      this.#store.event('info', 'worktree-cleanup', `已清理 ${deleted.length} 个非 active PR worktree${kept.length > 0 ? `，保留 ${kept.length} 个含本地内容的 worktree` : ''}`)
+      await this.#store.changed()
+      await this.#refreshWorkspace()
+    }
+    for (const failure of failed) this.#store.event('error', 'worktree-cleanup', `${failure.name} 删除失败：${failure.error}`)
+    if (failed.length > 0) await this.#store.changed()
+    return { deleted, kept, failed }
   }
 
   async #setSyncEnabled(clone: CloneRecord, enabled: boolean): Promise<SyncRecord> {
@@ -496,6 +720,7 @@ class WorkflowService {
     } catch (error) {
       this.#noteGhFailure(error)
       const detail = messageOf(error)
+      const errorEvent = this.#store.event('warning', 'reviews', `待 review PR 刷新失败，保留旧数据：${detail}`)
       this.#reviewRequestsStatus = {
         state: 'error',
         refreshing: false,
@@ -503,8 +728,8 @@ class WorkflowService {
         lastAttemptAt: attemptAt,
         ...(this.#reviewRequestsStatus.lastSuccessAt === undefined ? {} : { lastSuccessAt: this.#reviewRequestsStatus.lastSuccessAt }),
         error: detail,
+        errorEventId: errorEvent.id,
       }
-      this.#store.event('warning', 'reviews', `待 review PR 刷新失败，保留旧数据：${detail}`)
     }
     await this.#store.changed()
   }
@@ -512,6 +737,10 @@ class WorkflowService {
   async #tick(): Promise<void> {
     if (this.#draining) return
     const currentTime = Date.now()
+    if (currentTime - this.#lastDshwRepositoryRefreshAt >= DSHW_UPDATE_CHECK_INTERVAL_MS && !this.#updatingDshw) {
+      this.#lastDshwRepositoryRefreshAt = currentTime
+      void this.#refreshDshwRepository(true)
+    }
     if (currentTime - this.#lastDiscoveryAt >= PR_DISCOVERY_INTERVAL_MS) {
       this.#lastDiscoveryAt = currentTime
       void this.#discoverMyPrs()
@@ -593,9 +822,15 @@ class WorkflowService {
       const byBranch = new Map(openPrs.map(pr => [pr.headRefName, pr]))
       const previousByClone = new Map(this.#prDashboard.map(record => [record.cloneName, record]))
       const refreshErrors: string[] = []
+      let firstErrorEventId: string | undefined
+      const recordRefreshError = (detail: string, kind = 'pr-dashboard'): void => {
+        refreshErrors.push(detail)
+        const event = this.#store.event('warning', kind, detail)
+        firstErrorEventId ??= event.id
+      }
       const clonedBranches = new Set(clones.map(clone => `${clone.repoSlug}\n${clone.branch}`))
       const pendingClones = openPrs.filter(pr => !clonedBranches.has(`${repoSlug}\n${pr.headRefName}`))
-      if (pendingClones.length > 0) refreshErrors.push(`${pendingClones.length} 个 open PR 的本地 clone 尚未准备完成`)
+      if (pendingClones.length > 0) recordRefreshError(`${pendingClones.length} 个 open PR 的本地 clone 尚未准备完成`)
       const commitFetches = new Map<string, Promise<void>>()
       const targetTipFetches = new Map<string, Promise<string>>()
       const commonDirs = new Map<string, Promise<string>>()
@@ -659,9 +894,8 @@ class WorkflowService {
               conflictPaths = await this.#cachedConflictPaths(clone.repoSlug, clone.path, pr.headRefOid, targetOid)
             } catch (error) {
               const detail = `${clone.name} 冲突文件：${messageOf(error)}`
-              refreshErrors.push(detail)
+              recordRefreshError(detail, 'conflict-paths')
               this.#noteGhFailure(error)
-              this.#store.event('warning', 'conflict-paths', detail)
             }
           }
           const sync = this.#store.state.syncs.find(candidate => (
@@ -681,6 +915,11 @@ class WorkflowService {
             mergeable: pr.mergeable,
             mergeStateStatus: pr.mergeStateStatus,
             ...(conflictPaths === undefined ? {} : { conflictPaths }),
+            ...(conflictPaths !== undefined
+              && conflictPaths.length > 0
+              && conflictPaths.every(isDocumentationConflictPath)
+              ? { autoMergeSkippedReason: '仅文档冲突' }
+              : {}),
             ...(baseBehind ? { baseBehind: true } : {}),
             reviewDecision: pr.reviewDecision,
             reviewRequests: pr.reviewRequests
@@ -704,9 +943,8 @@ class WorkflowService {
           return record
         } catch (error) {
           const detail = `${clone.name}: ${messageOf(error)}`
-          refreshErrors.push(detail)
+          recordRefreshError(detail)
           this.#noteGhFailure(error)
-          this.#store.event('warning', 'pr-dashboard', detail)
           return previousByClone.get(clone.name)
         }
       }))
@@ -728,9 +966,8 @@ class WorkflowService {
           }
         } catch (error) {
           const detail = `review 评论计数失败：${messageOf(error)}`
-          refreshErrors.push(detail)
+          recordRefreshError(detail)
           this.#noteGhFailure(error)
-          this.#store.event('warning', 'pr-dashboard', detail)
         }
       }
       const completedAt = now()
@@ -749,6 +986,7 @@ class WorkflowService {
         lastAttemptAt: attemptAt,
         ...(lastSuccessAt === undefined ? {} : { lastSuccessAt }),
         error: summarizePrDashboardErrors(refreshErrors.length > 0 ? refreshErrors : ['已发现 open PR，但对应 clone 尚未准备完成']),
+        ...(firstErrorEventId === undefined ? {} : { errorEventId: firstErrorEventId }),
       }
       this.#store.state.prDashboardCache = {
         records: this.#prDashboard,
@@ -761,6 +999,7 @@ class WorkflowService {
       // 整体失败（如 GraphQL 限流）时保留旧 dashboard，不要清空列表
       this.#noteGhFailure(error)
       const detail = summarizePrDashboardErrors([messageOf(error)])
+      const errorEvent = this.#store.event('warning', 'pr-dashboard', `PR 列表刷新失败，保留旧数据：${messageOf(error)}`)
       this.#prDashboardStatus = {
         state: 'error',
         refreshing: false,
@@ -768,8 +1007,8 @@ class WorkflowService {
         lastAttemptAt: attemptAt,
         ...(this.#prDashboardStatus.lastSuccessAt === undefined ? {} : { lastSuccessAt: this.#prDashboardStatus.lastSuccessAt }),
         error: detail,
+        errorEventId: errorEvent.id,
       }
-      this.#store.event('warning', 'pr-dashboard', `PR 列表刷新失败，保留旧数据：${messageOf(error)}`)
       await this.#store.changed()
     })
     try {
@@ -1039,7 +1278,7 @@ class WorkflowService {
     await this.#store.changed()
   }
 
-  async #runAgent(sync: SyncRecord, kind: 'merge-base' | 'fix-ci' | 'resolve-comments'): Promise<void> {
+  async #runAgent(sync: SyncRecord, kind: 'merge-base' | 'fix-ci' | 'resolve-comments', selectedWorker?: WorkerExecutionConfig, additionalInstruction?: string): Promise<void> {
     if (sync.agentPausedReason !== undefined) {
       this.#store.event(
         'warning',
@@ -1055,7 +1294,9 @@ class WorkflowService {
     const oldHead = sync.headOid
     try {
       if (kind === 'fix-ci') sync.lastFixedHeadOid = oldHead
-      const handle = await startDshWorker(sync, kind, this.#workers.executionConfig())
+      const workerConfig = selectedWorker ?? this.#workers.executionConfig()
+      job.executor = workerConfig.name
+      const handle = await this.#workerRegistry.start(sync, kind, workerConfig, additionalInstruction)
       job.dshWorker = { handle, kind, sync: structuredClone(sync), oldHead, label }
       await this.#store.changed()
       await this.#completeDshJob(job, sync)
@@ -1074,13 +1315,13 @@ class WorkflowService {
     const signal = this.#jobSignal(job)
     this.#externalDshSyncs.add(sync.id)
     try {
-      const record = await waitForDshWorker(worker.handle, signal)
+      const record = await this.#workerRegistry.wait(worker.handle, signal)
       if (!this.#store.state.dshRuns.some(candidate => candidate.id === record.id)) {
         this.#store.state.dshRuns.push(record)
       }
       job.output = record.finalOutput
       if (record.status === 'cancelled') throw new TaskCancelledError()
-      if (record.status === 'failed') throw new Error(`dsh 调用失败：${record.finalOutput}`)
+      if (record.status === 'failed') throw new Error(`${worker.handle.workerType ?? 'dsh'} 调用失败：${record.finalOutput}`)
       if (record.status === 'blocked') {
         const reason = record.blockedReason ?? 'dsh 报告任务无法完成'
         if (worker.kind === 'fix-ci' && sync.lastFixedHeadOid === worker.oldHead) {
@@ -1142,7 +1383,7 @@ class WorkflowService {
       if (job.cancelRequestedAt !== undefined) controller.abort()
       this.#externalDshSyncs.add(sync.id)
       this.#store.event('info', 'dsh', `重新接管 ${sync.cloneName} / PR #${sync.prNumber} 的 dsh worker ${worker.handle.label}`)
-      void inspectDshWorker(worker.handle).then(progress => {
+      void this.#workerRegistry.inspect(worker.handle).then(progress => {
         this.#workerProgress.set(worker.handle.runId, progress)
         this.#broadcastProgress()
       }).catch(() => {})
@@ -1182,7 +1423,7 @@ class WorkflowService {
     }
   }
 
-  #startManualAction(sync: SyncRecord, action: 'merge-base' | 'fix-ci' | 'resolve-comments'): void {
+  #startManualAction(sync: SyncRecord, action: 'merge-base' | 'fix-ci' | 'resolve-comments', workerConfig: WorkerExecutionConfig, additionalInstruction?: string): void {
     if (this.#syncLocks.has(sync.id)) throw new Error(`${sync.cloneName} 已有任务执行中`)
     const label = action === 'merge-base' ? `手动合并最新 ${sync.baseRefName}` : action === 'fix-ci' ? '手动修复 CI' : '手动解决 review 评论'
     if (sync.agentPausedReason !== undefined) {
@@ -1193,7 +1434,7 @@ class WorkflowService {
     this.#store.event('info', 'manual', `${sync.cloneName} / PR #${sync.prNumber}: ${label}`)
     void this.#store.changed()
     void this.#withSyncLock(sync, async () => {
-      await this.#runAgent(sync, action)
+      await this.#runAgent(sync, action, workerConfig, additionalInstruction)
     })
   }
 
@@ -1234,7 +1475,7 @@ class WorkflowService {
     if (related.length === 0) throw new Error('任务已经结束或当前不可终止')
     const requestedAt = now()
     for (const job of related) {
-      this.#appendDshOutput(job, '系统：已请求终止任务')
+      await this.#appendDshOutput(job, '系统：已请求终止任务')
       job.cancelRequestedAt = requestedAt
       this.#jobControllers.get(job.id)?.abort()
     }
@@ -1245,8 +1486,8 @@ class WorkflowService {
 
   async #pauseDshJob(jobId: string | undefined): Promise<void> {
     const job = this.#activeDshJob(jobId)
-    await cancelDshWorker(job.dshWorker!.handle)
-    this.#appendDshOutput(job, '系统：已请求暂停任务')
+    await this.#workerRegistry.cancel(job.dshWorker!.handle)
+    await this.#appendDshOutput(job, '系统：已请求暂停任务')
     this.#store.event('warning', 'dsh-control', `已请求暂停：${job.summary}`)
     await this.#store.changed()
   }
@@ -1254,8 +1495,8 @@ class WorkflowService {
   async #steerDshJob(jobId: string | undefined, prompt: string | undefined): Promise<void> {
     if (prompt === undefined || prompt.trim() === '') throw new Error('请输入要发送给 dsh 的内容')
     const job = this.#activeDshJob(jobId)
-    await steerDshWorker(job.dshWorker!.handle, prompt.trim())
-    this.#appendDshOutput(job, `用户指令：${prompt.trim()}`)
+    await this.#workerRegistry.steer(job.dshWorker!.handle, prompt.trim())
+    await this.#appendDshOutput(job, `用户指令：${prompt.trim()}`)
     this.#store.event('info', 'dsh-control', `已 steer：${job.summary}`)
     await this.#store.changed()
   }
@@ -1264,14 +1505,15 @@ class WorkflowService {
     if (jobId === undefined) throw new Error('缺少 jobId')
     const job = this.#store.state.jobs.find(candidate => candidate.id === jobId)
     if (job === undefined) throw new Error(`找不到任务：${jobId}`)
-    if (job.status !== 'running' || job.dshWorker === undefined) throw new Error('任务已结束或不是可控制的 dsh 任务')
+    if (job.status !== 'running' || job.dshWorker === undefined) throw new Error('任务已结束或不是可控制的 Worker 任务')
     if (job.cancelRequestedAt !== undefined) throw new Error('任务正在终止')
     return job as JobRecord & { dshWorker: NonNullable<JobRecord['dshWorker']> }
   }
 
-  #appendDshOutput(job: JobRecord, line: string): void {
+  async #appendDshOutput(job: JobRecord, line: string): Promise<void> {
     const handle = job.dshWorker?.handle
     if (handle === undefined) return
+    await appendFile(join(LOG_ROOT, `${handle.runId}.log`), `${line}\n`, 'utf8').catch(() => {})
     const previous = this.#workerProgress.get(handle.runId)
     this.#workerProgress.set(handle.runId, {
       runId: handle.runId,
@@ -1283,6 +1525,7 @@ class WorkflowService {
     })
     this.#broadcastProgress()
   }
+
 
   #applyPr(sync: SyncRecord, pr: PullRequestInfo): void {
     sync.prUrl = pr.url
@@ -1337,6 +1580,8 @@ class WorkflowService {
       throw error
     } finally {
       this.#runningUpdate = false
+      await this.#refreshHarnessRepository()
+      this.#broadcast()
     }
   }
 
@@ -1381,6 +1626,61 @@ class WorkflowService {
       throw error
     } finally {
       this.#runningUpdate = false
+      await this.#refreshHarnessRepository()
+      this.#broadcast()
+    }
+  }
+
+  async #refreshHarnessRepository(): Promise<void> {
+    this.#harnessRepository = await readHarnessRepositoryStatus()
+  }
+
+  async #refreshDshwRepository(fetchRemote: boolean): Promise<void> {
+    if (this.#dshwRepositoryRefreshPromise !== undefined) return await this.#dshwRepositoryRefreshPromise
+    const promise = (async () => {
+      this.#dshwRepository = await readDshwRepositoryStatus(fetchRemote)
+      this.#broadcast()
+    })()
+    this.#dshwRepositoryRefreshPromise = promise
+    try {
+      await promise
+    } finally {
+      if (this.#dshwRepositoryRefreshPromise === promise) this.#dshwRepositoryRefreshPromise = undefined
+    }
+  }
+
+  async #updateDshw(): Promise<void> {
+    this.#updatingDshw = true
+    const job = this.#beginJob('update-dshw', '更新 dshw 并重启服务')
+    const signal = this.#jobSignal(job)
+    this.#broadcast()
+    try {
+      if (this.#dshwRepositoryRefreshPromise !== undefined) await this.#dshwRepositoryRefreshPromise
+      const branch = (await runOrThrow('git', ['branch', '--show-current'], { cwd: DSHW_ROOT, signal })).stdout.trim()
+      if (branch === '') throw new Error('dshw 仓库处于 detached HEAD，无法一键更新')
+      await runOrThrow('git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], { cwd: DSHW_ROOT, signal })
+      const status = await runOrThrow('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: DSHW_ROOT, signal })
+      if (status.stdout !== '') throw new Error('dshw 仓库存在本地修改，拒绝自动更新；请先提交、stash 或清理这些修改')
+      const before = await currentHead(DSHW_ROOT)
+      for (const step of DSHW_UPDATE_STEPS) {
+        await runOrThrow(step.command, [...step.args], { cwd: DSHW_ROOT, signal, timeoutMs: step.timeoutMs })
+      }
+      const current = await currentHead(DSHW_ROOT)
+      const summary = current === before
+        ? `dshw 已是最新，已重新构建并准备重启服务`
+        : `dshw 已更新 ${before.slice(0, 8)} → ${current.slice(0, 8)}，准备重启服务`
+      this.#finishJob(job, 'succeeded', summary)
+      this.#store.event('info', 'update', summary)
+      await this.#store.changed()
+    } catch (error) {
+      const detail = messageOf(error)
+      this.#finishJob(job, isTaskCancelled(error) ? 'cancelled' : 'failed', detail)
+      this.#store.event('error', 'update', `dshw 更新失败：${detail}`)
+      await this.#store.changed()
+      throw error
+    } finally {
+      this.#updatingDshw = false
+      await this.#refreshDshwRepository(false)
     }
   }
 
@@ -1430,7 +1730,7 @@ class WorkflowService {
     this.#store.event('info', 'service', '开始重启：独立 dsh worker 将继续运行，仅等待短任务安全结束')
     await this.#store.changed()
     if (this.#timer !== undefined) clearInterval(this.#timer)
-    while (this.#runningUpdate || [...this.#syncLocks].some(syncId => !this.#externalDshSyncs.has(syncId))) {
+    while (this.#runningUpdate || this.#updatingDshw || [...this.#syncLocks].some(syncId => !this.#externalDshSyncs.has(syncId))) {
       await new Promise(resolve => setTimeout(resolve, 250))
     }
     for (const response of this.#sse) response.end()

@@ -67,10 +67,11 @@ export class StateStore {
     for (const listener of this.#listeners) listener()
   }
 
-  event(level: EventRecord['level'], kind: string, message: string): void {
-    const record = { id: id('event'), time: now(), level, kind, message }
+  event(level: EventRecord['level'], kind: string, message: string): EventRecord {
+    const record: EventRecord = { id: id('event'), time: now(), level, kind, message }
     this.state.events.push(record)
     this.#logWriteChain = this.#logWriteChain.then(() => appendFile(EVENT_LOG_FILE, `${JSON.stringify(record)}\n`))
+    return record
   }
 
   async logs(before: string | undefined, limit: number): Promise<LogPage> {

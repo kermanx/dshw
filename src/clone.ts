@@ -1,10 +1,11 @@
 import { access, mkdir, readdir, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { CLONE_METADATA_ROOT, CLONES_ROOT, HARNESS_ROOT } from './config.ts'
 import type { CloneRecord, MyPullRequestSummary } from './types.ts'
 import {
   branchName,
   addSharedWorktree,
+  isInsideDirectory,
   originUrl,
   removeSharedWorktree,
   repoSlugFromRemote,
@@ -82,6 +83,30 @@ export async function createPrClone(pr: MyPullRequestSummary, repoSlug: string):
     await rm(destination, { recursive: true, force: true })
     throw error
   }
+}
+
+export async function removeClone(name: string): Promise<CloneRecord> {
+  validateCloneName(name)
+  const clone = (await listClones()).find(candidate => candidate.name === name)
+  if (clone === undefined) throw new Error(`找不到 worktree：${name}`)
+  await removeCloneRecord(clone)
+  return clone
+}
+
+export async function removeCloneRecord(
+  clone: CloneRecord,
+  paths: { managedRoot?: string, clonesRoot?: string, metadataRoot?: string } = {},
+): Promise<void> {
+  validateCloneName(clone.name)
+  const managedRoot = paths.managedRoot ?? HARNESS_ROOT
+  const clonesRoot = paths.clonesRoot ?? CLONES_ROOT
+  const metadataRoot = paths.metadataRoot ?? CLONE_METADATA_ROOT
+  if (resolve(clone.path) === resolve(clonesRoot) || !isInsideDirectory(clone.path, clonesRoot)) {
+    throw new Error(`拒绝删除 worktree 目录之外的路径：${clone.path}`)
+  }
+  await removeSharedWorktree(managedRoot, clone.worktreeBranch, clone.path)
+  await rm(join(metadataRoot, `${clone.name}.json`), { force: true })
+  await rm(clone.path, { recursive: true, force: true })
 }
 
 export function formatClonePath(clone: CloneRecord): string {

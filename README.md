@@ -86,11 +86,19 @@ dshw/
 
 ## Worker 配置
 
-看板的 **Settings** 页可以维护多个 worker 配置、查看模型和凭据状态，并选择默认配置。当前可运行的类型是 dsh；Codex 和 Claude Code 已预留配置类型，暂时以未启用状态保存，后续接入执行器时不需要改变配置页结构。
+Settings 的 **仓库管理** 页面会显示 dshw 与主仓库当前落后上游的提交数，以及 Worktree 总数和可清理数量。dshw 可以一键 fast-forward 更新、安装依赖、完成检查与构建，然后安全重启服务；存在本地修改时会拒绝自动更新。主仓库维护集中提供同步、从头配置与过期 Worktree 清理。清理只处理不再对应 active PR 且没有运行中任务占用的 Worktree；包含未提交改动或未推送提交时必须逐项确认是否丢弃。
+
+看板的 **Settings** 页可以维护多个 worker 配置并查看运行状态。Worker 可以直接拖拽排序，排在第一项的配置就是默认 Worker；任务选择面板也使用相同顺序。初始只创建 dsh 配置；Codex 需要用户手动添加，不会自动成为默认 worker。
 
 新建 dsh Worker 时，可以直接填写 Provider、模型、API Key、API Base URL 和 Search Base URL，不需要额外配置环境变量。API Key 也可以改为从指定环境变量读取；此时沿用启动环境或 Harness 原生的 `~/.dsh/.env`。
 
 直接输入的 API Key 不会出现在状态 API 或 `workers.json` 中，而是单独保存在权限为 `0600` 的 `worker-secrets.env`。Base URL 留空时继续使用对应的 Harness 环境变量。
+
+Codex Worker 直接使用本机的 Codex CLI、登录状态和配置。设置页检测不到可运行且已登录的 Codex 时，会禁用 Codex 类型并显示原因；可用时只需填写配置名称，模型留空则沿用本机默认值。每个任务使用不落盘的临时 Codex thread，不会加入用户的 Codex 任务历史。
+
+服务内部通过统一的 Worker Driver 接口管理不同执行器。dsh 和 Codex 都提供相同的启动、等待、状态、Steer、暂停和终止能力；新增执行器不需要让任务调度层感知其协议细节。Claude Code 目前仅保留类型入口，尚未接入。
+
+PR 操作按钮左键单击时会直接使用默认 Worker；右键单击时可以为本次任务选择其他 Worker，不会改变全局排序。自动任务始终使用触发时排在第一项的 Worker。
 
 ## dsh 任务控制
 
