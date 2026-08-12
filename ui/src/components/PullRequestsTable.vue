@@ -106,10 +106,10 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
       <thead>
         <tr>
           <th :class="thClass">Pull request</th>
-          <th class="w-170px" :class="thClass">CI</th>
+          <th class="w-210px" :class="thClass">CI</th>
           <th class="w-210px" :class="thClass">Review</th>
           <th class="w-210px" :class="thClass">Merge</th>
-          <th class="w-110px" :class="thClass">Sync</th>
+          <th class="w-210px" :class="thClass">Sync</th>
         </tr>
       </thead>
       <tbody class="[&>tr]:transition-colors [&>tr]:duration-100 [&>tr:hover]:bg-alt">
