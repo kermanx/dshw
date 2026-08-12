@@ -12,6 +12,7 @@ import {
   PORT,
   PR_DASHBOARD_INTERVAL_MS,
   PR_DISCOVERY_INTERVAL_MS,
+  PR_REVIEW_INTERVAL_MS,
   PR_WATCH_INTERVAL_MS,
   REF_WATCH_INTERVAL_MS,
   WORKSPACE_REFRESH_INTERVAL_MS,
@@ -21,7 +22,7 @@ import { startDshWorker, waitForDshWorker } from './dsh.ts'
 import { commitOid, currentHead, fetchBranch, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
 import { ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { StateStore } from './state.ts'
-import type { CloneRecord, DshWorkerProgress, JobRecord, PrDashboardRecord, PullRequestInfo, ReviewRequestRecord, SyncRecord } from './types.ts'
+import type { CloneRecord, DshWorkerProgress, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord } from './types.ts'
 import { after, id, isTaskCancelled, messageOf, now, run, runOrThrow, TaskCancelledError } from './util.ts'
 import { refreshCodeWorkspace } from './workspace.ts'
 import { serveUiAsset } from './ui-static.ts'
@@ -42,6 +43,16 @@ export function scheduleBaseCheck(sync: SyncRecord, observedAt = Date.now()): st
   const mustCheckAt = Date.parse(startedAt) + BASE_DEBOUNCE_MAX_MS
   sync.pendingBaseCheckAt = new Date(Math.min(debounceAt, mustCheckAt)).toISOString()
   return sync.pendingBaseCheckAt
+}
+
+export function summarizePrDashboardErrors(messages: readonly string[]): string {
+  const unique = [...new Set(messages
+    .map(message => message.replace(/\s+/gu, ' ').trim())
+    .filter(message => message !== '')
+    .map(message => message.length <= 360 ? message : `${message.slice(0, 360)}…`))]
+  if (unique.length === 0) return 'PR 状态刷新失败，原因未知'
+  if (unique.length === 1) return unique[0]!
+  return `${unique.length} 项刷新失败；${unique[0]}`
 }
 
 export const HARNESS_RECONFIGURE_STEPS = [
@@ -86,8 +97,10 @@ class WorkflowService {
   #lastWorkspaceRefreshAt = 0
   #workspaceRefreshPromise: Promise<void> | undefined
   #lastPrDashboardRefreshAt = 0
+  #lastReviewProgressRefreshAt = 0
   #prDashboardRefreshPromise: Promise<void> | undefined
-  #prDashboard: PrDashboardRecord[] = []
+  #prDashboard: PrDashboardRecord[]
+  #prDashboardStatus: PrDashboardStatus
   #reviewRequests: ReviewRequestRecord[] = []
   #rateLimited = false
   #rateLimitResetAt: string | undefined
@@ -96,6 +109,14 @@ class WorkflowService {
 
   constructor(store: StateStore) {
     this.#store = store
+    const cached = store.state.prDashboardCache
+    this.#prDashboard = cached?.records ?? []
+    this.#prDashboardStatus = {
+      state: 'loading',
+      refreshing: true,
+      stale: cached !== undefined,
+      ...(cached?.lastSuccessAt === undefined ? {} : { lastSuccessAt: cached.lastSuccessAt }),
+    }
     store.onChange(() => this.#broadcast())
   }
 
@@ -159,6 +180,7 @@ class WorkflowService {
     }
     if (method === 'POST' && url === '/api/prs/refresh') {
       if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
+      this.#lastReviewProgressRefreshAt = 0
       await this.#discoverMyPrs()
       await this.#refreshPrDashboard()
       this.#json(response, 202, { accepted: true, prs: this.#prDashboard.length })
@@ -214,6 +236,7 @@ class WorkflowService {
   }
 
   async #snapshot(): Promise<object> {
+    const { prDashboardCache: _prDashboardCache, ...state } = this.#store.state
     return {
       service: {
         startedAt: this.#store.state.serviceStartedAt,
@@ -226,9 +249,10 @@ class WorkflowService {
       },
       clones: await listClones(),
       prs: this.#prDashboard,
+      prDashboard: this.#prDashboardStatus,
       reviewRequests: this.#reviewRequests,
       jobProgress: this.#readJobProgress(),
-      ...this.#store.state,
+      ...state,
     }
   }
 
@@ -390,40 +414,74 @@ class WorkflowService {
   async #refreshPrDashboard(): Promise<void> {
     if (this.#prDashboardRefreshPromise !== undefined) return await this.#prDashboardRefreshPromise
     this.#lastPrDashboardRefreshAt = Date.now()
+    const attemptAt = now()
+    this.#prDashboardStatus = {
+      ...this.#prDashboardStatus,
+      refreshing: true,
+      lastAttemptAt: attemptAt,
+    }
+    this.#broadcast()
     this.#prDashboardRefreshPromise = (async () => {
       // 一次 list 查询拿到所有 open PR，避免每个 clone 一次 gh pr view 烧 GraphQL 额度
       const clones = await listClones()
       const repoSlug = clones[0]?.repoSlug ?? 'deepseek-harness/deepseek-harness'
       const openPrs = await openPullRequests(HARNESS_ROOT, repoSlug)
       const byBranch = new Map(openPrs.map(pr => [pr.headRefName, pr]))
-      const baseFetches = new Map<string, Promise<void>>()
-      const ensureBaseFetched = (clone: CloneRecord, branch: string): Promise<void> => {
-        const key = `${clone.repoSlug}\n${branch}`
-        const existing = baseFetches.get(key)
+      const previousByClone = new Map(this.#prDashboard.map(record => [record.cloneName, record]))
+      const refreshErrors: string[] = []
+      const clonedBranches = new Set(clones.map(clone => `${clone.repoSlug}\n${clone.branch}`))
+      const pendingClones = openPrs.filter(pr => !clonedBranches.has(`${repoSlug}\n${pr.headRefName}`))
+      if (pendingClones.length > 0) refreshErrors.push(`${pendingClones.length} 个 open PR 的本地 clone 尚未准备完成`)
+      const commitFetches = new Map<string, Promise<void>>()
+      const ensureCommitAvailable = (clone: CloneRecord, branch: string, oid: string): Promise<void> => {
+        // Clone worktrees can belong to different backing repositories even when
+        // their GitHub slug is the same. Deduplicate only within one object database.
+        const key = `${clone.sourcePath}\n${branch}\n${oid}`
+        const existing = commitFetches.get(key)
         if (existing !== undefined) return existing
-        const promise = fetchBranch(clone.path, branch)
-        baseFetches.set(key, promise)
+        const promise = (async () => {
+          try {
+            await commitOid(clone.path, oid)
+            return
+          } catch {
+            await fetchBranch(clone.path, branch)
+            await commitOid(clone.path, oid)
+          }
+        })()
+        commitFetches.set(key, promise)
         return promise
       }
       const records = await Promise.all(clones.map(async clone => {
         try {
           const pr = byBranch.get(clone.branch)
           if (pr === undefined) return undefined
+          const previous = previousByClone.get(clone.name)
           const checks = rollupChecks(pr.statusCheckRollup)
           const ci = summarizeChecks(checks)
           const conflicting = pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY'
-          if (pr.mergeable === 'MERGEABLE' || conflicting) await ensureBaseFetched(clone, pr.baseRefName)
-          const baseTipOid = conflicting ? await commitOid(clone.path, `origin/${pr.baseRefName}`) : undefined
+          if (pr.mergeable === 'MERGEABLE' || conflicting) {
+            await Promise.all([
+              ensureCommitAvailable(clone, pr.baseRefName, pr.baseRefOid),
+              ensureCommitAvailable(clone, pr.headRefName, pr.headRefOid),
+            ])
+          }
           // GitHub 对落后的 PR 也报 BLOCKED 而非 BEHIND，用本地 git 判断是否落后 base
           const baseBehind = pr.mergeable === 'MERGEABLE' && await (async () => {
-            return !(await isAncestor(clone.path, `origin/${pr.baseRefName}`))
+            return !(await isAncestor(clone.path, pr.baseRefOid, pr.headRefOid))
           })()
-          let conflictPaths: string[] | undefined
+          let conflictPaths = previous?.conflictPaths
           if (conflicting) {
             try {
-              conflictPaths = await this.#cachedConflictPaths(clone.repoSlug, clone.path, pr.headRefOid, baseTipOid!)
+              // `gh pr list` may observe a newer PR head than this worktree has fetched.
+              // Ensure the exact GitHub head object exists locally before asking merge-tree
+              // to compare it with the freshly fetched base.
+              await ensureCommitAvailable(clone, pr.headRefName, pr.headRefOid)
+              conflictPaths = await this.#cachedConflictPaths(clone.repoSlug, clone.path, pr.headRefOid, pr.baseRefOid)
             } catch (error) {
-              this.#store.event('warning', 'conflict-paths', `${clone.name}: ${messageOf(error)}`)
+              const detail = `${clone.name} 冲突文件：${messageOf(error)}`
+              refreshErrors.push(detail)
+              this.#noteGhFailure(error)
+              this.#store.event('warning', 'conflict-paths', detail)
             }
           }
           const sync = this.#store.state.syncs.find(candidate => (
@@ -449,7 +507,7 @@ class WorkflowService {
               .filter(request => request.__typename === 'User' && request.login !== undefined)
               .map(request => request.login!),
             reviews: pr.latestReviews,
-            reviewerComments: {},
+            reviewerComments: previous?.reviewerComments ?? {},
             ciStatus: ci.status,
             ciSummary: ci.summary,
             checks,
@@ -459,33 +517,76 @@ class WorkflowService {
               ...(sync.pendingBaseCheckAt === undefined ? {} : { pendingBaseCheckAt: sync.pendingBaseCheckAt }),
               ...(sync.agentPausedReason === undefined ? {} : { agentPausedReason: sync.agentPausedReason }),
             }),
+            ...(previous?.unresolvedComments === undefined ? {} : { unresolvedComments: previous.unresolvedComments }),
             updatedAt: now(),
           }
           return record
         } catch (error) {
-          this.#store.event('warning', 'pr-dashboard', `${clone.name}: ${messageOf(error)}`)
-          return undefined
+          const detail = `${clone.name}: ${messageOf(error)}`
+          refreshErrors.push(detail)
+          this.#noteGhFailure(error)
+          this.#store.event('warning', 'pr-dashboard', detail)
+          return previousByClone.get(clone.name)
         }
       }))
       const matched = records.filter((record): record is PrDashboardRecord => record !== undefined)
-      try {
-        const progress = await reviewerCommentProgress(HARNESS_ROOT, repoSlug, matched.map(record => record.number))
-        for (const record of matched) {
-          record.reviewerComments = progress.get(record.number) ?? {}
-          const unresolved = Object.values(record.reviewerComments)
-            .reduce((count, reviewer) => count + reviewer.total - reviewer.resolved, 0)
-          if (unresolved > 0) record.unresolvedComments = unresolved
-        }
-      } catch (error) {
-        this.#store.event('warning', 'pr-dashboard', `review 评论计数失败：${messageOf(error)}`)
-      }
       this.#prDashboard = matched
         .sort((left, right) => Number(left.isDraft) - Number(right.isDraft) || left.number - right.number || left.cloneName.localeCompare(right.cloneName))
-      this.#clearRateLimited()
+      // Do not hold the first visible PR rows behind the more expensive review-thread query.
       this.#broadcast()
+      if (Date.now() - this.#lastReviewProgressRefreshAt >= PR_REVIEW_INTERVAL_MS) {
+        this.#lastReviewProgressRefreshAt = Date.now()
+        try {
+          const progress = await reviewerCommentProgress(HARNESS_ROOT, repoSlug, matched.map(record => record.number))
+          for (const record of matched) {
+            record.reviewerComments = progress.get(record.number) ?? {}
+            const unresolved = Object.values(record.reviewerComments)
+              .reduce((count, reviewer) => count + reviewer.total - reviewer.resolved, 0)
+            delete record.unresolvedComments
+            if (unresolved > 0) record.unresolvedComments = unresolved
+          }
+        } catch (error) {
+          const detail = `review 评论计数失败：${messageOf(error)}`
+          refreshErrors.push(detail)
+          this.#noteGhFailure(error)
+          this.#store.event('warning', 'pr-dashboard', detail)
+        }
+      }
+      const completedAt = now()
+      const complete = refreshErrors.length === 0 && (openPrs.length === 0 || matched.length > 0)
+      const lastSuccessAt = complete ? completedAt : this.#prDashboardStatus.lastSuccessAt
+      this.#prDashboardStatus = complete ? {
+        state: 'ready',
+        refreshing: false,
+        stale: false,
+        lastAttemptAt: attemptAt,
+        lastSuccessAt: completedAt,
+      } : {
+        state: 'error',
+        refreshing: false,
+        stale: true,
+        lastAttemptAt: attemptAt,
+        ...(lastSuccessAt === undefined ? {} : { lastSuccessAt }),
+        error: summarizePrDashboardErrors(refreshErrors.length > 0 ? refreshErrors : ['已发现 open PR，但对应 clone 尚未准备完成']),
+      }
+      this.#store.state.prDashboardCache = {
+        records: this.#prDashboard,
+        ...(lastSuccessAt === undefined ? {} : { lastSuccessAt }),
+      }
+      if (complete) this.#clearRateLimited()
+      await this.#store.changed()
     })().catch(async (error: unknown) => {
       // 整体失败（如 GraphQL 限流）时保留旧 dashboard，不要清空列表
       this.#noteGhFailure(error)
+      const detail = summarizePrDashboardErrors([messageOf(error)])
+      this.#prDashboardStatus = {
+        state: 'error',
+        refreshing: false,
+        stale: this.#prDashboard.length > 0,
+        lastAttemptAt: attemptAt,
+        ...(this.#prDashboardStatus.lastSuccessAt === undefined ? {} : { lastSuccessAt: this.#prDashboardStatus.lastSuccessAt }),
+        error: detail,
+      }
       this.#store.event('warning', 'pr-dashboard', `PR 列表刷新失败，保留旧数据：${messageOf(error)}`)
       await this.#store.changed()
     })

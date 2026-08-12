@@ -63,8 +63,8 @@ export async function fetchBranch(root: string, branch: string, signal?: AbortSi
   })
 }
 
-export async function isAncestor(root: string, ref: string): Promise<boolean> {
-  const result = await run('git', ['merge-base', '--is-ancestor', ref, 'HEAD'], { cwd: root })
+export async function isAncestor(root: string, ref: string, descendant = 'HEAD'): Promise<boolean> {
+  const result = await run('git', ['merge-base', '--is-ancestor', ref, descendant], { cwd: root })
   return result.code === 0
 }
 
@@ -90,6 +90,8 @@ export async function mergeConflictPaths(
   }
   const [treeOid, ...paths] = result.stdout.split('\0')
   if (treeOid === undefined || !/^[0-9a-f]{40,64}$/u.test(treeOid)) {
+    const detail = result.stderr.trim()
+    if (detail !== '') throw new Error(`git ${args.join(' ')} failed: ${detail}`)
     throw new Error(`git merge-tree 返回了无效 tree OID：${JSON.stringify(treeOid)}`)
   }
   return paths.filter(path => path !== '')

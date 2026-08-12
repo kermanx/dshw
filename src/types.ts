@@ -126,6 +126,11 @@ export interface ServiceState {
   jobs: JobRecord[]
   dshRuns: DshRunRecord[]
   events: EventRecord[]
+  /** Last usable dashboard snapshot, retained across daemon restarts. */
+  prDashboardCache?: {
+    records: PrDashboardRecord[]
+    lastSuccessAt?: string
+  }
 }
 
 export interface PullRequestInfo {
@@ -233,4 +238,13 @@ export interface PrDashboardRecord {
   unresolvedComments?: number
   agentPausedReason?: string
   updatedAt: string
+}
+
+export interface PrDashboardStatus {
+  state: 'loading' | 'ready' | 'error'
+  refreshing: boolean
+  stale: boolean
+  lastAttemptAt?: string
+  lastSuccessAt?: string
+  error?: string
 }

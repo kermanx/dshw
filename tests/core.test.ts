@@ -6,13 +6,13 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { validateCloneName } from '../src/clone.ts'
 import { resolveCommandTarget } from '../src/command-target.ts'
-import { addSharedWorktree, commitOid, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
+import { addSharedWorktree, commitOid, fetchBranch, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
 import { rollupChecks, summarizeChecks } from '../src/github.ts'
 import { CLONES_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
-import { HARNESS_RECONFIGURE_STEPS, observeBaseTip, scheduleBaseCheck } from '../src/service.ts'
+import { HARNESS_RECONFIGURE_STEPS, observeBaseTip, scheduleBaseCheck, summarizePrDashboardErrors } from '../src/service.ts'
 import { headlessDshArguments, missingTypertRuntimeArtifacts, parseDshOutcome, renderPromptTemplate, waitForDshWorker } from '../src/dsh.ts'
 import { dshLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
@@ -136,6 +136,62 @@ test('finds merge conflicts without changing the worktree or index', async () =>
   }
 })
 
+test('fetches a newer remote head before computing its merge conflicts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-remote-head-'))
+  const remote = join(root, 'remote.git')
+  const source = join(root, 'source')
+  const clone = join(root, 'clone')
+  try {
+    await mkdir(source)
+    await runOrThrow('git', ['init', '--bare', remote])
+    await runOrThrow('git', ['init', '-b', 'master'], { cwd: source })
+    await runOrThrow('git', ['config', 'user.name', 'dshw test'], { cwd: source })
+    await runOrThrow('git', ['config', 'user.email', 'dshw@example.invalid'], { cwd: source })
+    await writeFile(join(source, 'file.txt'), 'base\n')
+    await runOrThrow('git', ['add', 'file.txt'], { cwd: source })
+    await runOrThrow('git', ['commit', '-m', 'base'], { cwd: source })
+    await runOrThrow('git', ['branch', 'feature'], { cwd: source })
+    await runOrThrow('git', ['remote', 'add', 'origin', remote], { cwd: source })
+    await runOrThrow('git', ['push', 'origin', 'master', 'feature'], { cwd: source })
+    await runOrThrow('git', ['clone', remote, clone])
+
+    await writeFile(join(source, 'file.txt'), 'master\n')
+    await runOrThrow('git', ['commit', '-am', 'master changes'], { cwd: source })
+    await runOrThrow('git', ['push', 'origin', 'master'], { cwd: source })
+    await runOrThrow('git', ['checkout', 'feature'], { cwd: source })
+    await writeFile(join(source, 'file.txt'), 'feature\n')
+    await runOrThrow('git', ['commit', '-am', 'feature changes'], { cwd: source })
+    const headOid = await commitOid(source, 'HEAD')
+    await runOrThrow('git', ['push', 'origin', 'feature'], { cwd: source })
+
+    assert.notEqual((await run('git', ['cat-file', '-e', `${headOid}^{commit}`], { cwd: clone })).code, 0)
+    await fetchBranch(clone, 'master')
+    await fetchBranch(clone, 'feature')
+    assert.deepEqual(await mergeConflictPaths(clone, headOid, 'origin/master'), ['file.txt'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('reports the underlying merge-tree error when a commit is missing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-merge-tree-error-'))
+  try {
+    await runOrThrow('git', ['init', '-b', 'master'], { cwd: root })
+    await runOrThrow('git', ['config', 'user.name', 'dshw test'], { cwd: root })
+    await runOrThrow('git', ['config', 'user.email', 'dshw@example.invalid'], { cwd: root })
+    await writeFile(join(root, 'file.txt'), 'base\n')
+    await runOrThrow('git', ['add', 'file.txt'], { cwd: root })
+    await runOrThrow('git', ['commit', '-m', 'base'], { cwd: root })
+
+    await assert.rejects(
+      mergeConflictPaths(root, '0000000000000000000000000000000000000000', 'master'),
+      /not something we can merge|not a valid object/iu,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('resolves the commit behind a git ref', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dshw-commit-oid-'))
   try {
@@ -251,6 +307,16 @@ test('caps repeated target push debounce at 30 minutes from the first push', () 
   assert.equal(scheduleBaseCheck(sync, startedAt + 9 * 60_000), '2026-08-11T00:19:00.000Z')
   assert.equal(scheduleBaseCheck(sync, startedAt + 25 * 60_000), '2026-08-11T00:30:00.000Z')
   assert.equal(scheduleBaseCheck(sync, startedAt + 35 * 60_000), '2026-08-11T00:30:00.000Z')
+})
+
+test('summarizes dashboard failures without duplicating or flooding the UI', () => {
+  assert.equal(summarizePrDashboardErrors([]), 'PR 状态刷新失败，原因未知')
+  assert.equal(summarizePrDashboardErrors(['  GitHub\n timed out  ', 'GitHub timed out']), 'GitHub timed out')
+  assert.equal(
+    summarizePrDashboardErrors(['GitHub timed out', 'git fetch failed']),
+    '2 项刷新失败；GitHub timed out',
+  )
+  assert.equal(summarizePrDashboardErrors(['x'.repeat(400)]).length, 361)
 })
 
 test('formats dsh session steps as plain-text progress', () => {

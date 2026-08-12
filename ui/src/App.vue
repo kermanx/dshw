@@ -39,6 +39,8 @@ const liveLabel = computed(() => snapshot.value?.service.draining === true
 const latestPrUpdate = computed(() => Math.max(0, ...(snapshot.value?.prs ?? []).map(pr => Date.parse(pr.updatedAt) || 0)))
 const syncLabel = computed(() => {
   if (snapshot.value === undefined) return ''
+  if (snapshot.value.prDashboard.state === 'loading') return '正在首次同步'
+  if (snapshot.value.prDashboard.state === 'error') return 'PR 同步失败'
   if (latestPrUpdate.value === 0) return '等待首次同步'
   return `同步于 ${relativeTime(new Date(latestPrUpdate.value).toISOString(), currentTime.value)}`
 })
@@ -161,11 +163,13 @@ onBeforeUnmount(() => {
           <PullRequestsTable
             v-if="view === 'prs'"
             :prs="snapshot.prs"
+            :status="snapshot.prDashboard"
             :jobs="snapshot.jobs"
             :pending="pending"
             @action="(name, action) => post('/api/pr-action', { name, action }, `${action}:${name}`)"
             @open-job="activeJobId = $event"
             @open-activity="select('activity')"
+            @refresh="post('/api/prs/refresh', {}, 'prs-refresh')"
             @toggle-sync="(name, enabled) => post('/api/sync/toggle', { name, enabled }, `sync-toggle:${name}`)"
           />
           <ReviewRequests v-else-if="view === 'reviews'" :requests="snapshot.reviewRequests" />

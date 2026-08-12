@@ -5,15 +5,16 @@ import type {
   DshWorkerProgress,
   EventRecord,
   JobRecord,
+  PrDashboardStatus,
   PrDashboardRecord,
   PullRequestReview,
   ReviewRequestRecord,
   ServiceState,
 } from '../../src/types.ts'
 
-export type { CiCheck, DshRunRecord, DshWorkerProgress, EventRecord, JobRecord, PrDashboardRecord, PullRequestReview, ReviewRequestRecord }
+export type { CiCheck, DshRunRecord, DshWorkerProgress, EventRecord, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestReview, ReviewRequestRecord }
 
-export interface WorkflowSnapshot extends ServiceState {
+export interface WorkflowSnapshot extends Omit<ServiceState, 'prDashboardCache'> {
   service: {
     startedAt?: string
     draining: boolean
@@ -25,6 +26,7 @@ export interface WorkflowSnapshot extends ServiceState {
   }
   clones: CloneRecord[]
   prs: PrDashboardRecord[]
+  prDashboard: PrDashboardStatus
   reviewRequests: ReviewRequestRecord[]
   jobProgress: Record<string, DshWorkerProgress>
 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { mergeLabel, mergeTone } from '../format.ts'
-import type { JobRecord, PrDashboardRecord } from '../types.ts'
+import type { JobRecord, PrDashboardRecord, PrDashboardStatus } from '../types.ts'
 import CiChecks from './CiChecks.vue'
 import ConflictDetails from './ConflictDetails.vue'
 import ReviewDetails from './ReviewDetails.vue'
@@ -9,11 +9,17 @@ import StatusDot from './StatusDot.vue'
 import StatusIcon from './StatusIcon.vue'
 import Icon from './Icon.vue'
 
-const props = defineProps<{ prs: PrDashboardRecord[], jobs: JobRecord[], pending: ReadonlySet<string> }>()
+const props = defineProps<{
+  prs: PrDashboardRecord[]
+  status: PrDashboardStatus
+  jobs: JobRecord[]
+  pending: ReadonlySet<string>
+}>()
 const emit = defineEmits<{
   action: [cloneName: string, action: 'merge-base' | 'merge-base-direct' | 'fix-ci' | 'resolve-comments']
   openJob: [jobId: string]
   openActivity: []
+  refresh: []
   toggleSync: [cloneName: string, enabled: boolean]
 }>()
 
@@ -64,12 +70,39 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
 </script>
 
 <template>
-  <div v-if="prs.length === 0" class="empty-state">
+  <div v-if="status.state === 'loading' && prs.length === 0" class="empty-state">
+    <span class="inline-flex items-center gap-7px text-secondary text-13px">
+      <StatusDot tone="accent" pulse />
+      正在加载追踪中的 PR
+    </span>
+    <p class="m-0 text-muted">正在从 GitHub 获取状态并准备本地 clone…</p>
+  </div>
+  <div v-else-if="status.state === 'error' && prs.length === 0" class="empty-state">
+    <p class="m-0 text-danger text-13px">PR 加载失败</p>
+    <p class="m-0 max-w-720px text-muted break-anywhere" :title="status.error">{{ status.error ?? '未知错误' }}</p>
+    <span class="inline-flex items-center gap-8px">
+      <button :class="actionClass" :disabled="pending.has('prs-refresh')" @click="emit('refresh')">重试</button>
+      <span class="text-faint">·</span>
+      <button :class="actionClass" @click="emit('openActivity')">查看 Activity</button>
+    </span>
+  </div>
+  <div v-else-if="prs.length === 0" class="empty-state">
     <p class="m-0 text-secondary text-13px">暂无追踪中的 PR</p>
     <p class="m-0 text-muted">GitHub 上你创建的 open PR 会被自动克隆并显示在这里</p>
   </div>
-  <div v-else class="h-full overflow-auto">
-    <table class="w-full min-w-900px border-collapse table-fixed">
+  <div v-else class="h-full min-h-0 flex flex-col">
+    <div v-if="status.state === 'error'" class="flex items-center gap-7px px-12px min-h-32px b-b b-b-solid b-b-line bg-warn-soft text-12px">
+      <Icon class="flex-none text-warn" name="alert" :size="13" />
+      <span class="flex-none text-secondary">PR 状态刷新失败，正在显示上次可用数据</span>
+      <span class="min-w-0 truncate text-muted" :title="status.error">{{ status.error }}</span>
+      <button class="ml-auto flex-none text-link cursor-pointer hover:underline" @click="emit('openActivity')">详细原因</button>
+    </div>
+    <div v-else-if="status.state === 'loading'" class="flex items-center gap-7px px-12px min-h-32px b-b b-b-solid b-b-line bg-alt text-12px">
+      <StatusDot tone="accent" pulse />
+      <span class="text-secondary">正在刷新上次保存的 PR 状态</span>
+    </div>
+    <div class="flex-1 min-h-0 overflow-auto">
+      <table class="w-full min-w-900px border-collapse table-fixed">
       <thead>
         <tr>
           <th :class="thClass">Pull request</th>
@@ -196,6 +229,7 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
           </td>
         </tr>
       </tbody>
-    </table>
+      </table>
+    </div>
   </div>
 </template>
