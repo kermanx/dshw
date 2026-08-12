@@ -9,6 +9,7 @@ import { ensureInstallation, ensureManagedHarness, readInstallation, type Instal
 import { runService } from './service.ts'
 import {
   assertServiceAvailable,
+  assertOwnedControl,
   getWorkflowState,
   readServiceIdentity,
   restartService,
@@ -24,53 +25,55 @@ try {
   switch (command) {
     case 'code': {
       requireAtMostOne(args)
-      const installation = await ensureInstallation()
-      await ensureManagedHarness(installation)
+      const installation = await progressStep('初始化本地数据目录', ensureInstallation)
+      await progressStep('准备托管仓库（首次运行需要 clone）', () => ensureManagedHarness(installation))
       const target = resolveCommandTarget(args[0])
-      const clone = await resolveClone(target.cloneName, target.cwd)
-      await runOrThrow('code', [clone.path])
+      const clone = await progressStep('查找或创建当前分支的 worktree', () => resolveClone(target.cloneName, target.cwd))
+      await progressStep('打开 VS Code', () => runOrThrow('code', [clone.path]))
       console.log(formatClonePath(clone))
       break
     }
     case 'start': {
-      const openCode = parseStartArgs(args)
-      const installation = await ensureInstallation()
-      await assertServiceAvailable(installation)
-      await ensureManagedHarness(installation)
-      await buildUi()
-      await refreshWorkspaceWithWarning()
-      await startService(installation)
-      if (openCode) await openCodeWorkspaceWithWarning()
+      const openTargets = parseStartArgs(args)
+      const installation = await progressStep('初始化本地数据目录', ensureInstallation)
+      await progressStep('检查后台服务和端口', () => assertServiceAvailable(installation))
+      await progressStep('准备托管仓库（首次运行需要 clone，可能耗时较久）', () => ensureManagedHarness(installation))
+      await progressStep('构建 Web 看板', buildUi)
+      await progressStep('生成 VS Code workspace', refreshWorkspaceWithWarning)
+      await progressStep('启动后台服务并等待就绪', () => startService(installation))
+      if (openTargets.code) await progressStep('打开 VS Code', () => openWithWarning('VS Code', 'code', [CODE_WORKSPACE_FILE]))
+      if (openTargets.dashboard) await progressStep('打开浏览器看板', () => openWithWarning('浏览器看板', 'open', [`http://${HOST}:${PORT}`]))
       console.log(`dshw 后台服务已启动：http://${HOST}:${PORT}`)
       break
     }
     case 'stop': {
       requireNoArgs(args)
-      const installation = await requireInstallation()
-      const stopped = await stopService(installation)
+      const installation = await progressStep('读取当前安装', requireInstallation)
+      const stopped = await progressStep('验证并停止后台服务', () => stopService(installation))
       console.log(stopped ? 'dshw 后台服务已停止' : 'dshw 后台服务本来就未运行')
       break
     }
     case 'restart': {
       requireNoArgs(args)
-      const installation = await requireInstallation()
-      await buildUi()
-      await restartService(installation)
+      const installation = await progressStep('读取当前安装', requireInstallation)
+      await progressStep('验证后台服务 ownership', () => assertOwnedControl(installation))
+      await progressStep('重新构建 Web 看板', buildUi)
+      await progressStep('安全重启并等待服务恢复', () => restartService(installation))
       console.log('dshw 后台服务已安全重启；运行中的 dsh 任务不受影响')
       break
     }
     case 'status': {
       requireNoArgs(args)
-      const installation = await requireInstallation()
-      const state = await getWorkflowState(installation)
+      const installation = await progressStep('读取当前安装', requireInstallation)
+      const state = await progressStep('连接并验证后台服务', () => getWorkflowState(installation))
       console.log(`服务运行中；${state.service.activeJobs} 个任务执行中；追踪 ${state.syncs.length} 个 PR；UI：http://${HOST}:${PORT}`)
       break
     }
     case 'ui': {
       requireNoArgs(args)
-      const installation = await requireInstallation()
-      await getWorkflowState(installation)
-      await runOrThrow('open', [`http://${HOST}:${PORT}`])
+      const installation = await progressStep('读取当前安装', requireInstallation)
+      await progressStep('连接并验证后台服务', () => getWorkflowState(installation))
+      await progressStep('打开浏览器看板', () => runOrThrow('open', [`http://${HOST}:${PORT}`]))
       break
     }
     case 'doctor': {
@@ -108,10 +111,11 @@ async function requireInstallation(): Promise<InstallationRecord> {
   return installation
 }
 
-function parseStartArgs(args: readonly string[]): boolean {
-  if (args.length === 0) return true
-  if (args.length === 1 && args[0] === '--no-code') return false
-  throw new Error('start 只接受可选参数 --no-code')
+function parseStartArgs(args: readonly string[]): { code: boolean; dashboard: boolean } {
+  if (args.length === 0) return { code: true, dashboard: true }
+  if (args.length === 1 && args[0] === '--no-code') return { code: false, dashboard: true }
+  if (args.length === 1 && args[0] === '--no-open') return { code: false, dashboard: false }
+  throw new Error('start 只接受可选参数 --no-open 或 --no-code')
 }
 
 function requireNoArgs(args: readonly string[]): void {
@@ -130,14 +134,14 @@ async function refreshWorkspaceWithWarning(): Promise<void> {
   }
 }
 
-async function openCodeWorkspaceWithWarning(): Promise<void> {
+async function openWithWarning(label: string, command: string, args: readonly string[]): Promise<void> {
   try {
-    const result = await run('code', [CODE_WORKSPACE_FILE])
+    const result = await run(command, args)
     if (result.code !== 0) {
-      console.warn(`dshw: 服务已启动，但 VS Code 打开失败：${result.stderr.trim() || result.stdout.trim() || '找不到 code 命令'}`)
+      console.warn(`dshw: 服务已启动，但${label}打开失败：${result.stderr.trim() || result.stdout.trim() || `找不到 ${command} 命令`}`)
     }
   } catch (error) {
-    console.warn(`dshw: 服务已启动，但 VS Code 打开失败：${messageOf(error)}`)
+    console.warn(`dshw: 服务已启动，但${label}打开失败：${messageOf(error)}`)
   }
 }
 
@@ -147,47 +151,50 @@ async function buildUi(): Promise<void> {
 
 async function doctor(): Promise<void> {
   const checks: Array<{ name: string; ok: boolean; detail: string }> = []
-  checks.push({ name: 'macOS', ok: process.platform === 'darwin', detail: process.platform })
-  checks.push({ name: 'Node.js', ok: Number(process.versions.node.split('.')[0]) >= 24, detail: process.version })
+  const record = (name: string, ok: boolean, detail: string): void => {
+    checks.push({ name, ok, detail })
+    console.log(`${ok ? '✓' : '✗'} ${name}: ${detail}`)
+  }
+  record('macOS', process.platform === 'darwin', process.platform)
+  record('Node.js', Number(process.versions.node.split('.')[0]) >= 24, process.version)
   for (const executable of ['pnpm', 'git', 'gh', 'code']) {
     try {
       const result = await run(executable, ['--version'])
-      checks.push({ name: executable, ok: result.code === 0, detail: (result.stdout || result.stderr).trim().split('\n')[0] || '不可用' })
+      record(executable, result.code === 0, (result.stdout || result.stderr).trim().split('\n')[0] || '不可用')
     } catch (error) {
-      checks.push({ name: executable, ok: false, detail: messageOf(error) })
+      record(executable, false, messageOf(error))
     }
   }
   try {
     const auth = await run('gh', ['auth', 'status'])
-    checks.push({ name: 'GitHub 登录', ok: auth.code === 0, detail: auth.code === 0 ? '已登录' : '请运行 gh auth login' })
+    record('GitHub 登录', auth.code === 0, auth.code === 0 ? '已登录' : '请运行 gh auth login')
   } catch (error) {
-    checks.push({ name: 'GitHub 登录', ok: false, detail: messageOf(error) })
+    record('GitHub 登录', false, messageOf(error))
   }
   let installation: InstallationRecord | undefined
   try {
     installation = await readInstallation()
-    checks.push({ name: '本地数据', ok: installation !== undefined, detail: installation === undefined ? '尚未运行 start' : `${DSHW_ROOT}/.dshw` })
+    record('本地数据', installation !== undefined, installation === undefined ? '尚未运行 start' : `${DSHW_ROOT}/.dshw`)
   } catch (error) {
-    checks.push({ name: '本地数据', ok: false, detail: messageOf(error) })
+    record('本地数据', false, messageOf(error))
   }
   const plistExists = await pathExists(SERVICE_PLIST)
-  if (!plistExists) checks.push({ name: 'LaunchAgent', ok: false, detail: '尚未安装' })
-  else if (installation === undefined) checks.push({ name: 'LaunchAgent', ok: false, detail: '配置存在，但当前 clone 尚未初始化，无法验证 ownership' })
+  if (!plistExists) record('LaunchAgent', false, '尚未安装')
+  else if (installation === undefined) record('LaunchAgent', false, '配置存在，但当前 clone 尚未初始化，无法验证 ownership')
   else {
     try {
       await assertServiceAvailable(installation)
-      checks.push({ name: 'LaunchAgent', ok: true, detail: SERVICE_LABEL })
+      record('LaunchAgent', true, SERVICE_LABEL)
     } catch (error) {
-      checks.push({ name: 'LaunchAgent', ok: false, detail: messageOf(error) })
+      record('LaunchAgent', false, messageOf(error))
     }
   }
   const identity = await readServiceIdentity()
-  checks.push({
-    name: '后台服务',
-    ok: installation !== undefined && identity?.installationId === installation.id,
-    detail: identity === undefined ? '未运行或无法验证' : `http://${HOST}:${PORT}`,
-  })
-  for (const check of checks) console.log(`${check.ok ? '✓' : '✗'} ${check.name}: ${check.detail}`)
+  record(
+    '后台服务',
+    installation !== undefined && identity?.installationId === installation.id,
+    identity === undefined ? '未运行或无法验证' : `http://${HOST}:${PORT}`,
+  )
   if (checks.some(check => !check.ok)) process.exitCode = 1
 }
 
@@ -200,6 +207,31 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function progressStep<T>(label: string, operation: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now()
+  console.error(`→ ${label}`)
+  const heartbeat = setInterval(() => {
+    console.error(`… ${label}（已等待 ${formatDuration(Date.now() - startedAt)}）`)
+  }, 10_000)
+  heartbeat.unref()
+  try {
+    const result = await operation()
+    console.error(`✓ ${label}（${formatDuration(Date.now() - startedAt)}）`)
+    return result
+  } catch (error) {
+    console.error(`✗ ${label}（${formatDuration(Date.now() - startedAt)}）`)
+    throw error
+  } finally {
+    clearInterval(heartbeat)
+  }
+}
+
+function formatDuration(milliseconds: number): string {
+  if (milliseconds < 1_000) return `${Math.max(1, milliseconds)}ms`
+  const seconds = Math.round(milliseconds / 100) / 10
+  return `${seconds}s`
+}
+
 function printHelp(): void {
   console.log(helpText())
 }
@@ -208,7 +240,7 @@ function helpText(): string {
   return `Usage: dshw <command> [options]
 
 Commands:
-  start [--no-code]  初始化并启动后台服务；默认打开 VS Code
+  start [--no-open]  初始化并启动后台服务；默认打开 VS Code 和浏览器看板
   stop               停止当前 clone 拥有的后台服务
   restart            构建 UI 并安全重启后台服务
   status             查看后台服务摘要

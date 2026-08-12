@@ -14,13 +14,13 @@
 ## 开始使用
 
 ```sh
-git clone https://github.com/deepseek-harness/dshw.git ~/workspace/dshw
-cd ~/workspace/dshw
+git clone https://github.com/deepseek-harness/dshw.git
+cd dshw
 pnpm install
 pnpm dshw start
 ```
 
-首次启动会在当前 clone 内创建 `.dshw/`，克隆托管的 DeepSeek Harness 仓库，构建 UI，注册当前用户的 macOS LaunchAgent，然后在后台启动服务。命令完成后会退出，并默认打开 VS Code workspace。
+首次启动会在当前 clone 内创建 `.dshw/`，克隆托管的 DeepSeek Harness 仓库，构建 UI，注册当前用户的 macOS LaunchAgent，然后在后台启动服务。CLI 会逐步显示当前阶段、耗时，并在长时间操作中持续报告等待时间。命令完成后会退出，并默认打开 VS Code workspace 和浏览器看板。
 
 以后在仓库目录中直接运行：
 
@@ -32,7 +32,7 @@ pnpm dshw stop
 pnpm dshw start
 ```
 
-不希望 `start` 打开 VS Code 时，使用 `pnpm dshw start --no-code`。环境检查可运行 `pnpm dshw doctor`。
+不希望 `start` 自动打开窗口时，使用 `pnpm dshw start --no-open`。只关闭 VS Code、仍打开浏览器看板时，可使用 `--no-code`。环境检查可运行 `pnpm dshw doctor`。
 
 ## 可选：安装全局命令
 
@@ -75,7 +75,7 @@ dshw/
 ## 常用命令
 
 ```sh
-pnpm dshw start [--no-code]  # 初始化并启动后台服务
+pnpm dshw start [--no-open]  # 初始化并启动；默认打开 VS Code 和浏览器看板
 pnpm dshw stop               # 停止后台服务
 pnpm dshw restart            # 构建 UI 并安全重启
 pnpm dshw status             # 查看服务摘要
