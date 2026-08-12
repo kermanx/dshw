@@ -5,6 +5,7 @@ import { formatClonePath, resolveClone } from './clone.ts'
 import { resolveCommandTarget } from './command-target.ts'
 import { CODE_WORKSPACE_FILE, DSHW_ROOT, HOST, PORT, SERVICE_LABEL, SERVICE_PLIST } from './config.ts'
 import { runDevPreview } from './dev.ts'
+import { ensureHarnessRuntime } from './dsh-runtime.ts'
 import { ensureInstallation, ensureManagedHarness, readInstallation, type InstallationRecord } from './install.ts'
 import { runService } from './service.ts'
 import {
@@ -38,6 +39,7 @@ try {
       const installation = await progressStep('初始化本地数据目录', ensureInstallation)
       await progressStep('检查后台服务和端口', () => assertServiceAvailable(installation))
       await progressStep('准备托管仓库（首次运行需要 clone，可能耗时较久）', () => ensureManagedHarness(installation))
+      await progressStep('准备固定的 dsh runtime（首次运行需要安装和构建，可能耗时较久）', ensureHarnessRuntime)
       await progressStep('构建 Web 看板', buildUi)
       await progressStep('生成 VS Code workspace', refreshWorkspaceWithWarning)
       await progressStep('启动后台服务并等待就绪', () => startService(installation))
@@ -57,6 +59,7 @@ try {
       requireNoArgs(args)
       const installation = await progressStep('读取当前安装', requireInstallation)
       await progressStep('验证后台服务 ownership', () => assertOwnedControl(installation))
+      await progressStep('检查固定的 dsh runtime', ensureHarnessRuntime)
       await progressStep('重新构建 Web 看板', buildUi)
       await progressStep('安全重启并等待服务恢复', () => restartService(installation))
       console.log('dshw 后台服务已安全重启；运行中的 dsh 任务不受影响')

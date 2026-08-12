@@ -7,6 +7,12 @@ export const UI_DIST_ROOT = join(DSHW_ROOT, 'ui', 'dist')
 const DEFAULT_DATA_ROOT = join(DSHW_ROOT, '.dshw')
 export const DATA_ROOT = resolve(process.env.DSHW_DATA_ROOT ?? DEFAULT_DATA_ROOT)
 export const HARNESS_ROOT = resolve(process.env.DSHW_HARNESS_ROOT ?? join(DATA_ROOT, 'managed', 'deepseek-harness'))
+/** dshw's tested Harness control-plane ABI. Upgrading it is an explicit source change. */
+export const HARNESS_RUNTIME_COMMIT = process.env.DSHW_HARNESS_RUNTIME_COMMIT ?? '694dd8d08725f10d31db56486f7f7477a7bd8b6a'
+export const HARNESS_RUNTIME_ROOT = resolve(
+  process.env.DSHW_HARNESS_RUNTIME_ROOT ?? join(DATA_ROOT, 'runtime', 'deepseek-harness', HARNESS_RUNTIME_COMMIT),
+)
+export const HARNESS_RUNTIME_FILE = join(DATA_ROOT, 'runtime', `${HARNESS_RUNTIME_COMMIT}.json`)
 export const CLONES_ROOT = resolve(process.env.DSHW_CLONES_ROOT ?? join(DATA_ROOT, 'worktrees'))
 export const CLONE_METADATA_ROOT = resolve(process.env.DSHW_CLONE_METADATA_ROOT ?? join(DATA_ROOT, 'clones'))
 export const CODE_WORKSPACE_FILE = resolve(process.env.DSHW_CODE_WORKSPACE_FILE ?? join(DATA_ROOT, 'dshw.code-workspace'))

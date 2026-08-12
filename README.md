@@ -20,7 +20,7 @@ pnpm install
 pnpm dshw start
 ```
 
-首次启动会在当前 clone 内创建 `.dshw/`，克隆托管的 DeepSeek Harness 仓库，构建 UI，注册当前用户的 macOS LaunchAgent，然后在后台启动服务。CLI 会逐步显示当前阶段、耗时，并在长时间操作中持续报告等待时间。命令完成后会退出，并默认打开 VS Code workspace 和浏览器看板。
+首次启动会在当前 clone 内创建 `.dshw/`，克隆托管的 DeepSeek Harness 仓库，准备 dshw 固定版本的 dsh runtime，构建 UI，注册当前用户的 macOS LaunchAgent，然后在后台启动服务。固定 runtime 首次安装和构建可能需要几分钟；CLI 会逐步显示当前阶段、耗时，并在长时间操作中持续报告等待时间。命令完成后会退出，并默认打开 VS Code workspace 和浏览器看板。
 
 以后在仓库目录中直接运行：
 
@@ -54,6 +54,7 @@ dshw status
 dshw/
   .dshw/
     managed/deepseek-harness/  托管主仓库
+    runtime/deepseek-harness/  dshw 固定版本的 Harness runtime
     worktrees/                 PR worktree
     clones/                    worktree 元数据
     logs/                      服务和任务日志
@@ -63,6 +64,18 @@ dshw/
 ```
 
 `.dshw/` 已被 Git 忽略。
+
+## dsh 任务控制
+
+dshw 为每个后台任务直接创建并持有一个具体的 Harness Session。任务运行时可以在任务详情中：
+
+- 发送 **Steer**，让指令在下一个 step 前进入正在运行的任务；
+- **暂停**当前 turn，再输入新指令继续同一个 Session；
+- **终止**整个任务。
+
+初始任务 prompt 也通过同一条 Session steer 路径发送。daemon 重启后会使用持久化的 worker handle、SessionEvent 日志和本地控制 socket 重新接管运行中的任务，不需要等待轮询刷新。
+
+worker 不启动 Harness Web 服务，也不占用 TCP 端口。控制只通过权限为当前用户的 Unix domain socket；每个 worker 使用 `.dshw/workers/` 下独立的 `DSH_HOME`，因此不会把 session、profile 或配置写入用户的全局 `~/.dsh`。PR worktree 只作为任务工作目录。dshw 使用源码中明确固定并验证过的 Harness commit，不依赖用户全局安装的 `dsh`，也不跟随 PR 分支里的 breaking change。
 
 ## 后台服务安全边界
 

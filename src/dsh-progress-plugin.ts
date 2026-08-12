@@ -34,7 +34,9 @@ export function formatProgressEvent(event: SessionEventLike): string | undefined
       return `步骤 ${String(data.step ?? '?')} 完成`
     case 'turn/end': {
       const reason = asRecord(data.reason)
-      return `任务结束：${String(reason?.kind ?? 'unknown')}`
+      const error = asRecord(reason?.error)
+      const detail = typeof error?.message === 'string' ? `：${clip(error.message, 2_000)}` : ''
+      return `任务结束：${String(reason?.kind ?? 'unknown')}${detail}`
     }
     default:
       return undefined

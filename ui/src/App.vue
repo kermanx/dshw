@@ -250,8 +250,12 @@ onBeforeUnmount(() => {
     :run="activeRun"
     :events="snapshot.events"
     :cancelling="pending.has(`cancel:${activeJob.id}`)"
+    :pausing="pending.has(`pause:${activeJob.id}`)"
+    :steering="pending.has(`steer:${activeJob.id}`)"
     @close="closeJob"
     @cancel="id => post('/api/jobs/cancel', { jobId: id }, `cancel:${id}`)"
+    @pause="id => post('/api/jobs/pause', { jobId: id }, `pause:${id}`)"
+    @steer="(id, prompt) => post('/api/jobs/steer', { jobId: id, prompt }, `steer:${id}`)"
     @toast="showToast"
   />
 

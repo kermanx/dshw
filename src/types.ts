@@ -70,7 +70,10 @@ export interface DshWorkerHandle {
   plistPath: string
   requestPath: string
   resultPath: string
-  progressProtocol?: 'memory-events-v1'
+  controlSocketPath?: string
+  eventLogPath?: string
+  runtimeCommit?: string
+  progressProtocol?: 'memory-events-v1' | 'session-control-v1'
   /** Legacy file-backed progress handle, retained only for state compatibility. */
   progressPath?: string
   startedAt: string
@@ -78,7 +81,7 @@ export interface DshWorkerHandle {
 
 export interface DshWorkerProgress {
   runId: string
-  phase: 'starting' | 'running' | 'finishing'
+  phase: 'starting' | 'running' | 'cancelling' | 'paused' | 'finishing'
   message: string
   startedAt: string
   updatedAt: string

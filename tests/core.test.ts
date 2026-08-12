@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { createServer } from 'node:http'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -14,7 +14,7 @@ import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
 import { HARNESS_RECONFIGURE_STEPS, observeBaseTip, scheduleBaseCheck, summarizePrDashboardErrors } from '../src/service.ts'
 import { pageJobs, readEventLogPage } from '../src/state.ts'
-import { headlessDshArguments, missingTypertRuntimeArtifacts, parseDshOutcome, renderPromptTemplate, waitForDshWorker } from '../src/dsh.ts'
+import { cancelDshWorker, headlessDshArguments, inspectDshWorker, missingTypertRuntimeArtifacts, parseDshOutcome, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
 import { dshLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
 import { parseProgressOutput } from '../ui/src/progress-output.ts'
@@ -448,6 +448,10 @@ test('summarizes dashboard failures without duplicating or flooding the UI', () 
 test('formats dsh session steps as plain-text progress', () => {
   assert.equal(formatProgressEvent({ type: 'step/start', data: { turn: 1, step: 2 } }), '步骤 2 开始')
   assert.equal(formatProgressEvent({
+    type: 'turn/end',
+    data: { reason: { kind: 'error', error: { message: 'missing credential' } } },
+  }), '任务结束：error：missing credential')
+  assert.equal(formatProgressEvent({
     type: 'tool/call',
     data: { name: 'bash', arguments: '{"cmd":"pnpm test"}' },
   }), '调用工具 bash：{\n  "cmd": "pnpm test"\n}')
@@ -474,111 +478,83 @@ test('groups live progress into lightweight display blocks', () => {
   ])
 })
 
-test('launchd dsh worker survives its launcher and persists a result', async () => {
-  if (process.platform !== 'darwin') return
-  const root = await mkdtemp(join(tmpdir(), 'dshw-worker-'))
-  const bin = join(root, 'bin')
-  const fakePnpm = join(bin, 'pnpm')
-  const launcher = join(root, 'launcher.mjs')
-  try {
-    await mkdir(bin)
-    await writeFile(fakePnpm, '#!/bin/sh\nprintf "FAKE_DSH_OK cwd=%s permission=%s\\n" "$PWD" "$DSH_PERMISSION_MODE"\n')
-    await chmod(fakePnpm, 0o755)
-    const sync = {
-      id: 'sync-test', cloneName: 'test', clonePath: root, sourcePath: root,
-      remoteUrl: 'https://github.com/deepseek-harness/deepseek-harness', repoSlug: 'deepseek-harness/deepseek-harness',
-      prNumber: 42, prUrl: 'https://example.invalid/42', branch: 'feature/test', baseRefName: 'master',
-      baseOid: 'base', headOid: 'head', status: 'active', createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(), nextPrRefreshAt: new Date().toISOString(),
-    }
-    const dshModule = new URL('../src/dsh.ts', import.meta.url).href
-    await writeFile(launcher, `
-const { startDshWorker } = await import(${JSON.stringify(dshModule)})
-const handle = await startDshWorker(${JSON.stringify(sync)}, 'fix-ci')
-console.log(JSON.stringify(handle))
-`)
-    const launched = await runOrThrow(process.execPath, [launcher], {
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        DSHW_DATA_ROOT: join(root, 'data'),
-        DSHW_PORT: '1',
-        DSHW_DSH_EXECUTABLE: fakePnpm,
-      },
+test('steers and pauses a persisted dsh session over its Unix JSON-RPC socket', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-worker-rpc-'))
+  const socketPath = join(tmpdir(), `dshw-rpc-${process.pid}-${Date.now()}.sock`)
+  const frames: Array<{ method: string; params: Record<string, unknown> }> = []
+  const server = createNetServer(socket => {
+    let buffer = ''
+    socket.setEncoding('utf8')
+    socket.on('data', chunk => {
+      buffer += chunk
+      const newline = buffer.indexOf('\n')
+      if (newline < 0) return
+      const frame = JSON.parse(buffer.slice(0, newline)) as { id: string; method: string; params: Record<string, unknown> }
+      frames.push({ method: frame.method, params: frame.params })
+      socket.end(`${JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { accepted: true } })}\n`)
     })
-    const handle = JSON.parse(launched.stdout) as DshWorkerHandle
-    const result = await waitForDshWorker(handle)
-    assert.equal(result.status, 'succeeded')
-    assert.match(result.finalOutput, /^FAKE_DSH_OK cwd=.*\/dshw-worker-[^ ]+ permission=danger-full-access$/)
-    const log = await readFile(join(root, 'data', 'logs', `${handle.runId}.log`), 'utf8')
-    assert.match(log, /FAKE_DSH_OK/)
+  })
+  const handle: DshWorkerHandle = {
+    runId: 'dsh-rpc', label: 'worker', domain: 'domain', plistPath: join(root, 'worker.plist'),
+    requestPath: join(root, 'request.json'), resultPath: join(root, 'result.json'), controlSocketPath: socketPath,
+    progressProtocol: 'session-control-v1', startedAt: new Date().toISOString(),
+  }
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(socketPath, resolve)
+    })
+    await steerDshWorker(handle, '改成只修复这个测试')
+    await cancelDshWorker(handle)
+    assert.deepEqual(frames, [
+      { method: 'session.steer', params: { prompt: '改成只修复这个测试' } },
+      { method: 'session.cancel', params: {} },
+    ])
   } finally {
-    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await rm(socketPath, { force: true })
+    await rm(root, { recursive: true, force: true })
   }
 })
 
-test('cancels a launchd dsh worker through its persisted handle', async () => {
-  if (process.platform !== 'darwin') return
-  const root = await mkdtemp(join(tmpdir(), 'dshw-worker-cancel-'))
-  const bin = join(root, 'bin')
-  const fakePnpm = join(bin, 'pnpm')
-  const launcher = join(root, 'launcher.mjs')
-  const progressBodies: Array<Record<string, unknown>> = []
-  const progressServer = createServer((request, response) => {
-    void (async () => {
-      const chunks: Buffer[] = []
-      for await (const chunk of request) chunks.push(Buffer.from(chunk))
-      progressBodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>)
-      response.writeHead(204)
-      response.end()
-    })()
+test('reconstructs live dsh progress from the durable session event tail after reconnect', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-worker-resume-'))
+  const socketPath = join(tmpdir(), `dshw-resume-${process.pid}-${Date.now()}.sock`)
+  const eventLogPath = join(root, 'session-events.ndjson')
+  const server = createNetServer(socket => {
+    let buffer = ''
+    socket.setEncoding('utf8')
+    socket.on('data', chunk => {
+      buffer += chunk
+      const newline = buffer.indexOf('\n')
+      if (newline < 0) return
+      const frame = JSON.parse(buffer.slice(0, newline)) as { id: string }
+      socket.end(`${JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { phase: 'paused' } })}\n`)
+    })
   })
+  const startedAt = new Date().toISOString()
+  const handle: DshWorkerHandle = {
+    runId: 'dsh-resume', label: 'worker', domain: 'domain', plistPath: join(root, 'worker.plist'),
+    requestPath: join(root, 'request.json'), resultPath: join(root, 'result.json'), controlSocketPath: socketPath,
+    eventLogPath, progressProtocol: 'session-control-v1', startedAt,
+  }
   try {
+    await writeFile(eventLogPath, [
+      { type: 'step/start', seq: 1, data: { step: 2 } },
+      { type: 'assistant/message', seq: 2, data: { message: { content: [{ type: 'text', text: '等待新指令' }] } } },
+    ].map(event => `${JSON.stringify(event)}\n`).join(''))
     await new Promise<void>((resolve, reject) => {
-      progressServer.once('error', reject)
-      progressServer.listen(0, '127.0.0.1', resolve)
+      server.once('error', reject)
+      server.listen(socketPath, resolve)
     })
-    const address = progressServer.address()
-    if (address === null || typeof address === 'string') throw new Error('progress test server 没有 TCP port')
-    await mkdir(bin)
-    await writeFile(fakePnpm, '#!/bin/sh\nprintf "FAKE_PROGRESS\\n"\nsleep 30\nprintf "SHOULD_NOT_FINISH\\n"\n')
-    await chmod(fakePnpm, 0o755)
-    const sync = {
-      id: 'sync-cancel', cloneName: 'test', clonePath: root, sourcePath: root,
-      remoteUrl: 'https://github.com/deepseek-harness/deepseek-harness', repoSlug: 'deepseek-harness/deepseek-harness',
-      prNumber: 43, prUrl: 'https://example.invalid/43', branch: 'feature/test', baseRefName: 'master',
-      baseOid: 'base', headOid: 'head', status: 'active', createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(), nextPrRefreshAt: new Date().toISOString(),
-    }
-    const dshModule = new URL('../src/dsh.ts', import.meta.url).href
-    await writeFile(launcher, `
-const { startDshWorker } = await import(${JSON.stringify(dshModule)})
-const handle = await startDshWorker(${JSON.stringify(sync)}, 'fix-ci')
-console.log(JSON.stringify(handle))
-`)
-    const launched = await runOrThrow(process.execPath, [launcher], {
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        DSHW_DATA_ROOT: join(root, 'data'),
-        DSHW_PORT: String(address.port),
-        DSHW_DSH_EXECUTABLE: fakePnpm,
-      },
-    })
-    const handle = JSON.parse(launched.stdout) as DshWorkerHandle
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      if (progressBodies.some(body => String(body.line).includes('FAKE_PROGRESS'))) break
-      await new Promise(resolve => setTimeout(resolve, 100))
-    }
-    assert.ok(progressBodies.some(body => String(body.line).includes('FAKE_PROGRESS')))
-    const controller = new AbortController()
-    setTimeout(() => controller.abort(), 500)
-    const result = await waitForDshWorker(handle, controller.signal)
-    assert.equal(result.status, 'cancelled')
-    assert.doesNotMatch(result.finalOutput, /SHOULD_NOT_FINISH/)
+    const progress = await inspectDshWorker(handle)
+    assert.equal(progress.phase, 'paused')
+    assert.match(progress.outputTail, /步骤 2 开始/)
+    assert.match(progress.outputTail, /Agent：等待新指令/)
   } finally {
-    await new Promise<void>(resolve => progressServer.close(() => resolve()))
-    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await rm(socketPath, { force: true })
+    await rm(root, { recursive: true, force: true })
   }
 })
 

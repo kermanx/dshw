@@ -20,7 +20,7 @@ import {
   WORKSPACE_REFRESH_INTERVAL_MS,
 } from './config.ts'
 import { createPrClone, listClones } from './clone.ts'
-import { startDshWorker, waitForDshWorker } from './dsh.ts'
+import { cancelDshWorker, inspectDshWorker, startDshWorker, steerDshWorker, waitForDshWorker } from './dsh.ts'
 import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
 import { ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { StateStore } from './state.ts'
@@ -232,6 +232,18 @@ class WorkflowService {
       const body = await readBody(request)
       const cancelled = await this.#cancelJob(bodyString(body, 'jobId'))
       this.#json(response, 202, { cancelled })
+      return
+    }
+    if (method === 'POST' && url === '/api/jobs/pause') {
+      const body = await readBody(request)
+      await this.#pauseDshJob(bodyString(body, 'jobId'))
+      this.#json(response, 202, { accepted: true })
+      return
+    }
+    if (method === 'POST' && url === '/api/jobs/steer') {
+      const body = await readBody(request)
+      await this.#steerDshJob(bodyString(body, 'jobId'), bodyString(body, 'prompt'))
+      this.#json(response, 202, { accepted: true })
       return
     }
     if (method === 'POST' && url === '/api/pr-action') {
@@ -1083,6 +1095,10 @@ class WorkflowService {
       if (job.cancelRequestedAt !== undefined) controller.abort()
       this.#externalDshSyncs.add(sync.id)
       this.#store.event('info', 'dsh', `重新接管 ${sync.cloneName} / PR #${sync.prNumber} 的 dsh worker ${worker.handle.label}`)
+      void inspectDshWorker(worker.handle).then(progress => {
+        this.#workerProgress.set(worker.handle.runId, progress)
+        this.#broadcastProgress()
+      }).catch(() => {})
       void this.#withSyncLock(sync, () => this.#completeDshJob(job, sync))
     }
     if (jobs.length > 0) void this.#store.changed()
@@ -1177,6 +1193,30 @@ class WorkflowService {
     this.#store.event('warning', 'task', `已请求终止 ${related.length} 个关联任务：${requested.summary}`)
     await this.#store.changed()
     return related.map(job => job.id)
+  }
+
+  async #pauseDshJob(jobId: string | undefined): Promise<void> {
+    const job = this.#activeDshJob(jobId)
+    await cancelDshWorker(job.dshWorker!.handle)
+    this.#store.event('warning', 'dsh-control', `已请求暂停：${job.summary}`)
+    await this.#store.changed()
+  }
+
+  async #steerDshJob(jobId: string | undefined, prompt: string | undefined): Promise<void> {
+    if (prompt === undefined || prompt.trim() === '') throw new Error('请输入要发送给 dsh 的内容')
+    const job = this.#activeDshJob(jobId)
+    await steerDshWorker(job.dshWorker!.handle, prompt.trim())
+    this.#store.event('info', 'dsh-control', `已 steer：${job.summary}`)
+    await this.#store.changed()
+  }
+
+  #activeDshJob(jobId: string | undefined): JobRecord & { dshWorker: NonNullable<JobRecord['dshWorker']> } {
+    if (jobId === undefined) throw new Error('缺少 jobId')
+    const job = this.#store.state.jobs.find(candidate => candidate.id === jobId)
+    if (job === undefined) throw new Error(`找不到任务：${jobId}`)
+    if (job.status !== 'running' || job.dshWorker === undefined) throw new Error('任务已结束或不是可控制的 dsh 任务')
+    if (job.cancelRequestedAt !== undefined) throw new Error('任务正在终止')
+    return job as JobRecord & { dshWorker: NonNullable<JobRecord['dshWorker']> }
   }
 
   #applyPr(sync: SyncRecord, pr: PullRequestInfo): void {
@@ -1350,7 +1390,7 @@ class WorkflowService {
     if (runId === undefined || message === undefined || startedAt === undefined) {
       throw new Error('worker progress 缺少 runId、message 或 startedAt')
     }
-    if (phase !== 'starting' && phase !== 'running' && phase !== 'finishing') {
+    if (phase !== 'starting' && phase !== 'running' && phase !== 'cancelling' && phase !== 'paused' && phase !== 'finishing') {
       throw new Error(`worker progress phase 无效：${String(phase)}`)
     }
     const previous = this.#workerProgress.get(runId)

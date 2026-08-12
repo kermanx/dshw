@@ -12,12 +12,21 @@ const props = defineProps<{
   run?: DshRunRecord
   events: EventRecord[]
   cancelling: boolean
+  pausing: boolean
+  steering: boolean
 }>()
-const emit = defineEmits<{ close: [], cancel: [jobId: string], toast: [message: string, bad?: boolean] }>()
+const emit = defineEmits<{
+  close: []
+  cancel: [jobId: string]
+  pause: [jobId: string]
+  steer: [jobId: string, prompt: string]
+  toast: [message: string, bad?: boolean]
+}>()
 const now = ref(Date.now())
 const outputElement = ref<HTMLElement>()
 const persistedOutput = ref('')
 const outputLoading = ref(false)
+const prompt = ref('')
 let timer: number | undefined
 
 const phase = computed(() => props.job.status === 'running'
@@ -27,12 +36,15 @@ const output = computed(() => stripAnsi(props.progress?.outputTail || persistedO
 const outputBlocks = computed(() => parseProgressOutput(output.value).filter(block => block.kind !== 'step'))
 const placeholder = computed(() => {
   if (props.job.status !== 'running') return '这个任务没有文本输出。'
-  return props.job.dshWorker?.handle.progressProtocol !== 'memory-events-v1'
+  if (props.job.dshWorker === undefined) return '等待后台任务产生输出…'
+  return props.job.dshWorker.handle.progressProtocol === undefined
     ? '这个任务由升级前的 worker 启动，实时输出不可用；状态和事件仍会自动更新。'
     : props.progress?.message ?? '等待任务产生输出…'
 })
 const elapsed = computed(() => elapsedTime(props.job.startedAt ?? props.job.createdAt, props.job.finishedAt, now.value))
 const running = computed(() => props.job.status === 'running')
+const controllable = computed(() => running.value && props.job.dshWorker?.handle.progressProtocol === 'session-control-v1')
+const paused = computed(() => props.progress?.phase === 'paused')
 const tone = computed(() => jobTone(props.job.status))
 const activityLabel = computed(() => props.progress?.message.startsWith('步骤 ') === true
   ? phase.value
@@ -74,6 +86,13 @@ watch(() => props.job.status, () => void loadPersistedOutput())
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') emit('close')
+}
+
+function sendSteer(): void {
+  const value = prompt.value.trim()
+  if (value === '' || props.steering) return
+  emit('steer', props.job.id, value)
+  prompt.value = ''
 }
 
 async function copyOutput(): Promise<void> {
@@ -118,7 +137,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="fixed inset-0 z-60 grid place-items-center p-24px bg-overlay max-[720px]:p-0" role="presentation" @click.self="emit('close')">
     <section
-      class="w-[min(960px,100%)] h-[min(680px,100%)] grid grid-rows-[auto_minmax(0,1fr)_40px] overflow-hidden b b-solid b-line rounded bg-surface shadow-pop max-[720px]:w-full max-[720px]:h-full max-[720px]:b-0 max-[720px]:rounded-0"
+      class="w-[min(960px,100%)] h-[min(680px,100%)] grid grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden b b-solid b-line rounded bg-surface shadow-pop max-[720px]:w-full max-[720px]:h-full max-[720px]:b-0 max-[720px]:rounded-0"
       role="dialog"
       aria-modal="true"
     >
@@ -185,10 +204,30 @@ onBeforeUnmount(() => {
         </aside>
       </div>
 
-      <footer class="flex items-center gap-8px px-16px b-t b-t-solid b-t-line text-muted text-12px">
-        <span v-if="!running">{{ job.dshWorker === undefined ? '任务已结束' : outputLoading ? '正在读取完整输出…' : '任务已结束 · 显示完整输出' }}</span>
-        <button v-if="output" class="btn btn-ghost ml-auto" @click="copyOutput">复制输出</button>
-        <button v-if="running" class="btn btn-danger" :class="{ 'ml-auto': !output }" :disabled="job.cancelRequestedAt !== undefined || cancelling" @click="emit('cancel', job.id)">{{ job.cancelRequestedAt || cancelling ? '终止中' : '终止任务' }}</button>
+      <footer class="p-10px b-t b-t-solid b-t-line text-muted text-12px">
+        <div v-if="controllable" class="flex items-end gap-8px">
+          <textarea
+            v-model="prompt"
+            class="min-w-0 flex-1 h-54px resize-none rounded b b-solid b-line bg-input px-9px py-7px text-fg text-12.5px leading-[1.45] outline-none focus:b-accent"
+            :placeholder="paused ? '输入指令并继续任务…' : '在下一个 step 前插入指令…'"
+            :disabled="steering || job.cancelRequestedAt !== undefined"
+            @keydown.enter.exact.prevent="sendSteer"
+          />
+          <button class="btn btn-primary h-28px" :disabled="prompt.trim() === '' || steering" @click="sendSteer">{{ steering ? '发送中' : paused ? '继续' : 'Steer' }}</button>
+          <button
+            v-if="!paused"
+            class="btn btn-ghost h-28px"
+            :disabled="pausing || progress?.phase === 'cancelling' || job.cancelRequestedAt !== undefined"
+            @click="emit('pause', job.id)"
+          >{{ pausing || progress?.phase === 'cancelling' ? '暂停中' : '暂停' }}</button>
+          <button class="btn btn-danger h-28px" :disabled="job.cancelRequestedAt !== undefined || cancelling" @click="emit('cancel', job.id)">{{ job.cancelRequestedAt || cancelling ? '终止中' : '终止' }}</button>
+        </div>
+        <div v-else class="h-28px flex items-center gap-8px">
+          <span v-if="!running">{{ job.dshWorker === undefined ? '任务已结束' : outputLoading ? '正在读取完整输出…' : '任务已结束 · 显示完整输出' }}</span>
+          <span v-else>这个任务由旧版 worker 启动，不支持 steer 和暂停。</span>
+          <button v-if="output" class="btn btn-ghost ml-auto" @click="copyOutput">复制输出</button>
+          <button v-if="running" class="btn btn-danger" :disabled="job.cancelRequestedAt !== undefined || cancelling" @click="emit('cancel', job.id)">{{ job.cancelRequestedAt || cancelling ? '终止中' : '终止任务' }}</button>
+        </div>
       </footer>
     </section>
   </div>

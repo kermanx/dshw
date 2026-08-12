@@ -9,6 +9,7 @@ import {
   DSHW_ROOT,
   HARNESS_REMOTE_URL,
   HARNESS_ROOT,
+  HARNESS_RUNTIME_ROOT,
   INSTALLATION_FILE,
   LOG_ROOT,
   MANAGED_HARNESS_FILE,
@@ -70,6 +71,7 @@ export async function ensureRuntimeDirectories(): Promise<void> {
   await Promise.all([
     mkdir(DATA_ROOT, { recursive: true }),
     mkdir(dirname(HARNESS_ROOT), { recursive: true }),
+    mkdir(dirname(HARNESS_RUNTIME_ROOT), { recursive: true }),
     mkdir(CLONES_ROOT, { recursive: true }),
     mkdir(CLONE_METADATA_ROOT, { recursive: true }),
     mkdir(LOG_ROOT, { recursive: true }),
@@ -79,6 +81,7 @@ export async function ensureRuntimeDirectories(): Promise<void> {
 
 function assertRuntimeLayout(): void {
   assertInside(HARNESS_ROOT, DATA_ROOT, '托管仓库')
+  assertInside(HARNESS_RUNTIME_ROOT, DATA_ROOT, '固定 Harness runtime')
   assertInside(CLONES_ROOT, DATA_ROOT, 'worktree 目录')
   assertInside(CLONE_METADATA_ROOT, DATA_ROOT, 'worktree 元数据目录')
   assertInside(LOG_ROOT, DATA_ROOT, '日志目录')

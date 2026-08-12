@@ -43,5 +43,5 @@ export const mergeTone = (value: string): Tone => value === 'MERGEABLE' ? 'ok' :
 export const jobLabel = (value: string): string => ({ running: '运行中', succeeded: '已完成', blocked: '无法完成', failed: '失败', cancelled: '已终止', queued: '等待中' })[value] ?? value
 export const jobTone = (value: string): Tone => value === 'succeeded' ? 'ok' : value === 'failed' || value === 'blocked' ? 'bad' : value === 'running' ? 'warn' : 'neutral'
 export const kindLabel = (value: string): string => ({ 'merge-base': '合并 base', 'fix-ci': '修 CI', 'resolve-comments': '解决评论', 'update-harness': '更新 Harness', 'reconfigure-harness': '从头配置 Harness', 'sync-check': '状态检查' })[value] ?? value
-export const phaseLabel = (value: string): string => ({ starting: '正在启动', running: 'Agent 运行中', finishing: '正在收尾' })[value] ?? '等待输出'
+export const phaseLabel = (value: string): string => ({ starting: '正在启动', running: 'Agent 运行中', cancelling: '正在暂停', paused: '已暂停', finishing: '正在收尾' })[value] ?? '等待输出'
 export const cloneNameOf = (path: string): string => path.split('/').filter(Boolean).at(-1) ?? path
