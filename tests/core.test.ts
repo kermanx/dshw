@@ -8,7 +8,7 @@ import { validateCloneName } from '../src/clone.ts'
 import { resolveCommandTarget } from '../src/command-target.ts'
 import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
 import { rollupChecks, summarizeChecks } from '../src/github.ts'
-import { CLONES_ROOT } from '../src/config.ts'
+import { CLONES_ROOT, DSHW_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
@@ -19,6 +19,7 @@ import { dshLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
 import { parseProgressOutput } from '../ui/src/progress-output.ts'
 import type { DshWorkerHandle, EventRecord, JobRecord } from '../src/types.ts'
+import { parseServiceOwner, renderServicePlist } from '../src/service-manager.ts'
 
 test('forwards only endpoint variables that Harness requires at launch', () => {
   assert.equal(dshLaunchEnvironmentXml({
@@ -581,17 +582,34 @@ console.log(JSON.stringify(handle))
   }
 })
 
-test('orders code workspace clones by PR number, then keeps dshw before clones', () => {
+test('orders code workspace clones by PR number, then keeps dshw before worktrees', () => {
   const folders = codeWorkspaceFolders([
     { name: 'dsh-9', path: `${CLONES_ROOT}/dsh-9`, prNumber: 120 },
     { name: 'dsh-2', path: `${CLONES_ROOT}/dsh-2`, prNumber: 7 },
   ])
   assert.deepEqual(folders, [
-    { name: 'PR_7', path: './clones/dsh-2' },
-    { name: 'PR_120', path: './clones/dsh-9' },
-    { name: 'dshw', path: './dshw' },
-    { name: 'clones', path: './clones' },
+    { name: 'PR_7', path: './worktrees/dsh-2' },
+    { name: 'PR_120', path: './worktrees/dsh-9' },
+    { name: 'dshw', path: './..' },
+    { name: 'worktrees', path: './worktrees' },
   ])
+})
+
+test('embeds a verifiable installation owner in the service plist', () => {
+  const installation = {
+    version: 1 as const,
+    id: 'installation-test-id',
+    dshwRoot: DSHW_ROOT,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  }
+  const plist = renderServicePlist(installation)
+  assert.deepEqual(parseServiceOwner(plist), {
+    version: 1,
+    installationId: installation.id,
+    dshwRoot: installation.dshwRoot,
+    serviceLabel: process.env.DSHW_SERVICE_LABEL ?? 'com.deepseek-harness.dshw',
+  })
+  assert.equal(parseServiceOwner(plist.replace(/<!-- dshw-owner:[^>]+ -->/u, '')), undefined)
 })
 
 test('creates worktrees with a unique local branch tracking the PR branch', async () => {

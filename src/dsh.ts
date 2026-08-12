@@ -181,6 +181,7 @@ export async function startDshWorker(sync: SyncRecord, kind: DshRunRecord['kind'
     <key>PATH</key><string>${escapeXml(path)}</string>
     <key>DSH_PERMISSION_MODE</key><string>danger-full-access</string>
     <key>DSHW_DATA_ROOT</key><string>${escapeXml(DATA_ROOT)}</string>
+    ${process.env.DSHW_INSTALLATION_ID === undefined ? '' : `<key>DSHW_INSTALLATION_ID</key><string>${escapeXml(process.env.DSHW_INSTALLATION_ID)}</string>`}
     ${dshLaunchEnvironmentXml(process.env)}
     ${process.env.DSHW_DSH_EXECUTABLE === undefined ? '' : `<key>DSHW_DSH_EXECUTABLE</key><string>${escapeXml(process.env.DSHW_DSH_EXECUTABLE)}</string>`}
   </dict>

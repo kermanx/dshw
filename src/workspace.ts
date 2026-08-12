@@ -1,5 +1,5 @@
-import { relative, sep } from 'node:path'
-import { CLONES_ROOT, CODE_WORKSPACE_FILE, DSHW_ROOT, WORKFLOW_ROOT } from './config.ts'
+import { dirname, relative, sep } from 'node:path'
+import { CLONES_ROOT, CODE_WORKSPACE_FILE, DSHW_ROOT } from './config.ts'
 import { listClones } from './clone.ts'
 import { pullRequest } from './github.ts'
 import { messageOf, writeJsonAtomic } from './util.ts'
@@ -16,15 +16,16 @@ export interface WorkspaceRefreshResult {
 
 export function codeWorkspaceFolders(
   clones: readonly { name: string; path: string; prNumber: number }[],
+  workspaceRoot = dirname(CODE_WORKSPACE_FILE),
 ): CodeWorkspaceFolder[] {
   const folders = [...clones]
     .sort((left, right) => left.prNumber - right.prNumber || left.name.localeCompare(right.name))
     .map(clone => ({
       name: `PR_${clone.prNumber}`,
-      path: `./${relative(WORKFLOW_ROOT, clone.path).split(sep).join('/')}`,
+      path: `./${relative(workspaceRoot, clone.path).split(sep).join('/')}`,
     }))
-  folders.push({ name: 'dshw', path: `./${relative(WORKFLOW_ROOT, DSHW_ROOT).split(sep).join('/')}` })
-  folders.push({ name: 'clones', path: `./${relative(WORKFLOW_ROOT, CLONES_ROOT).split(sep).join('/')}` })
+  folders.push({ name: 'dshw', path: `./${relative(workspaceRoot, DSHW_ROOT).split(sep).join('/')}` })
+  folders.push({ name: 'worktrees', path: `./${relative(workspaceRoot, CLONES_ROOT).split(sep).join('/')}` })
   return folders
 }
 

@@ -9,8 +9,9 @@
   "scripts": {
     "build:ui": "vite build",
     "check": "pnpm run typecheck && pnpm run build:ui && pnpm test",
+    "dshw": "node src/cli.ts",
     "dev": "node src/cli.ts dev",
-    "dev:kernel": "DSHW_DEV_MODE=1 DSHW_PORT=7851 DSHW_DATA_ROOT=../.dshw-dev DSHW_CLONE_METADATA_ROOT=../.dshw/clones node --watch --watch-preserve-output src/cli.ts daemon",
+    "dev:kernel": "DSHW_DEV_MODE=1 DSHW_PORT=7851 DSHW_DATA_ROOT=.dshw/dev node --watch --watch-preserve-output src/cli.ts daemon",
     "dev:test": "node --test --watch tests/*.test.ts",
     "test": "node --test tests/*.test.ts",
     "typecheck": "tsc --noEmit && vue-tsc -p ui/tsconfig.json --noEmit"

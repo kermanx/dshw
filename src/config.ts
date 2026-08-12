@@ -4,19 +4,21 @@ import { fileURLToPath } from 'node:url'
 
 export const DSHW_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 export const UI_DIST_ROOT = join(DSHW_ROOT, 'ui', 'dist')
-export const WORKFLOW_ROOT = dirname(DSHW_ROOT)
-export const CLONES_ROOT = join(WORKFLOW_ROOT, 'clones')
-export const CODE_WORKSPACE_FILE = join(WORKFLOW_ROOT, 'dsh-workflow.code-workspace')
-export const HARNESS_ROOT = join(WORKFLOW_ROOT, 'deepseek-harness')
-const DEFAULT_DATA_ROOT = join(WORKFLOW_ROOT, '.dshw')
+const DEFAULT_DATA_ROOT = join(DSHW_ROOT, '.dshw')
 export const DATA_ROOT = resolve(process.env.DSHW_DATA_ROOT ?? DEFAULT_DATA_ROOT)
-export const CLONE_METADATA_ROOT = resolve(process.env.DSHW_CLONE_METADATA_ROOT ?? join(DEFAULT_DATA_ROOT, 'clones'))
+export const HARNESS_ROOT = resolve(process.env.DSHW_HARNESS_ROOT ?? join(DATA_ROOT, 'managed', 'deepseek-harness'))
+export const CLONES_ROOT = resolve(process.env.DSHW_CLONES_ROOT ?? join(DATA_ROOT, 'worktrees'))
+export const CLONE_METADATA_ROOT = resolve(process.env.DSHW_CLONE_METADATA_ROOT ?? join(DATA_ROOT, 'clones'))
+export const CODE_WORKSPACE_FILE = resolve(process.env.DSHW_CODE_WORKSPACE_FILE ?? join(DATA_ROOT, 'dshw.code-workspace'))
 export const STATE_FILE = join(DATA_ROOT, 'state.json')
 export const LOG_ROOT = join(DATA_ROOT, 'logs')
 export const EVENT_LOG_FILE = join(LOG_ROOT, 'events.ndjson')
 export const WORKER_ROOT = join(DATA_ROOT, 'workers')
-export const SERVICE_LABEL = 'com.deepseek-harness.dshw'
-export const SERVICE_PLIST = join(homedir(), 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`)
+export const INSTALLATION_FILE = join(DATA_ROOT, 'installation.json')
+export const MANAGED_HARNESS_FILE = join(DATA_ROOT, 'managed-harness.json')
+export const HARNESS_REMOTE_URL = process.env.DSHW_HARNESS_REMOTE_URL ?? 'https://github.com/deepseek-harness/deepseek-harness.git'
+export const SERVICE_LABEL = process.env.DSHW_SERVICE_LABEL ?? 'com.deepseek-harness.dshw'
+export const SERVICE_PLIST = resolve(process.env.DSHW_SERVICE_PLIST ?? join(homedir(), 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`))
 export const PORT = parsePort(process.env.DSHW_PORT)
 export const HOST = '127.0.0.1'
 export const DEV_MODE = process.env.DSHW_DEV_MODE === '1'

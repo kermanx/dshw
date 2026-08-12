@@ -21,7 +21,7 @@ export function isInsideDirectory(path: string, directory: string): boolean {
 
 export async function requireHarnessRepository(cwd: string): Promise<string> {
   const root = await gitRoot(cwd)
-  if (isInsideDirectory(root, CLONES_ROOT)) throw new Error(`不能从 dsh-workflow/clones 内再次创建 clone：${root}`)
+  if (isInsideDirectory(root, CLONES_ROOT)) throw new Error(`不能从 dshw 托管的 worktrees 内再次创建 worktree：${root}`)
   const remote = await originUrl(root)
   if (repoSlugFromRemote(remote) !== 'deepseek-harness/deepseek-harness') {
     throw new Error(`当前 Git 仓库的 origin 不是 deepseek-harness/deepseek-harness：${remote}`)

@@ -16,6 +16,7 @@ import {
   PR_REVIEW_INTERVAL_MS,
   PR_WATCH_INTERVAL_MS,
   REF_WATCH_INTERVAL_MS,
+  SERVICE_LABEL,
   WORKSPACE_REFRESH_INTERVAL_MS,
 } from './config.ts'
 import { createPrClone, listClones } from './clone.ts'
@@ -27,6 +28,7 @@ import type { CloneRecord, DshWorkerProgress, JobRecord, PrDashboardRecord, PrDa
 import { after, id, isTaskCancelled, messageOf, now, run, runOrThrow, TaskCancelledError } from './util.ts'
 import { refreshCodeWorkspace } from './workspace.ts'
 import { serveUiAsset } from './ui-static.ts'
+import { assertManagedHarnessOwned, ensureInstallation, ensureManagedHarness, requireDaemonInstallation, type InstallationRecord } from './install.ts'
 
 const NO_CHECKS_GRACE_MS = 5 * 60 * 1000
 const HISTORY_PAGE_SIZE = 35
@@ -72,17 +74,20 @@ function clearPendingBaseCheck(sync: SyncRecord): void {
 }
 
 export async function runService(): Promise<void> {
+  const installation = DEV_MODE ? await ensureInstallation() : await requireDaemonInstallation()
+  if (DEV_MODE) await ensureManagedHarness(installation)
   await mkdir(CLONES_ROOT, { recursive: true })
   const store = await StateStore.open()
   store.state.serviceStartedAt = now()
   store.event('info', 'service', `后台服务已启动，监听 http://${HOST}:${PORT}`)
   await store.changed()
-  const service = new WorkflowService(store)
+  const service = new WorkflowService(store, installation)
   await service.start()
 }
 
 class WorkflowService {
   readonly #store: StateStore
+  readonly #installation: InstallationRecord
   readonly #syncLocks = new Set<string>()
   readonly #externalDshSyncs = new Set<string>()
   readonly #jobControllers = new Map<string, AbortController>()
@@ -110,8 +115,9 @@ class WorkflowService {
   #lastDiscoveryAt = 0
   #discoveryPromise: Promise<void> | undefined
 
-  constructor(store: StateStore) {
+  constructor(store: StateStore, installation: InstallationRecord) {
     this.#store = store
+    this.#installation = installation
     const cached = store.state.prDashboardCache
     this.#prDashboard = cached?.records ?? []
     this.#prDashboardStatus = {
@@ -154,6 +160,16 @@ class WorkflowService {
     request: NodeJS.ReadableStream,
     response: ServerResponse,
   ): Promise<void> {
+    if (method === 'GET' && url === '/api/identity') {
+      this.#json(response, 200, {
+        product: 'dshw',
+        installationId: this.#installation.id,
+        dshwRoot: this.#installation.dshwRoot,
+        serviceLabel: SERVICE_LABEL,
+        port: PORT,
+      })
+      return
+    }
     if (method === 'GET' && url === '/api/state') {
       this.#json(response, 200, await this.#snapshot())
       return
@@ -267,6 +283,7 @@ class WorkflowService {
     return {
       service: {
         startedAt: this.#store.state.serviceStartedAt,
+        installationId: this.#installation.id,
         draining: this.#draining,
         activeJobs: this.#syncLocks.size + (this.#runningUpdate ? 1 : 0),
         port: PORT,
@@ -1182,6 +1199,7 @@ class WorkflowService {
     const job = this.#beginJob('update-harness', '更新托管的 deepseek-harness')
     const signal = this.#jobSignal(job)
     try {
+      await assertManagedHarnessOwned()
       const before = await currentHead(HARNESS_ROOT)
       const status = await runOrThrow('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: HARNESS_ROOT, signal })
       let stashMessage = ''
@@ -1222,6 +1240,7 @@ class WorkflowService {
     const job = this.#beginJob('reconfigure-harness', '从头配置托管的 deepseek-harness')
     const signal = this.#jobSignal(job)
     try {
+      await assertManagedHarnessOwned()
       const branch = (await runOrThrow('git', ['branch', '--show-current'], { cwd: HARNESS_ROOT, signal })).stdout.trim()
       if (branch !== 'master') throw new Error(`托管主仓库当前分支是 ${JSON.stringify(branch)}，拒绝清理；预期 master`)
       const tracked = await runOrThrow(
