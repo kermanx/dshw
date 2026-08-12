@@ -1,4 +1,4 @@
-export type ProgressOutputKind = 'agent' | 'user' | 'system' | 'tool-call' | 'tool-result' | 'step' | 'stderr' | 'plain'
+export type ProgressOutputKind = 'agent' | 'thinking' | 'user' | 'system' | 'tool-call' | 'tool-result' | 'step' | 'stderr' | 'plain'
 
 export interface ProgressOutputBlock {
   kind: ProgressOutputKind
@@ -63,6 +63,7 @@ export function parseProgressOutput(output: string): ProgressOutputBlock[] {
 
 function blockStart(line: string): ProgressOutputBlock | undefined {
   if (line.startsWith('Agent：')) return { kind: 'agent', title: 'Agent', body: line.slice('Agent：'.length) }
+  if (line.startsWith('思考：')) return { kind: 'thinking', title: '思考', body: line.slice('思考：'.length) }
   if (line.startsWith('用户指令：')) return { kind: 'user', title: '你', body: line.slice('用户指令：'.length) }
   if (line.startsWith('系统：')) return { kind: 'system', title: '系统', body: line.slice('系统：'.length) }
 

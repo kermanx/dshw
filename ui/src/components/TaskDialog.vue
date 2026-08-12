@@ -169,10 +169,11 @@ function onPromptKeydown(event: KeyboardEvent): void {
 
 function outputLabel(block: ProgressOutputBlock): string {
   if (block.kind === 'agent') return 'Agent'
-  if (block.kind === 'user') return '你'
-  if (block.kind === 'system') return '系统'
+  if (block.kind === 'user') return 'You'
+  if (block.kind === 'system') return 'system'
   if (block.kind === 'stderr') return 'stderr'
-  return '输出'
+  if (block.kind === 'plain') return 'stdout'
+  return 'output'
 }
 
 function hasMoreOutput(block: ProgressOutputBlock): boolean {
@@ -332,10 +333,17 @@ onBeforeUnmount(() => {
                       </div>
                     </div>
                   </details>
-                  <article v-else-if="item.block.kind === 'agent' || item.block.kind === 'user' || item.block.kind === 'stderr'" class="primary-message" :class="`primary-${item.block.kind}`">
+                  <article v-else-if="item.block.kind === 'agent' || item.block.kind === 'user' || item.block.kind === 'stderr' || item.block.kind === 'plain'" class="primary-message" :class="`primary-${item.block.kind}`">
                     <div class="primary-label">{{ outputLabel(item.block) }}</div>
                     <pre class="primary-body">{{ item.block.body }}</pre>
                   </article>
+                  <details v-else-if="item.block.kind === 'thinking'" class="stream-row thinking-disclosure">
+                    <summary class="stream-summary">
+                      <span class="tool-status-dot thinking-status-dot" title="思考" />
+                      <span class="stream-preview">{{ item.block.preview ?? item.block.body }}</span>
+                    </summary>
+                    <pre class="thinking-body">{{ item.block.body }}</pre>
+                  </details>
                   <details v-else class="stream-row" :class="`stream-${item.block.kind}`">
                     <summary class="stream-summary">
                       <span class="stream-kind">{{ outputLabel(item.block) }}</span>
@@ -417,6 +425,7 @@ onBeforeUnmount(() => {
 .output-feed { display: flex; flex-direction: column; }
 .stream-row { color: var(--text-muted); }
 .stream-summary { display: flex; align-items: center; gap: 7px; min-height: 24px; padding: 1px 4px; border-radius: 3px; cursor: pointer; user-select: none; }
+.tool-disclosure { padding-left: 3px; }
 .tool-disclosure .stream-summary { padding-left: 0; }
 .stream-summary:hover { background: var(--hover); color: var(--text-secondary); }
 .stream-kind { width: 31px; flex: none; color: var(--text-faint); font-size: 10.5px; }
@@ -437,15 +446,22 @@ onBeforeUnmount(() => {
 .tool-detail-row { display: grid; grid-template-columns: 27px minmax(0, 1fr); gap: 8px; padding: 3px 0; }
 .tool-detail-row pre { color: var(--code-text); font: 11px/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-detail-label { color: var(--text-faint); font-size: 10px; line-height: 1.7; }
+.thinking-disclosure { padding-left: 3px; }
+.thinking-disclosure .stream-summary { padding-left: 0; }
+.thinking-status-dot { background: var(--text-faint); }
+.thinking-disclosure .stream-preview { color: var(--text-muted); font-family: var(--font-sans); font-size: 11.5px; font-style: italic; }
+.thinking-body { margin: 1px 5px 5px 12px; padding: 3px 0 4px 9px; border-left: 1px solid var(--border); color: var(--text-muted); font: 11.5px/1.6 var(--font-sans); white-space: pre-wrap; overflow-wrap: anywhere; }
 .stream-body { margin: 1px 5px 5px 52px; padding: 3px 0 4px 9px; border-left: 1px solid var(--border); color: var(--code-text); font: 11.5px/1.6 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .primary-message { margin: 9px 4px 10px 0; padding-left: 10px; border-left: 2px solid var(--accent); }
 .primary-user { margin-left: 0; border-left-color: color-mix(in srgb, var(--accent) 60%, var(--border-strong)); }
 .primary-stderr { border-left-color: var(--warning); }
+.primary-plain { border-left-color: var(--success); }
 .primary-label { margin-bottom: 3px; color: var(--accent); font-size: 11px; font-weight: 600; }
 .primary-user .primary-label { color: var(--text-secondary); }
 .primary-stderr .primary-label { color: var(--warning); }
+.primary-plain .primary-label { color: var(--success); }
 .primary-body { color: var(--code-text); font: 13px/1.7 var(--font-sans); white-space: pre-wrap; overflow-wrap: anywhere; }
-.primary-stderr .primary-body { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6; }
+.primary-stderr .primary-body, .primary-plain .primary-body { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6; }
 .control-composer { height: 48px; display: flex; align-items: stretch; gap: 5px; }
 .control-input { min-width: 0; height: 48px; flex: 1; resize: none; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); padding: 7px 9px; color: var(--text); font-size: 12.5px; line-height: 1.45; outline: none; transition: border-color 100ms, box-shadow 100ms; }
 .control-input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft); }

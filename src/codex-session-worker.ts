@@ -32,6 +32,10 @@ export function codexTurnStartParams(threadId: string, prompt: string, worker: C
 }
 
 export function formatCodexThreadItem(item: JsonObject): string[] {
+  if (item.type === 'reasoning') {
+    const reasoning = [...textFragments(item.summary), ...textFragments(item.content)].join('\n').trim()
+    return reasoning === '' ? [] : [`思考：${reasoning}`]
+  }
   if (item.type === 'agentMessage' && typeof item.text === 'string' && item.text.trim() !== '') {
     return [`Agent：${clip(item.text, 3_000)}`]
   }
@@ -61,6 +65,15 @@ export function formatCodexThreadItem(item: JsonObject): string[] {
     return [`调用工具 web_search：${clip(typeof item.query === 'string' ? item.query : pretty(item.action), 1_200)}`, '工具结果 完成']
   }
   return []
+}
+
+function textFragments(value: unknown): string[] {
+  if (typeof value === 'string') return value.trim() === '' ? [] : [value]
+  if (Array.isArray(value)) return value.flatMap(textFragments)
+  const record = asRecord(value)
+  if (record === undefined) return []
+  if (typeof record.text === 'string') return [record.text]
+  return textFragments(record.content)
 }
 
 async function main(): Promise<void> {

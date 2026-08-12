@@ -20,7 +20,11 @@ export function formatProgressEvent(event: SessionEventLike): string | undefined
       return `步骤 ${String(data.step ?? '?')} 开始`
     case 'assistant/message': {
       const text = messageText(data.message)
-      return text === '' ? undefined : `Agent：${clip(text, 3_000)}`
+      const reasoning = reasoningText(data.message)
+      return [
+        reasoning === '' ? undefined : `思考：${reasoning}`,
+        text === '' ? undefined : `Agent：${clip(text, 3_000)}`,
+      ].filter((value): value is string => value !== undefined).join('\n') || undefined
     }
     case 'tool/call':
       return `调用工具 ${String(data.name ?? 'unknown')}：${clip(prettyArguments(data.arguments), 1_200)}`
@@ -53,15 +57,20 @@ export function apply(ctx: ProgressContext): void {
 
 function messageText(value: unknown): string {
   const message = asRecord(value)
-  return extractText(message?.content).join('\n').trim()
+  return extractBlockText(message?.content, 'text').join('\n').trim()
 }
 
-function extractText(value: unknown): string[] {
-  if (Array.isArray(value)) return value.flatMap(extractText)
+function reasoningText(value: unknown): string {
+  const message = asRecord(value)
+  return extractBlockText(message?.content, 'reasoning').join('\n').trim()
+}
+
+function extractBlockText(value: unknown, type: 'text' | 'reasoning'): string[] {
+  if (Array.isArray(value)) return value.flatMap(item => extractBlockText(item, type))
   const item = asRecord(value)
   if (item === undefined) return []
-  if (item.type === 'text' && typeof item.text === 'string') return [item.text]
-  return extractText(item.content)
+  if (item.type === type && typeof item.text === 'string') return [item.text]
+  return extractBlockText(item.content, type)
 }
 
 function prettyArguments(value: unknown): string {
