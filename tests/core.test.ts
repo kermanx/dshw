@@ -7,7 +7,7 @@ import test from 'node:test'
 import { removeCloneRecord, validateCloneName } from '../src/clone.ts'
 import { resolveCommandTarget } from '../src/command-target.ts'
 import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, repoSlugFromRemote } from '../src/git.ts'
-import { assessCiAutoFix, rollupChecks, selectCiAutoFixChecks, summarizeChecks } from '../src/github.ts'
+import { assessCiAutoFix, ciLaneKey, rollupChecks, selectCiAutoFixChecks, summarizeChecks } from '../src/github.ts'
 import { AGENT_STEER_INTERVAL_MS, CLONES_ROOT, DSHW_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
@@ -572,8 +572,12 @@ test('waits for all CI checks before classifying a completed failure', () => {
   ]).status, 'passed')
 })
 
-test('does not auto-fix a check that is also failing on the base branch', () => {
+test('does not auto-fix checks from the same failing base CI lane', () => {
   const check = (name: string, bucket: string, workflow: string) => ({ name, bucket, workflow, state: '', link: '' })
+  assert.equal(
+    ciLaneKey('CI', 'windows node 24 / native complete'),
+    ciLaneKey('CI', 'serial / windows (self-hosted standby)'),
+  )
   assert.deepEqual(selectCiAutoFixChecks([
     check('lint', 'fail', 'CI'),
   ], [{ name: 'lint', workflow: 'CI' }]).actionableChecks, [])
@@ -591,38 +595,34 @@ test('does not auto-fix a check that is also failing on the base branch', () => 
   })
 })
 
-test('compares each check with its latest decisive base result', async () => {
+test('matches alternate Windows lane names without suppressing unrelated CI jobs', async () => {
   const check = (name: string) => ({ name, bucket: 'fail', workflow: 'CI', state: 'FAILURE', link: '' })
   const calls: string[][] = []
   const execute: typeof runOrThrow = async (_command, args) => {
     calls.push([...args])
     const json = args.includes('list')
-      ? args.includes('failure')
-        ? [{ databaseId: 2, createdAt: '2026-08-12T11:00:00Z' }]
-        : [{ databaseId: 1, createdAt: '2026-08-12T10:00:00Z' }]
-      : args.includes('2')
+      ? [
+          { databaseId: 3, createdAt: '2026-08-12T12:00:00Z' },
+          { databaseId: 2, createdAt: '2026-08-12T11:00:00Z' },
+        ]
+      : args.includes('3')
         ? { jobs: [
-            { name: 'windows', status: 'completed', conclusion: 'failure' },
-            { name: 'linux', status: 'completed', conclusion: 'cancelled' },
+            { name: 'serial / windows (self-hosted standby)', status: 'completed', conclusion: 'cancelled' },
+            { name: 'node 24 / static', status: 'completed', conclusion: 'success' },
           ] }
         : { jobs: [
-            { name: 'windows', status: 'completed', conclusion: 'success' },
-            { name: 'linux', status: 'completed', conclusion: 'success' },
+            { name: 'serial / windows (self-hosted standby)', status: 'completed', conclusion: 'failure' },
           ] }
     return { code: 0, stdout: JSON.stringify(json), stderr: '', cancelled: false }
   }
   assert.deepEqual(await assessCiAutoFix('/repo', 'owner/repo', [
-    check('windows'),
-    check('linux'),
+    check('windows node 24 / native complete'),
+    check('node 24 / static'),
   ], 'master', undefined, execute), {
-    actionableChecks: [check('linux')],
-    failingBaseChecks: [{ name: 'windows', workflow: 'CI' }],
+    actionableChecks: [check('node 24 / static')],
+    failingBaseChecks: [{ name: 'windows node 24 / native complete', workflow: 'CI' }],
   })
-  assert.deepEqual(calls.filter(args => args.includes('list')).map(args => args[args.indexOf('--status') + 1]).sort(), [
-    'failure',
-    'success',
-  ])
-  assert.deepEqual(calls.filter(args => args.includes('view')).map(args => args[2]), ['2', '1'])
+  assert.deepEqual(calls.filter(args => args.includes('view')).map(args => args[2]), ['3', '2'])
 })
 
 test('normalizes GitHub PR status rollups for the live dashboard', () => {

@@ -1339,7 +1339,7 @@ class WorkflowService {
       this.#store.event(
         'warning',
         'ci',
-        `PR #${sync.prNumber}: ${assessment.failingBaseChecks.map(check => check.name).join('、')} 在 master 上最近一次明确结果也失败，不作为自动修复触发项`,
+        `PR #${sync.prNumber}: ${assessment.failingBaseChecks.map(check => check.name).join('、')} 对应的 master CI lane 最近一次明确结果也失败，不作为自动修复触发项`,
       )
     }
     if (assessment.actionableChecks.length === 0) return
@@ -1347,7 +1347,7 @@ class WorkflowService {
       ? undefined
       : [
           `本次自动修复只由这些失败 checks 触发：${assessment.actionableChecks.map(check => check.name).join('、')}。`,
-          `以下 checks 在 master 上最近一次明确结果也失败，不属于本次修复范围：${assessment.failingBaseChecks.map(check => check.name).join('、')}。`,
+          `以下 checks 对应的 master CI lanes 最近一次明确结果也失败，不属于本次修复范围：${assessment.failingBaseChecks.map(check => check.name).join('、')}。`,
         ].join('\n')
     await this.#runAgent(sync, 'fix-ci', undefined, additionalInstruction)
   }

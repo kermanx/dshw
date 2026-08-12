@@ -153,24 +153,37 @@ export interface CiAutoFixAssessment {
   failingBaseChecks: Array<Pick<CiCheck, 'name' | 'workflow'>>
 }
 
+const CI_LANE_ALIASES = new Map([
+  // Both jobs execute `pnpm run check:ci:windows-complete`; the PR and master
+  // workflow paths intentionally expose different display names.
+  ['CI\nwindows node 24 / native complete', 'CI\nwindows-complete'],
+  ['CI\nserial / windows (self-hosted standby)', 'CI\nwindows-complete'],
+])
+
+export function ciLaneKey(workflow: string, name: string): string {
+  const exact = `${workflow.trim()}\n${name}`
+  return CI_LANE_ALIASES.get(exact) ?? exact
+}
+
 export function selectCiAutoFixChecks(
   checks: readonly CiCheck[],
   failingBaseChecks: ReadonlyArray<Pick<CiCheck, 'name' | 'workflow'>>,
 ): CiAutoFixAssessment {
   const failedChecks = checks.filter(check => check.bucket === 'fail' || check.bucket === 'cancel')
-  const failingBaseCheckSet = new Set(failingBaseChecks.map(check => `${check.workflow}\n${check.name}`))
+  const failingBaseLaneSet = new Set(failingBaseChecks.map(check => ciLaneKey(check.workflow, check.name)))
   return {
     actionableChecks: failedChecks.filter(check => (
-      check.workflow.trim() === '' || !failingBaseCheckSet.has(`${check.workflow.trim()}\n${check.name}`)
+      check.workflow.trim() === '' || !failingBaseLaneSet.has(ciLaneKey(check.workflow, check.name))
     )),
     failingBaseChecks: [...failingBaseChecks],
   }
 }
 
 /**
- * A failed PR check is not actionable when the latest decisive result for the
- * same Actions job on the base branch is also a failure. Running, cancelled,
- * and skipped jobs do not supersede the latest success/failure result.
+ * A failed PR check is not actionable when the same logical lane's latest
+ * decisive base result is also a failure. Completed workflow runs are inspected
+ * job-by-job because a cancelled workflow can contain an already completed job;
+ * cancelled and skipped lane results do not supersede success/failure.
  */
 export async function assessCiAutoFix(
   cwd: string,
@@ -190,39 +203,44 @@ export async function assessCiAutoFix(
     checksByWorkflow.set(workflow, workflowChecks)
   }
   const failingBaseChecks = (await Promise.all([...checksByWorkflow].map(async ([workflow, workflowChecks]) => {
-    const runs = (await Promise.all(['success', 'failure'].map(async status => {
-      const result = await execute('gh', [
-        'run', 'list', '--repo', repoSlug,
-        '--branch', baseBranch,
-        '--workflow', workflow,
-        '--all',
-        '--status', status,
-        '--limit', '50',
-        '--json', 'databaseId,createdAt',
-      ], { cwd, timeoutMs: 30_000, signal })
-      return JSON.parse(result.stdout) as Array<{ databaseId: number; createdAt: string }>
-    }))).flat().sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
-    const unresolvedNames = new Set(workflowChecks.map(check => check.name))
-    const failedNames = new Set<string>()
-    for (const run of runs) {
-      if (unresolvedNames.size === 0) break
-      const result = await execute('gh', [
-        'run', 'view', String(run.databaseId), '--repo', repoSlug, '--json', 'jobs',
-      ], { cwd, timeoutMs: 30_000, signal })
-      const parsed = JSON.parse(result.stdout) as {
-        jobs?: Array<{ name?: string; status?: string; conclusion?: string }>
+    const listResult = await execute('gh', [
+      'run', 'list', '--repo', repoSlug,
+      '--branch', baseBranch,
+      '--workflow', workflow,
+      '--all',
+      '--status', 'completed',
+      '--limit', '50',
+      '--json', 'databaseId,createdAt',
+    ], { cwd, timeoutMs: 30_000, signal })
+    const runs = (JSON.parse(listResult.stdout) as Array<{ databaseId: number; createdAt: string }>)
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    const unresolvedLanes = new Set(workflowChecks.map(check => ciLaneKey(workflow, check.name)))
+    const failedLanes = new Set<string>()
+    const batchSize = 10
+    for (let offset = 0; offset < runs.length && unresolvedLanes.size > 0; offset += batchSize) {
+      const batch = runs.slice(offset, offset + batchSize)
+      const views = await Promise.all(batch.map(async run => {
+        const viewResult = await execute('gh', [
+          'run', 'view', String(run.databaseId), '--repo', repoSlug, '--json', 'jobs',
+        ], { cwd, timeoutMs: 30_000, signal })
+        return JSON.parse(viewResult.stdout) as {
+          jobs?: Array<{ name?: string; status?: string; conclusion?: string }>
+        }
+      }))
+      for (const parsed of views) {
+        for (const job of parsed.jobs ?? []) {
+          const lane = ciLaneKey(workflow, job.name ?? '')
+          if (!unresolvedLanes.has(lane) || job.status?.toUpperCase() !== 'COMPLETED') continue
+          const conclusion = job.conclusion?.toUpperCase()
+          if (conclusion !== 'SUCCESS' && conclusion !== 'FAILURE') continue
+          unresolvedLanes.delete(lane)
+          if (conclusion === 'FAILURE') failedLanes.add(lane)
+        }
       }
-      for (const job of parsed.jobs ?? []) {
-        const name = job.name ?? ''
-        if (!unresolvedNames.has(name) || job.status?.toUpperCase() !== 'COMPLETED') continue
-        const conclusion = job.conclusion?.toUpperCase()
-        if (conclusion !== 'SUCCESS' && conclusion !== 'FAILURE') continue
-        unresolvedNames.delete(name)
-        if (conclusion === 'FAILURE') failedNames.add(name)
-      }
+      if (unresolvedLanes.size === 0) break
     }
     return workflowChecks
-      .filter(check => failedNames.has(check.name))
+      .filter(check => failedLanes.has(ciLaneKey(workflow, check.name)))
       .map(check => ({ name: check.name, workflow }))
   }))).flat()
   return selectCiAutoFixChecks(checks, failingBaseChecks)
