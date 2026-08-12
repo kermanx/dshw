@@ -147,6 +147,45 @@ async function post(path: string, body: object, key: string): Promise<void> {
   }
 }
 
+async function runMaintenance(
+  path: string,
+  key: 'update-harness' | 'reconfigure-harness',
+  startedMessage: string,
+  completedMessage: string,
+): Promise<void> {
+  if (pending.has(key)) return
+  pending.add(key)
+  try {
+    const response = await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    const value = await response.json() as { jobId?: string, error?: string }
+    if (!response.ok) throw new Error(value.error ?? '请求失败')
+    if (value.jobId === undefined) throw new Error('后台任务缺少 jobId')
+    showToast(startedMessage)
+    const job = await waitForJob(value.jobId)
+    if (job.status !== 'succeeded') throw new Error(job.summary)
+    showToast(completedMessage)
+  } catch (error) {
+    showToast(`操作失败：${error instanceof Error ? error.message : String(error)}`, true)
+  } finally {
+    pending.delete(key)
+  }
+}
+
+async function waitForJob(jobId: string): Promise<JobRecord> {
+  const deadline = Date.now() + 30 * 60 * 1000
+  while (Date.now() < deadline) {
+    await load().catch(() => {})
+    const job = snapshot.value?.jobs.find(candidate => candidate.id === jobId)
+    if (job !== undefined && job.status !== 'queued' && job.status !== 'running') return job
+    await new Promise(resolve => window.setTimeout(resolve, 500))
+  }
+  throw new Error('等待后台任务完成超时')
+}
+
 async function updateDshw(): Promise<void> {
   const key = 'update-dshw'
   if (pending.has(key)) return
@@ -287,8 +326,8 @@ onBeforeUnmount(() => {
             @changed="load"
             @toast="showToast"
             @update-dshw="updateDshw"
-            @update-harness="post('/api/update', {}, 'update-harness')"
-            @reconfigure-harness="post('/api/reconfigure', {}, 'reconfigure-harness')"
+            @update-harness="runMaintenance('/api/update', 'update-harness', '正在同步主仓库', '主仓库同步完成')"
+            @reconfigure-harness="runMaintenance('/api/reconfigure', 'reconfigure-harness', '正在重新配置工作环境', '工作环境配置完成')"
           />
         </div>
       </template>

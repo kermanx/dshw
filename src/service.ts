@@ -426,7 +426,9 @@ class WorkflowService {
       if (this.#updatingDshw || this.#cleaningWorktrees) throw new Error('仓库维护任务正在运行，请等待完成')
       // 失败状态已在 #updateHarness 内记录并广播，这里只需避免 unhandled rejection
       void this.#ensureHarnessUpdated().catch(() => {})
-      this.#json(response, 202, { accepted: true })
+      const job = this.#store.state.jobs.findLast(candidate => candidate.type === 'update-harness' && candidate.status === 'running')
+      if (job === undefined) throw new Error('主仓库同步任务未能启动')
+      this.#json(response, 202, { accepted: true, jobId: job.id })
       return
     }
     if (method === 'POST' && url === '/api/reconfigure') {
@@ -438,7 +440,9 @@ class WorkflowService {
       void promise.catch(() => {}).finally(() => {
         if (this.#updatePromise === promise) this.#updatePromise = undefined
       })
-      this.#json(response, 202, { accepted: true })
+      const job = this.#store.state.jobs.findLast(candidate => candidate.type === 'reconfigure-harness' && candidate.status === 'running')
+      if (job === undefined) throw new Error('重新配置任务未能启动')
+      this.#json(response, 202, { accepted: true, jobId: job.id })
       return
     }
     if (method === 'GET' && !url.startsWith('/api/')) {
@@ -1708,6 +1712,7 @@ class WorkflowService {
     job.status = 'running'
     job.startedAt = now()
     this.#jobControllers.set(job.id, new AbortController())
+    this.#broadcast()
     return job
   }
 
