@@ -6,18 +6,19 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { validateCloneName } from '../src/clone.ts'
 import { resolveCommandTarget } from '../src/command-target.ts'
-import { addSharedWorktree, commitOid, fetchBranch, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
+import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, removeSharedWorktree, repoSlugFromRemote } from '../src/git.ts'
 import { rollupChecks, summarizeChecks } from '../src/github.ts'
 import { CLONES_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
 import { HARNESS_RECONFIGURE_STEPS, observeBaseTip, scheduleBaseCheck, summarizePrDashboardErrors } from '../src/service.ts'
+import { pageJobs, readEventLogPage } from '../src/state.ts'
 import { headlessDshArguments, missingTypertRuntimeArtifacts, parseDshOutcome, renderPromptTemplate, waitForDshWorker } from '../src/dsh.ts'
 import { dshLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
 import { parseProgressOutput } from '../ui/src/progress-output.ts'
-import type { DshWorkerHandle } from '../src/types.ts'
+import type { DshWorkerHandle, EventRecord, JobRecord } from '../src/types.ts'
 
 test('forwards only endpoint variables that Harness requires at launch', () => {
   assert.equal(dshLaunchEnvironmentXml({
@@ -93,6 +94,89 @@ test('parses common GitHub origin URL forms', () => {
   assert.equal(repoSlugFromRemote('git@github.com:deepseek-harness/deepseek-harness.git'), 'deepseek-harness/deepseek-harness')
   assert.equal(repoSlugFromRemote('ssh://git@github.com/deepseek-harness/deepseek-harness'), 'deepseek-harness/deepseek-harness')
   assert.throws(() => repoSlugFromRemote('https://example.com/a/b.git'), /无法从 origin/)
+})
+
+test('pages jobs from newest to oldest without overlaps', () => {
+  const jobs: JobRecord[] = Array.from({ length: 80 }, (_, index) => ({
+    id: `job-${index}`,
+    type: 'fix-ci',
+    status: 'succeeded',
+    createdAt: new Date(index * 1_000).toISOString(),
+    summary: `job ${index}`,
+  }))
+  const first = pageJobs(jobs, undefined, 35)
+  assert.deepEqual(first.records.map(job => job.id), Array.from({ length: 35 }, (_, index) => `job-${79 - index}`))
+  assert.equal(first.hasMore, true)
+  const second = pageJobs(jobs, first.nextCursor, 35)
+  assert.deepEqual(second.records.map(job => job.id), Array.from({ length: 35 }, (_, index) => `job-${44 - index}`))
+  const third = pageJobs(jobs, second.nextCursor, 35)
+  assert.deepEqual(third.records.map(job => job.id), Array.from({ length: 10 }, (_, index) => `job-${9 - index}`))
+  assert.equal(third.hasMore, false)
+})
+
+test('reads append-only event logs backwards in pages of 35', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-event-log-'))
+  const path = join(root, 'events.ndjson')
+  try {
+    const records: EventRecord[] = Array.from({ length: 80 }, (_, index) => ({
+      id: `event-${index}`,
+      time: new Date(index * 1_000).toISOString(),
+      level: index % 3 === 0 ? 'error' : index % 2 === 0 ? 'warning' : 'info',
+      kind: 'test',
+      message: `日志 ${index}\n仍在同一条记录`,
+    }))
+    await writeFile(path, records.map(record => `${JSON.stringify(record)}\n`).join(''))
+    const first = await readEventLogPage(path, undefined, 35)
+    assert.deepEqual(first.records.map(record => record.id), Array.from({ length: 35 }, (_, index) => `event-${79 - index}`))
+    assert.equal(first.hasMore, true)
+    const second = await readEventLogPage(path, Number(first.nextCursor), 35)
+    assert.deepEqual(second.records.map(record => record.id), Array.from({ length: 35 }, (_, index) => `event-${44 - index}`))
+    const third = await readEventLogPage(path, Number(second.nextCursor), 35)
+    assert.deepEqual(third.records.map(record => record.id), Array.from({ length: 10 }, (_, index) => `event-${9 - index}`))
+    assert.equal(third.hasMore, false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('summarizes local staged, unstaged, merging, ahead, and behind state', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-local-status-'))
+  try {
+    await runOrThrow('git', ['init', '-b', 'main'], { cwd: root })
+    await runOrThrow('git', ['config', 'user.name', 'dshw test'], { cwd: root })
+    await runOrThrow('git', ['config', 'user.email', 'dshw@example.invalid'], { cwd: root })
+    await writeFile(join(root, 'base.txt'), 'base\n')
+    await runOrThrow('git', ['add', 'base.txt'], { cwd: root })
+    await runOrThrow('git', ['commit', '-m', 'base'], { cwd: root })
+    await runOrThrow('git', ['branch', 'remote'], { cwd: root })
+    await runOrThrow('git', ['checkout', 'remote'], { cwd: root })
+    await writeFile(join(root, 'remote.txt'), 'remote\n')
+    await runOrThrow('git', ['add', 'remote.txt'], { cwd: root })
+    await runOrThrow('git', ['commit', '-m', 'remote'], { cwd: root })
+    const remoteHead = await commitOid(root, 'HEAD')
+    await runOrThrow('git', ['checkout', 'main'], { cwd: root })
+    await writeFile(join(root, 'local.txt'), 'local\n')
+    await runOrThrow('git', ['add', 'local.txt'], { cwd: root })
+    await runOrThrow('git', ['commit', '-m', 'local'], { cwd: root })
+    await writeFile(join(root, 'staged.txt'), 'staged\n')
+    await runOrThrow('git', ['add', 'staged.txt'], { cwd: root })
+    await writeFile(join(root, 'unstaged.txt'), 'unstaged\n')
+
+    assert.deepEqual(await cloneGitStatus(root, remoteHead), {
+      unstaged: true,
+      staged: true,
+      merging: false,
+      ahead: 1,
+      behind: 1,
+    })
+
+    await runOrThrow('git', ['add', 'unstaged.txt'], { cwd: root })
+    await runOrThrow('git', ['commit', '-m', 'local files'], { cwd: root })
+    await runOrThrow('git', ['merge', '--no-commit', 'remote'], { cwd: root })
+    assert.equal((await cloneGitStatus(root, remoteHead)).merging, true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('only treats Markdown and translation pairing YAML as documentation conflicts', () => {

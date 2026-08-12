@@ -5,14 +5,17 @@ import type {
   DshWorkerProgress,
   EventRecord,
   JobRecord,
+  JobPage,
+  LogPage,
   PrDashboardStatus,
   PrDashboardRecord,
   PullRequestReview,
   ReviewRequestRecord,
   ServiceState,
+  SyncRecord,
 } from '../../src/types.ts'
 
-export type { CiCheck, DshRunRecord, DshWorkerProgress, EventRecord, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestReview, ReviewRequestRecord }
+export type { CiCheck, DshRunRecord, DshWorkerProgress, EventRecord, JobPage, JobRecord, LogPage, PrDashboardRecord, PrDashboardStatus, PullRequestReview, ReviewRequestRecord, SyncRecord }
 
 export interface WorkflowSnapshot extends Omit<ServiceState, 'prDashboardCache'> {
   service: {

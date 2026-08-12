@@ -13,6 +13,7 @@ export const DATA_ROOT = resolve(process.env.DSHW_DATA_ROOT ?? DEFAULT_DATA_ROOT
 export const CLONE_METADATA_ROOT = resolve(process.env.DSHW_CLONE_METADATA_ROOT ?? join(DEFAULT_DATA_ROOT, 'clones'))
 export const STATE_FILE = join(DATA_ROOT, 'state.json')
 export const LOG_ROOT = join(DATA_ROOT, 'logs')
+export const EVENT_LOG_FILE = join(LOG_ROOT, 'events.ndjson')
 export const WORKER_ROOT = join(DATA_ROOT, 'workers')
 export const SERVICE_LABEL = 'com.deepseek-harness.dshw'
 export const SERVICE_PLIST = join(homedir(), 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`)

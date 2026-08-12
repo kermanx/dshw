@@ -19,7 +19,7 @@ import {
 } from './config.ts'
 import { createPrClone, listClones } from './clone.ts'
 import { startDshWorker, waitForDshWorker } from './dsh.ts'
-import { commitOid, currentHead, fetchBranch, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
+import { cloneGitStatus, commitOid, currentHead, fetchBranch, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
 import { ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { StateStore } from './state.ts'
 import type { CloneRecord, DshWorkerProgress, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord } from './types.ts'
@@ -28,6 +28,7 @@ import { refreshCodeWorkspace } from './workspace.ts'
 import { serveUiAsset } from './ui-static.ts'
 
 const NO_CHECKS_GRACE_MS = 5 * 60 * 1000
+const HISTORY_PAGE_SIZE = 35
 
 export function observeBaseTip(sync: SyncRecord, oid: string): 'initialized' | 'unchanged' | 'changed' {
   const previous = sync.observedBaseOid
@@ -162,6 +163,16 @@ class WorkflowService {
       response.on('close', () => this.#sse.delete(response))
       return
     }
+    if (method === 'GET' && url.startsWith('/api/logs')) {
+      const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
+      this.#json(response, 200, await this.#store.logs(requestUrl.searchParams.get('before') ?? undefined, HISTORY_PAGE_SIZE))
+      return
+    }
+    if (method === 'GET' && url.startsWith('/api/jobs')) {
+      const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
+      this.#json(response, 200, this.#store.jobs(requestUrl.searchParams.get('before') ?? undefined, HISTORY_PAGE_SIZE))
+      return
+    }
     if (method === 'POST' && url === '/api/worker-progress') {
       const body = await readBody(request)
       this.#acceptWorkerProgress(body)
@@ -236,7 +247,8 @@ class WorkflowService {
   }
 
   async #snapshot(): Promise<object> {
-    const { prDashboardCache: _prDashboardCache, ...state } = this.#store.state
+    const { prDashboardCache: _prDashboardCache, jobs, ...state } = this.#store.state
+    const recentJobs = jobs.filter((job, index) => job.status === 'running' || index >= jobs.length - HISTORY_PAGE_SIZE)
     return {
       service: {
         startedAt: this.#store.state.serviceStartedAt,
@@ -253,6 +265,7 @@ class WorkflowService {
       reviewRequests: this.#reviewRequests,
       jobProgress: this.#readJobProgress(),
       ...state,
+      jobs: recentJobs,
     }
   }
 
@@ -459,12 +472,11 @@ class WorkflowService {
           const checks = rollupChecks(pr.statusCheckRollup)
           const ci = summarizeChecks(checks)
           const conflicting = pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY'
+          await ensureCommitAvailable(clone, pr.headRefName, pr.headRefOid)
           if (pr.mergeable === 'MERGEABLE' || conflicting) {
-            await Promise.all([
-              ensureCommitAvailable(clone, pr.baseRefName, pr.baseRefOid),
-              ensureCommitAvailable(clone, pr.headRefName, pr.headRefOid),
-            ])
+            await ensureCommitAvailable(clone, pr.baseRefName, pr.baseRefOid)
           }
+          const localGitStatus = await cloneGitStatus(clone.path, pr.headRefOid)
           // GitHub 对落后的 PR 也报 BLOCKED 而非 BEHIND，用本地 git 判断是否落后 base
           const baseBehind = pr.mergeable === 'MERGEABLE' && await (async () => {
             return !(await isAncestor(clone.path, pr.baseRefOid, pr.headRefOid))
@@ -511,6 +523,7 @@ class WorkflowService {
             ciStatus: ci.status,
             ciSummary: ci.summary,
             checks,
+            localGitStatus,
             ...(sync === undefined ? {} : {
               syncId: sync.id,
               syncEnabled: sync.enabled !== false,
@@ -595,6 +608,17 @@ class WorkflowService {
     } finally {
       this.#prDashboardRefreshPromise = undefined
     }
+  }
+
+  /** PR 操作可能同时改变 review、CI 和 merge 状态；完成后绕过定时缓存立即刷新。 */
+  async #refreshPrDashboardAfterAction(): Promise<void> {
+    // 如果定时刷新恰好正在进行，等它结束后再发起一轮，避免复用任务开始前的旧结果。
+    while (this.#prDashboardRefreshPromise !== undefined) {
+      await this.#prDashboardRefreshPromise
+    }
+    this.#lastPrDashboardRefreshAt = 0
+    this.#lastReviewProgressRefreshAt = 0
+    await this.#refreshPrDashboard()
   }
 
   async #cachedConflictPaths(repoSlug: string, root: string, headOid: string, baseOid: string): Promise<string[]> {
@@ -928,6 +952,7 @@ class WorkflowService {
       this.#workerProgress.delete(worker.handle.runId)
       this.#broadcastProgress()
       this.#externalDshSyncs.delete(sync.id)
+      void this.#refreshPrDashboardAfterAction()
     }
   }
 
@@ -948,10 +973,7 @@ class WorkflowService {
       if (job.cancelRequestedAt !== undefined) controller.abort()
       this.#externalDshSyncs.add(sync.id)
       this.#store.event('info', 'dsh', `重新接管 ${sync.cloneName} / PR #${sync.prNumber} 的 dsh worker ${worker.handle.label}`)
-      void this.#withSyncLock(sync, () => this.#completeDshJob(job, sync)).finally(() => {
-        this.#lastPrDashboardRefreshAt = 0
-        void this.#refreshPrDashboard()
-      })
+      void this.#withSyncLock(sync, () => this.#completeDshJob(job, sync))
     }
     if (jobs.length > 0) void this.#store.changed()
   }
@@ -999,9 +1021,6 @@ class WorkflowService {
     void this.#store.changed()
     void this.#withSyncLock(sync, async () => {
       await this.#runAgent(sync, action)
-    }).finally(() => {
-      this.#lastPrDashboardRefreshAt = 0
-      void this.#refreshPrDashboard()
     })
   }
 
@@ -1026,8 +1045,7 @@ class WorkflowService {
         await this.#store.changed()
       }
     }).finally(() => {
-      this.#lastPrDashboardRefreshAt = 0
-      void this.#refreshPrDashboard()
+      void this.#refreshPrDashboardAfterAction()
     })
   }
 

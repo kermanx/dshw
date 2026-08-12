@@ -13,7 +13,7 @@ const props = defineProps<{
   events: EventRecord[]
   cancelling: boolean
 }>()
-const emit = defineEmits<{ close: [], cancel: [jobId: string] }>()
+const emit = defineEmits<{ close: [], cancel: [jobId: string], toast: [message: string, bad?: boolean] }>()
 const now = ref(Date.now())
 const outputElement = ref<HTMLElement>()
 let timer: number | undefined
@@ -21,11 +21,14 @@ let timer: number | undefined
 const phase = computed(() => props.job.status === 'running'
   ? props.progress !== undefined ? phaseLabel(props.progress.phase) : props.job.dshWorker !== undefined ? 'Agent 运行中' : '后台检查中'
   : jobLabel(props.job.status))
-const output = computed(() => stripAnsi(props.progress?.outputTail || props.run?.finalOutput || ''))
+const output = computed(() => stripAnsi(props.progress?.outputTail || props.run?.finalOutput || props.job.output || ''))
 const outputBlocks = computed(() => parseProgressOutput(output.value).filter(block => block.kind !== 'step'))
-const placeholder = computed(() => props.job.status === 'running' && props.job.dshWorker?.handle.progressProtocol !== 'memory-events-v1'
-  ? '这个任务由升级前的 worker 启动，实时输出不可用；状态和事件仍会自动更新。'
-  : props.progress?.message ?? '等待任务产生输出…')
+const placeholder = computed(() => {
+  if (props.job.status !== 'running') return '这个任务没有文本输出。'
+  return props.job.dshWorker?.handle.progressProtocol !== 'memory-events-v1'
+    ? '这个任务由升级前的 worker 启动，实时输出不可用；状态和事件仍会自动更新。'
+    : props.progress?.message ?? '等待任务产生输出…'
+})
 const elapsed = computed(() => elapsedTime(props.job.startedAt ?? props.job.createdAt, props.job.finishedAt, now.value))
 const running = computed(() => props.job.status === 'running')
 const tone = computed(() => jobTone(props.job.status))
@@ -67,6 +70,15 @@ watch(() => props.job.id, async () => {
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') emit('close')
+}
+
+async function copyOutput(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(output.value)
+    emit('toast', '输出已复制')
+  } catch {
+    emit('toast', '复制失败', true)
+  }
 }
 
 onMounted(() => {
@@ -150,9 +162,10 @@ onBeforeUnmount(() => {
         </aside>
       </div>
 
-      <footer class="flex items-center justify-between gap-16px px-16px b-t b-t-solid b-t-line text-muted text-12px">
+      <footer class="flex items-center gap-8px px-16px b-t b-t-solid b-t-line text-muted text-12px">
         <span v-if="!running">任务已结束，显示最终结果</span>
-        <button v-if="running" class="btn btn-danger ml-auto" :disabled="job.cancelRequestedAt !== undefined || cancelling" @click="emit('cancel', job.id)">{{ job.cancelRequestedAt || cancelling ? '终止中' : '终止任务' }}</button>
+        <button v-if="output" class="btn btn-ghost ml-auto" @click="copyOutput">复制输出</button>
+        <button v-if="running" class="btn btn-danger" :class="{ 'ml-auto': !output }" :disabled="job.cancelRequestedAt !== undefined || cancelling" @click="emit('cancel', job.id)">{{ job.cancelRequestedAt || cancelling ? '终止中' : '终止任务' }}</button>
       </footer>
     </section>
   </div>

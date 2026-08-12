@@ -1,6 +1,7 @@
 import { realpath } from 'node:fs/promises'
 import { relative, resolve, sep } from 'node:path'
 import { CLONES_ROOT } from './config.ts'
+import type { CloneGitStatus } from './types.ts'
 import { run, runOrThrow, TaskCancelledError } from './util.ts'
 
 export async function gitRoot(cwd: string): Promise<string> {
@@ -66,6 +67,46 @@ export async function fetchBranch(root: string, branch: string, signal?: AbortSi
 export async function isAncestor(root: string, ref: string, descendant = 'HEAD'): Promise<boolean> {
   const result = await run('git', ['merge-base', '--is-ancestor', ref, descendant], { cwd: root })
   return result.code === 0
+}
+
+export function parseCloneGitStatus(porcelain: string, divergence: string, merging: boolean): CloneGitStatus {
+  let unstaged = false
+  let staged = false
+  for (const line of porcelain.split('\n')) {
+    if (line.startsWith('? ')) {
+      unstaged = true
+      continue
+    }
+    if (line.startsWith('u ')) {
+      unstaged = true
+      continue
+    }
+    if (!line.startsWith('1 ') && !line.startsWith('2 ')) continue
+    const indexStatus = line[2]
+    const worktreeStatus = line[3]
+    if (indexStatus !== undefined && indexStatus !== '.') staged = true
+    if (worktreeStatus !== undefined && worktreeStatus !== '.') unstaged = true
+  }
+  const [aheadText = '0', behindText = '0'] = divergence.trim().split(/\s+/u)
+  const ahead = Number.parseInt(aheadText, 10)
+  const behind = Number.parseInt(behindText, 10)
+  return {
+    unstaged,
+    staged,
+    merging,
+    ahead: Number.isFinite(ahead) ? ahead : 0,
+    behind: Number.isFinite(behind) ? behind : 0,
+  }
+}
+
+/** Read worktree/index state and compare local HEAD with the exact head GitHub reported. */
+export async function cloneGitStatus(root: string, remoteHeadOid: string): Promise<CloneGitStatus> {
+  const [status, divergence, mergeHead] = await Promise.all([
+    runOrThrow('git', ['status', '--porcelain=v2', '--untracked-files=normal'], { cwd: root }),
+    runOrThrow('git', ['rev-list', '--left-right', '--count', `HEAD...${remoteHeadOid}`], { cwd: root }),
+    run('git', ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'], { cwd: root }),
+  ])
+  return parseCloneGitStatus(status.stdout, divergence.stdout, mergeHead.code === 0)
 }
 
 /** Compute conflicted paths without changing the worktree or index. */

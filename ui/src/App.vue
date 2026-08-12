@@ -1,31 +1,33 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import ActivityList from './components/ActivityList.vue'
-import DshOutputs from './components/DshOutputs.vue'
 import HarnessStatus from './components/HarnessStatus.vue'
 import Icon from './components/Icon.vue'
 import JobsTable from './components/JobsTable.vue'
+import LogPanel from './components/LogPanel.vue'
 import PullRequestsTable from './components/PullRequestsTable.vue'
 import ReviewRequests from './components/ReviewRequests.vue'
 import StatusDot from './components/StatusDot.vue'
 import TaskDialog from './components/TaskDialog.vue'
 import { relativeTime, shortTime } from './format.ts'
-import type { Tone } from './types.ts'
+import type { JobRecord, Tone } from './types.ts'
 import { useWorkflow } from './use-workflow.ts'
 
 const { snapshot, connection } = useWorkflow()
-const views = ['prs', 'reviews', 'jobs', 'outputs', 'activity'] as const
+const views = ['prs', 'reviews', 'jobs', 'logs'] as const
 type View = typeof views[number]
-const initialView = location.hash.slice(1) as View
+const initialHash = location.hash.slice(1)
+const initialView = (initialHash === 'activity' ? 'logs' : initialHash) as View
 const view = ref<View>(views.includes(initialView) ? initialView : 'prs')
 const activeJobId = ref<string>()
+const selectedJob = ref<JobRecord>()
 const pending = reactive(new Set<string>())
 const currentTime = ref(Date.now())
 const toast = reactive({ message: '', bad: false, visible: false })
 let clock: number | undefined
 let toastTimer: number | undefined
 
-const activeJob = computed(() => snapshot.value?.jobs.find(job => job.id === activeJobId.value))
+const activeJob = computed(() => snapshot.value?.jobs.find(job => job.id === activeJobId.value)
+  ?? (selectedJob.value?.id === activeJobId.value ? selectedJob.value : undefined))
 const activeProgress = computed(() => activeJob.value === undefined ? undefined : snapshot.value?.jobProgress[activeJob.value.id])
 const activeRun = computed(() => {
   const runId = activeJob.value?.dshWorker?.handle.runId
@@ -37,13 +39,17 @@ const liveLabel = computed(() => snapshot.value?.service.draining === true
   ? '正在重启'
   : connection.value === 'live' ? 'Live' : connection.value === 'reconnecting' ? '重新连接' : '连接中')
 const latestPrUpdate = computed(() => Math.max(0, ...(snapshot.value?.prs ?? []).map(pr => Date.parse(pr.updatedAt) || 0)))
-const syncLabel = computed(() => {
+const prRefreshStatus = computed(() => {
   if (snapshot.value === undefined) return ''
   if (snapshot.value.prDashboard.state === 'loading') return '正在首次同步'
   if (snapshot.value.prDashboard.state === 'error') return 'PR 同步失败'
   if (latestPrUpdate.value === 0) return '等待首次同步'
-  return `同步于 ${relativeTime(new Date(latestPrUpdate.value).toISOString(), currentTime.value)}`
+  return `PR 状态更新于 ${relativeTime(new Date(latestPrUpdate.value).toISOString(), currentTime.value)}`
 })
+const prRefreshTitle = computed(() => [
+  '刷新 Pull requests（重新发现并拉取最新状态）',
+  prRefreshStatus.value,
+].filter(Boolean).join('\n'))
 const prCount = computed(() => snapshot.value?.prs.length ?? 0)
 const runningJobs = computed(() => snapshot.value?.service.activeJobs ?? 0)
 const updateFailed = computed(() => snapshot.value?.update.lastStatus === 'failed')
@@ -65,9 +71,18 @@ const tabs = computed(() => [
   { id: 'prs', icon: 'branch', label: 'Pull requests', count: prCount.value },
   { id: 'reviews', icon: 'review', label: 'Reviews', count: snapshot.value?.reviewRequests.length ?? 0 },
   { id: 'jobs', icon: 'list', label: 'Jobs', count: runningJobs.value },
-  { id: 'outputs', icon: 'terminal', label: 'Outputs', count: snapshot.value?.dshRuns.length ?? 0 },
-  { id: 'activity', icon: 'history', label: 'Activity', count: snapshot.value?.events.length ?? 0 },
+  { id: 'logs', icon: 'history', label: 'Logs', count: 0 },
 ] as const)
+
+function openJob(job: JobRecord | string): void {
+  selectedJob.value = typeof job === 'string' ? undefined : job
+  activeJobId.value = typeof job === 'string' ? job : job.id
+}
+
+function closeJob(): void {
+  activeJobId.value = undefined
+  selectedJob.value = undefined
+}
 
 async function post(path: string, body: object, key: string): Promise<void> {
   if (pending.has(key)) return
@@ -123,8 +138,6 @@ onBeforeUnmount(() => {
           <StatusDot :tone="liveTone" :pulse="liveTone === 'warn'" />
           <span>{{ liveLabel }}</span>
         </span>
-        <span v-if="syncLabel" class="w-1px h-12px bg-line-strong" />
-        <span v-if="syncLabel" class="text-muted">{{ syncLabel }}</span>
       </div>
     </header>
 
@@ -144,7 +157,7 @@ onBeforeUnmount(() => {
         v-if="view === 'prs' || view === 'reviews'"
         class="icon-btn ml-auto mr-6px self-center"
         :class="{ 'opacity-45 pointer-events-none': pending.has('prs-refresh') }"
-        title="刷新 Pull requests（重新发现并拉取最新状态）"
+        :title="prRefreshTitle"
         @click="post('/api/prs/refresh', {}, 'prs-refresh')"
       ><Icon name="sync" :size="13" :class="{ 'animate-spin': pending.has('prs-refresh') }" /></button>
     </nav>
@@ -167,8 +180,8 @@ onBeforeUnmount(() => {
             :jobs="snapshot.jobs"
             :pending="pending"
             @action="(name, action) => post('/api/pr-action', { name, action }, `${action}:${name}`)"
-            @open-job="activeJobId = $event"
-            @open-activity="select('activity')"
+            @open-job="openJob"
+            @open-activity="select('logs')"
             @refresh="post('/api/prs/refresh', {}, 'prs-refresh')"
             @toggle-sync="(name, enabled) => post('/api/sync/toggle', { name, enabled }, `sync-toggle:${name}`)"
           />
@@ -176,12 +189,12 @@ onBeforeUnmount(() => {
           <JobsTable
             v-else-if="view === 'jobs'"
             :jobs="snapshot.jobs"
+            :syncs="snapshot.syncs"
             :pending="pending"
-            @open="activeJobId = $event"
+            @open="openJob"
             @cancel="id => post('/api/jobs/cancel', { jobId: id }, `cancel:${id}`)"
           />
-          <DshOutputs v-else-if="view === 'outputs'" :runs="snapshot.dshRuns" @toast="showToast" />
-          <ActivityList v-else :events="snapshot.events" />
+          <LogPanel v-else :recent="snapshot.events" />
         </div>
       </template>
       <div v-else class="flex-1 flex items-center justify-center gap-8px text-muted text-13px">
@@ -230,8 +243,9 @@ onBeforeUnmount(() => {
     :run="activeRun"
     :events="snapshot.events"
     :cancelling="pending.has(`cancel:${activeJob.id}`)"
-    @close="activeJobId = undefined"
+    @close="closeJob"
     @cancel="id => post('/api/jobs/cancel', { jobId: id }, `cancel:${id}`)"
+    @toast="showToast"
   />
 
   <div

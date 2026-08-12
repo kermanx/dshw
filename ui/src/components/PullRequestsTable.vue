@@ -36,6 +36,30 @@ function busyLabel(job?: JobRecord): string {
   return job?.type === 'fix-ci' ? '修复 CI' : job?.type === 'merge-base' ? '合并 base' : job?.type === 'resolve-comments' ? '解决评论' : '检查状态'
 }
 
+function localGitStatusLabel(pr: PrDashboardRecord): string {
+  const status = pr.localGitStatus
+  if (status === undefined) return ''
+  return [
+    status.unstaged ? '*' : '',
+    status.staged ? '+' : '',
+    status.merging ? '!' : '',
+    status.ahead > 0 ? `↑${status.ahead}` : '',
+    status.behind > 0 ? `↓${status.behind}` : '',
+  ].join('')
+}
+
+function localGitStatusTitle(pr: PrDashboardRecord): string {
+  const status = pr.localGitStatus
+  if (status === undefined) return ''
+  return [
+    status.unstaged ? '* 未暂存或未跟踪的改动' : '',
+    status.staged ? '+ 已暂存的改动' : '',
+    status.merging ? '! 正在 merge' : '',
+    status.ahead > 0 ? `↑${status.ahead} 本地有 ${status.ahead} 个提交尚未 push` : '',
+    status.behind > 0 ? `↓${status.behind} GitHub 有 ${status.behind} 个提交尚未 pull` : '',
+  ].filter(Boolean).join('\n')
+}
+
 /** 冲突走 dsh agent；可合并但落后 base 走无模型的直接 merge+push。 */
 function mergeAction(pr: PrDashboardRecord): 'merge-base' | 'merge-base-direct' | undefined {
   if (pr.mergeable === 'CONFLICTING') return 'merge-base'
@@ -123,7 +147,14 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
               <span v-if="pr.isDraft" class="badge">草稿</span>
               <Icon class="flex-none text-faint opacity-0 transition-opacity duration-100 group-hover:opacity-100" name="external" :size="11" />
             </div>
-            <div class="cell-sub font-mono" :title="pr.branch">{{ pr.branch }} → {{ pr.baseRefName }}</div>
+            <div class="cell-sub font-mono flex items-center gap-5px">
+              <span
+                v-if="localGitStatusLabel(pr)"
+                class="flex-none text-warn font-600"
+                :title="localGitStatusTitle(pr)"
+              >{{ localGitStatusLabel(pr) }}</span>
+              <span class="min-w-0 truncate" :title="pr.branch">{{ pr.branch }} → {{ pr.baseRefName }}</span>
+            </div>
           </td>
           <td :class="tdClass">
             <CiChecks :pr="pr">

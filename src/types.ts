@@ -113,6 +113,18 @@ export interface EventRecord {
   message: string
 }
 
+export interface LogPage {
+  records: EventRecord[]
+  nextCursor?: string
+  hasMore: boolean
+}
+
+export interface JobPage {
+  records: JobRecord[]
+  nextCursor?: string
+  hasMore: boolean
+}
+
 export interface ServiceState {
   version: 2
   serviceStartedAt?: string
@@ -210,6 +222,14 @@ export interface CiCheck {
   link: string
 }
 
+export interface CloneGitStatus {
+  unstaged: boolean
+  staged: boolean
+  merging: boolean
+  ahead: number
+  behind: number
+}
+
 export interface PrDashboardRecord {
   cloneName: string
   clonePath: string
@@ -232,6 +252,7 @@ export interface PrDashboardRecord {
   ciStatus: CiStatus
   ciSummary: string
   checks: CiCheck[]
+  localGitStatus?: CloneGitStatus
   syncId?: string
   syncEnabled?: boolean
   pendingBaseCheckAt?: string
