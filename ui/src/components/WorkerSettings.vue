@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { shortTime } from '../format.ts'
-import type { DshwRepositoryStatus, HarnessRepositoryStatus, UpdateState, WorkerConfig, WorkerConfigInput, WorkerModelCatalog, WorkerTypeAvailability, WorktreeCleanupCandidate, WorktreeCleanupPreview } from '../types.ts'
+import type { DshwRepositoryStatus, HarnessRepositoryStatus, WorkerConfig, WorkerConfigInput, WorkerModelCatalog, WorkerTypeAvailability, WorktreeCleanupCandidate, WorktreeCleanupPreview } from '../types.ts'
 import Icon from './Icon.vue'
 import StatusDot from './StatusDot.vue'
 
@@ -10,7 +9,6 @@ const props = defineProps<{
   workerTypes: WorkerTypeAvailability[]
   dshwRepository: DshwRepositoryStatus
   repository: HarnessRepositoryStatus
-  update: UpdateState
   updating: boolean
   reconfiguring: boolean
   updatingDshw: boolean
@@ -30,6 +28,7 @@ const editing = ref<WorkerConfig>()
 const dialogOpen = ref(false)
 const cleanupDialogOpen = ref(false)
 const cleanupLoading = ref(false)
+const repositoryRefreshing = ref(false)
 const cleanupPreview = ref<WorktreeCleanupPreview>()
 const cleanupDecisions = reactive<Record<string, 'keep' | 'delete'>>({})
 const saving = ref(false)
@@ -79,7 +78,8 @@ const fieldClass = 'w-full h-28px rounded b b-solid b-line bg-surface px-8px tex
 const repositoryLag = computed(() => {
   if (props.repository.state === 'error') return '暂时无法确认与上游的差异'
   const behind = props.repository.behind ?? 0
-  return behind === 0 ? '当前已与上游一致' : `当前落后上游 ${behind} 个提交`
+  const lag = behind === 0 ? '当前已与上游一致' : `当前落后上游 ${behind} 个提交`
+  return props.repository.dirty ? `${lag} · 有本地内容待收起` : lag
 })
 const dshwRepositoryLag = computed(() => {
   if (props.dshwRepository.state === 'error') return '暂时无法确认与上游的差异'
@@ -90,15 +90,29 @@ const dshwRepositoryLag = computed(() => {
 const worktreeSummary = computed(() => props.worktreeCleanupCount === undefined
   ? `当前 ${props.worktreeCount} 个，可清理数量待确认`
   : `当前 ${props.worktreeCount} 个，其中 ${props.worktreeCleanupCount} 个可清理`)
+const dshwUpdateNoop = computed(() => props.dshwRepository.state === 'ready' && (props.dshwRepository.behind ?? 0) === 0)
+const harnessSyncNoop = computed(() => props.repository.state === 'ready' && (props.repository.behind ?? 0) === 0 && props.repository.dirty === false)
+const worktreeCleanupNoop = computed(() => props.worktreeCleanupCount === 0)
 const riskyWorktrees = computed(() => cleanupPreview.value?.candidates.filter(candidate => candidate.needsDecision) ?? [])
 const cleanWorktreeCount = computed(() => cleanupPreview.value?.candidates.filter(candidate => !candidate.needsDecision).length ?? 0)
 const selectedDirtyCount = computed(() => riskyWorktrees.value.filter(candidate => cleanupDecisions[candidate.name] === 'delete').length)
 const cleanupDeleteCount = computed(() => cleanWorktreeCount.value + selectedDirtyCount.value)
-const updateResult = computed(() => {
-  if (props.update.lastAt === undefined) return '尚未执行维护操作'
-  const status = props.update.lastStatus === 'failed' ? '失败' : '完成'
-  return `${shortTime(props.update.lastAt)} ${status}${props.update.lastMessage ? ` · ${props.update.lastMessage}` : ''}`
-})
+
+async function refreshRepositoryState(): Promise<void> {
+  if (repositoryRefreshing.value) return
+  repositoryRefreshing.value = true
+  try {
+    const response = await fetch('/api/repository/refresh', { method: 'POST' })
+    const value = await response.json() as { error?: string }
+    if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`)
+    emit('changed')
+    emit('toast', '仓库状态已刷新')
+  } catch (error) {
+    emit('toast', `刷新失败：${error instanceof Error ? error.message : String(error)}`, true)
+  } finally {
+    repositoryRefreshing.value = false
+  }
+}
 
 function confirmReconfigure(): void {
   const confirmed = window.confirm([
@@ -385,6 +399,7 @@ function workerStatus(worker: WorkerConfig): string {
       <section v-if="section === 'repository'" class="min-w-0 min-h-0 flex flex-col">
         <div class="h-40px flex-none flex items-center gap-8px px-12px b-b b-b-solid b-b-line">
           <span class="text-12.5px font-600 text-fg">仓库管理</span><span class="text-11px text-muted">dshw、主仓库与 Worktree</span>
+          <button class="icon-btn ml-auto" :disabled="repositoryRefreshing || updatingDshw || updating || reconfiguring || cleanupLoading" title="刷新仓库状态" aria-label="刷新仓库状态" @click="refreshRepositoryState"><Icon name="sync" :size="13" :class="{ 'animate-spin': repositoryRefreshing }" /></button>
         </div>
 
         <div class="flex-1 min-h-0 overflow-auto">
@@ -393,25 +408,22 @@ function workerStatus(worker: WorkerConfig): string {
               <div class="min-h-64px flex items-center gap-12px px-14px">
                 <div class="h-28px w-28px grid place-items-center rounded bg-widget text-secondary"><Icon name="download" :size="14" :class="{ 'animate-pulse': updatingDshw }" /></div>
                 <div class="flex-1 min-w-0"><div class="flex items-center gap-7px text-12.5px font-500 text-fg"><span>更新 dshw</span><span class="text-10.5px font-400" :class="(dshwRepository.behind ?? 0) > 0 || dshwRepository.dirty ? 'text-warn' : 'text-muted'">{{ dshwRepositoryLag }}</span></div><div class="mt-1px text-11px text-muted">拉取最新代码、安装依赖并重新构建，然后安全重启服务</div></div>
-                <button class="btn btn-default" :disabled="devMode || dshwRepository.state !== 'ready' || dshwRepository.dirty || updatingDshw || updating || reconfiguring || cleanupLoading" :title="devMode ? '开发模式下不可用' : dshwRepository.dirty ? '请先处理 dshw 仓库中的本地修改' : ''" @click="emit('updateDshw')">{{ updatingDshw ? '更新并重启中' : '更新并重启' }}</button>
+                <button class="btn btn-default" :disabled="devMode || dshwRepository.state !== 'ready' || dshwRepository.dirty || dshwUpdateNoop || updatingDshw || updating || reconfiguring || cleanupLoading" :title="devMode ? '开发模式下不可用' : dshwRepository.dirty ? '请先处理 dshw 仓库中的本地修改' : dshwUpdateNoop ? 'dshw 已是最新' : ''" @click="emit('updateDshw')">{{ updatingDshw ? '更新并重启中' : '更新并重启' }}</button>
               </div>
               <div class="min-h-64px flex items-center gap-12px px-14px b-t b-t-solid b-t-line">
                 <div class="h-28px w-28px grid place-items-center rounded bg-widget text-secondary"><Icon name="sync" :size="14" :class="{ 'animate-spin': updating }" /></div>
-                <div class="flex-1 min-w-0"><div class="flex items-center gap-7px text-12.5px font-500 text-fg"><span>同步主仓库</span><span class="text-10.5px font-400" :class="(repository.behind ?? 0) > 0 ? 'text-warn' : 'text-muted'">{{ repositoryLag }}</span></div><div class="mt-1px text-11px text-muted">更新 deepseek-harness 仓库到最新上游</div></div>
-                <button class="btn btn-default" :disabled="updatingDshw || updating || reconfiguring || cleanupLoading" @click="emit('updateHarness')">{{ updating ? '同步中' : '立即同步' }}</button>
+                <div class="flex-1 min-w-0"><div class="flex items-center gap-7px text-12.5px font-500 text-fg"><span>同步主仓库</span><span class="text-10.5px font-400" :class="(repository.behind ?? 0) > 0 || repository.dirty ? 'text-warn' : 'text-muted'">{{ repositoryLag }}</span></div><div class="mt-1px text-11px text-muted">更新 deepseek-harness 仓库到最新上游</div></div>
+                <button class="btn btn-default" :disabled="harnessSyncNoop || updatingDshw || updating || reconfiguring || cleanupLoading" :title="harnessSyncNoop ? '主仓库已是最新且没有本地内容' : ''" @click="emit('updateHarness')">{{ updating ? '同步中' : '立即同步' }}</button>
               </div>
               <div class="min-h-64px flex items-center gap-12px px-14px b-t b-t-solid b-t-line">
                 <div class="h-28px w-28px grid place-items-center rounded bg-widget text-secondary"><Icon name="worktree" :size="14" /></div>
                 <div class="flex-1 min-w-0"><div class="flex items-center gap-7px text-12.5px font-500 text-fg"><span>清理 Worktree</span><span class="text-10.5px font-400 text-muted">{{ worktreeSummary }}</span></div><div class="mt-1px text-11px text-muted">删除不再对应 active PR 的 Worktree；本地内容会逐项确认</div></div>
-                <button class="btn btn-default" :disabled="updatingDshw || updating || reconfiguring || cleanupLoading" @click="inspectWorktreeCleanup">{{ cleanupLoading ? '检查中' : '检查并清理' }}</button>
+                <button class="btn btn-default" :disabled="worktreeCleanupNoop || updatingDshw || updating || reconfiguring || cleanupLoading" :title="worktreeCleanupNoop ? '没有可清理的 Worktree' : ''" @click="inspectWorktreeCleanup">{{ cleanupLoading ? '检查中' : '检查并清理' }}</button>
               </div>
               <div class="min-h-64px flex items-center gap-12px px-14px b-t b-t-solid b-t-line">
                 <div class="h-28px w-28px grid place-items-center rounded bg-widget text-secondary"><Icon name="reset" :size="14" :class="{ 'animate-spin': reconfiguring }" /></div>
                 <div class="flex-1 min-w-0"><div class="text-12.5px font-500 text-fg">重新初始化工作环境</div><div class="mt-1px text-11px text-muted">清理生成文件，更新 master，重新安装依赖并运行 typecheck</div></div>
                 <button class="btn btn-default" :disabled="updatingDshw || updating || reconfiguring || cleanupLoading" @click="confirmReconfigure">{{ reconfiguring ? '配置中' : '从头配置' }}</button>
-              </div>
-              <div v-if="update.lastStatus !== 'failed'" class="min-h-32px flex items-center gap-6px px-14px b-t b-t-solid b-t-line bg-widget text-muted text-10.5px">
-                <Icon name="history" :size="11" /><span class="truncate" :title="updateResult">{{ updateResult }}</span>
               </div>
             </div>
           </div>

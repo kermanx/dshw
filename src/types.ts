@@ -72,11 +72,11 @@ export interface HarnessRepositoryStatus {
   state: 'ready' | 'error'
   checkedAt: string
   behind?: number
+  dirty?: boolean
   error?: string
 }
 
 export interface DshwRepositoryStatus extends HarnessRepositoryStatus {
-  dirty?: boolean
   upstream?: string
 }
 

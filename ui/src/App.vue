@@ -316,7 +316,6 @@ onBeforeUnmount(() => {
             :worker-types="snapshot.workerTypes"
             :dshw-repository="snapshot.dshwRepository"
             :repository="snapshot.harnessRepository"
-            :update="snapshot.update"
             :updating="updating"
             :reconfiguring="reconfiguring"
             :updating-dshw="updatingDshw"

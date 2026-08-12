@@ -349,6 +349,21 @@ class WorkflowService {
       this.#json(response, 202, { accepted: true, prs: this.#prDashboard.length })
       return
     }
+    if (method === 'POST' && url === '/api/repository/refresh') {
+      if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
+      if (this.#updatePromise !== undefined || this.#updatingDshw || this.#cleaningWorktrees) throw new Error('仓库维护任务正在运行，请等待完成')
+      await Promise.all([
+        this.#refreshDshwRepository(true),
+        this.#refreshHarnessRepository(true),
+        (async () => {
+          await this.#discoverMyPrs()
+          await this.#refreshPrDashboard()
+        })(),
+      ])
+      this.#broadcast()
+      this.#json(response, 200, { refreshed: true })
+      return
+    }
     if (method === 'POST' && url === '/api/worktrees/cleanup/preview') {
       if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
       if (this.#updatePromise !== undefined || this.#updatingDshw || this.#cleaningWorktrees) throw new Error('仓库维护任务正在运行，请等待完成')
@@ -1635,8 +1650,8 @@ class WorkflowService {
     }
   }
 
-  async #refreshHarnessRepository(): Promise<void> {
-    this.#harnessRepository = await readHarnessRepositoryStatus()
+  async #refreshHarnessRepository(fetchRemote = false): Promise<void> {
+    this.#harnessRepository = await readHarnessRepositoryStatus(fetchRemote)
   }
 
   async #refreshDshwRepository(fetchRemote: boolean): Promise<void> {
