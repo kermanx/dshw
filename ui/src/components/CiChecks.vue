@@ -34,7 +34,7 @@ onBeforeUnmount(() => { window.removeEventListener('pointerdown', closeOutside, 
 </script>
 
 <template>
-  <div class="h-46px flex flex-col justify-center gap-2px min-w-0">
+  <div class="h-42px flex flex-col justify-center gap-2px min-w-0">
     <button ref="trigger" class="inline-flex items-center gap-6px w-fit cursor-pointer text-secondary text-12.5px hover:underline hover:text-fg" @click="toggle">
       <StatusIcon :tone="ciTone(pr.ciStatus)" />
       <span class="whitespace-nowrap">{{ ciLabel(pr.ciStatus) }}</span>

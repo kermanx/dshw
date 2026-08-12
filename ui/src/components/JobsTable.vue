@@ -6,7 +6,7 @@ import StatusDot from './StatusDot.vue'
 
 const props = defineProps<{ jobs: JobRecord[], syncs: SyncRecord[], pending: ReadonlySet<string> }>()
 const emit = defineEmits<{ open: [job: JobRecord], cancel: [jobId: string] }>()
-const records = ref<JobRecord[]>([...props.jobs].filter(job => job.type !== 'sync-check').reverse())
+const records = ref<JobRecord[]>(sortJobs(props.jobs.filter(job => job.type !== 'sync-check')))
 const cursor = ref<string>()
 const hasMore = ref(true)
 const loading = ref(false)
@@ -16,11 +16,15 @@ const scroller = ref<HTMLElement>()
 function mergeLive(incoming: JobRecord[]): void {
   const byId = new Map(records.value.map(job => [job.id, job]))
   for (const job of incoming) byId.set(job.id, job)
-  const order = [
-    ...[...incoming].filter(job => job.type !== 'sync-check').reverse().map(job => job.id),
-    ...records.value.map(job => job.id),
-  ]
-  records.value = [...new Set(order)].map(id => byId.get(id)!).filter(Boolean)
+  records.value = sortJobs([...byId.values()].filter(job => job.type !== 'sync-check'))
+}
+
+function sortJobs(jobs: readonly JobRecord[]): JobRecord[] {
+  return [...jobs].sort((left, right) => (
+    Number(right.status === 'running') - Number(left.status === 'running')
+    || Date.parse(right.createdAt) - Date.parse(left.createdAt)
+    || right.id.localeCompare(left.id)
+  ))
 }
 
 async function fetchPage(before?: string): Promise<JobPage> {
@@ -38,7 +42,7 @@ async function loadMore(): Promise<void> {
   try {
     const page = await fetchPage(cursor.value)
     const known = new Set(records.value.map(job => job.id))
-    records.value.push(...page.records.filter(job => !known.has(job.id)))
+    records.value = sortJobs([...records.value, ...page.records.filter(job => !known.has(job.id))])
     cursor.value = page.nextCursor
     hasMore.value = page.hasMore
   } catch (cause) {
@@ -53,7 +57,9 @@ async function loadInitial(): Promise<void> {
   error.value = ''
   try {
     const page = await fetchPage()
-    records.value = page.records
+    const byId = new Map(records.value.map(job => [job.id, job]))
+    for (const job of page.records) byId.set(job.id, job)
+    records.value = sortJobs([...byId.values()])
     cursor.value = page.nextCursor
     hasMore.value = page.hasMore
   } catch (cause) {

@@ -558,16 +558,15 @@ test('reconstructs live dsh progress from the durable session event tail after r
   }
 })
 
-test('orders code workspace clones by PR number, then keeps dshw before worktrees', () => {
+test('keeps code workspace PR folders in dashboard order without an all-worktrees folder', () => {
   const folders = codeWorkspaceFolders([
     { name: 'dsh-9', path: `${CLONES_ROOT}/dsh-9`, prNumber: 120 },
     { name: 'dsh-2', path: `${CLONES_ROOT}/dsh-2`, prNumber: 7 },
   ])
   assert.deepEqual(folders, [
-    { name: 'PR_7', path: './worktrees/dsh-2' },
     { name: 'PR_120', path: './worktrees/dsh-9' },
+    { name: 'PR_7', path: './worktrees/dsh-2' },
     { name: 'dshw', path: './..' },
-    { name: 'worktrees', path: './worktrees' },
   ])
 })
 

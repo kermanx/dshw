@@ -127,7 +127,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="h-full grid grid-rows-[var(--titlebar-h)_var(--tabbar-h)_minmax(0,1fr)_var(--statusbar-h)] bg-surface">
-    <header class="flex items-center justify-between gap-16px px-12px bg-titlebar text-fg select-none">
+    <header class="row-start-1 flex items-center justify-between gap-16px px-12px bg-titlebar text-fg select-none">
       <div class="flex items-center gap-8px min-w-0">
         <span class="w-18px h-18px grid place-items-center rounded bg-accent text-white text-10px font-700 tracking-[-0.02em]">dw</span>
         <span class="text-13px font-600">dshw</span>
@@ -141,7 +141,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <nav v-if="snapshot" class="flex items-stretch bg-tabbar overflow-x-auto select-none">
+    <nav v-if="snapshot" class="row-start-2 flex items-stretch bg-tabbar overflow-x-auto select-none">
       <button
         v-for="tab in tabs"
         :key="tab.id"
@@ -162,7 +162,7 @@ onBeforeUnmount(() => {
       ><Icon name="sync" :size="13" :class="{ 'animate-spin': pending.has('prs-refresh') }" /></button>
     </nav>
 
-    <main class="flex-1 min-h-0 overflow-hidden flex flex-col bg-surface">
+    <main class="row-start-3 min-h-0 overflow-hidden flex flex-col bg-surface">
       <template v-if="snapshot">
         <HarnessStatus v-if="updateFailed" :update="snapshot.update" />
         <div v-if="snapshot.service.rateLimited" class="flex items-center gap-8px px-12px min-h-32px b-b b-b-solid b-b-line bg-warn-soft text-12px">
@@ -210,7 +210,7 @@ onBeforeUnmount(() => {
       </div>
     </main>
 
-    <footer class="flex items-center justify-between bg-statusbar text-statusbar-fg text-11px select-none">
+    <footer class="row-start-4 flex items-center justify-between bg-statusbar text-statusbar-fg text-11px select-none">
       <div class="flex items-center min-w-0">
         <span class="inline-flex items-center gap-5px h-full px-10px whitespace-nowrap transition-colors duration-100 hover:bg-statusbar-item-hover">{{ prCount }} 个 PR</span>
         <span class="inline-flex items-center gap-5px h-full px-10px whitespace-nowrap transition-colors duration-100 hover:bg-statusbar-item-hover">{{ runningJobs }} 个任务运行中</span>

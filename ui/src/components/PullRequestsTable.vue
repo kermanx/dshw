@@ -89,7 +89,7 @@ function autoMergeMinutes(pr: PrDashboardRecord): number {
 }
 
 const thClass = 'h-30px px-12px b-b b-b-solid b-b-line bg-surface text-secondary text-11px font-500 uppercase tracking-[0.05em] text-left whitespace-nowrap sticky top-0 z-1'
-const tdClass = 'h-46px px-12px py-6px align-middle'
+const tdClass = 'h-54px px-12px py-5px align-middle'
 const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5px cursor-pointer whitespace-nowrap hover:underline disabled:opacity-45 disabled:pointer-events-none'
 </script>
 
@@ -145,12 +145,11 @@ const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5p
                 <span class="truncate font-500" :class="pr.isDraft ? 'text-secondary' : 'text-fg'">{{ pr.title }}</span>
               </a>
               <span v-if="pr.isDraft" class="badge">草稿</span>
-              <Icon class="flex-none text-faint opacity-0 transition-opacity duration-100 group-hover:opacity-100" name="external" :size="11" />
             </div>
             <div class="cell-sub font-mono flex items-center gap-5px">
               <span
                 v-if="localGitStatusLabel(pr)"
-                class="flex-none text-warn font-600"
+                class="flex-none text-warn font-sans font-600"
                 :title="localGitStatusTitle(pr)"
               >{{ localGitStatusLabel(pr) }}</span>
               <span class="min-w-0 truncate" :title="pr.branch">{{ pr.branch }} → {{ pr.baseRefName }}</span>

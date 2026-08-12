@@ -14,7 +14,7 @@ const emit = defineEmits<{ refresh: [], openLogs: [] }>()
 const ordered = computed(() => [...props.requests].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)))
 
 const thClass = 'h-30px px-12px b-b b-b-solid b-b-line bg-surface text-secondary text-11px font-500 uppercase tracking-[0.05em] text-left whitespace-nowrap sticky top-0 z-1'
-const tdClass = 'h-46px px-12px py-6px align-middle'
+const tdClass = 'h-54px px-12px py-5px align-middle'
 const actionClass = 'inline-flex items-center gap-5px w-fit text-link text-11.5px cursor-pointer whitespace-nowrap hover:underline disabled:opacity-45 disabled:pointer-events-none'
 </script>
 

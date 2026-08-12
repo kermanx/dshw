@@ -103,6 +103,7 @@ class WorkflowService {
   #lastRefWatchAt = 0
   #lastWorkspaceRefreshAt = 0
   #workspaceRefreshPromise: Promise<void> | undefined
+  #workspaceRefreshQueued = false
   #lastPrDashboardRefreshAt = 0
   #lastReviewProgressRefreshAt = 0
   #prDashboardRefreshPromise: Promise<void> | undefined
@@ -511,22 +512,28 @@ class WorkflowService {
   }
 
   async #refreshWorkspace(): Promise<void> {
-    if (this.#workspaceRefreshPromise !== undefined) return await this.#workspaceRefreshPromise
-    this.#workspaceRefreshPromise = (async () => {
-      const result = await refreshCodeWorkspace()
-      if (result.warnings.length > 0) {
-        this.#store.event('warning', 'workspace', `code workspace 刷新时跳过 ${result.warnings.length} 个 clone`)
-        await this.#store.changed()
-      }
-    })()
-    try {
-      await this.#workspaceRefreshPromise
-    } catch (error) {
-      this.#store.event('error', 'workspace', messageOf(error))
-      await this.#store.changed()
-    } finally {
-      this.#workspaceRefreshPromise = undefined
+    if (this.#workspaceRefreshPromise !== undefined) {
+      this.#workspaceRefreshQueued = true
+      return await this.#workspaceRefreshPromise
     }
+    do {
+      this.#workspaceRefreshQueued = false
+      this.#workspaceRefreshPromise = (async () => {
+        const result = await refreshCodeWorkspace(this.#prDashboard)
+        if (result.warnings.length > 0) {
+          this.#store.event('warning', 'workspace', `code workspace 刷新时跳过 ${result.warnings.length} 个 clone`)
+          await this.#store.changed()
+        }
+      })()
+      try {
+        await this.#workspaceRefreshPromise
+      } catch (error) {
+        this.#store.event('error', 'workspace', messageOf(error))
+        await this.#store.changed()
+      } finally {
+        this.#workspaceRefreshPromise = undefined
+      }
+    } while (this.#workspaceRefreshQueued)
   }
 
   async #refreshPrDashboard(): Promise<void> {
@@ -710,6 +717,7 @@ class WorkflowService {
       }
       if (complete) this.#clearRateLimited()
       await this.#store.changed()
+      await this.#refreshWorkspace()
     })().catch(async (error: unknown) => {
       // 整体失败（如 GraphQL 限流）时保留旧 dashboard，不要清空列表
       this.#noteGhFailure(error)
