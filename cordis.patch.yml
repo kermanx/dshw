@@ -1,0 +1,10 @@
+# dshw plugin patch: adds the kanban client entry to the browser roster.
+#
+# The row's `name` is this package (dshw), whose manifest declares `dsh.client`
+# (platform web) and exports ./client — the built browser bundle the web shell
+# serves as /plugins/dshw/client.js. The row id is only used for patching;
+# activation order rides fiber inject, and the footer action orders itself
+# with the register `order` option.
+- insert:
+    - id: dshw-kanban
+      name: 'dshw'

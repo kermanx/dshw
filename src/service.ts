@@ -123,6 +123,7 @@ export const DSHW_UPDATE_STEPS = [
   { command: 'pnpm', args: ['install', '--frozen-lockfile'], timeoutMs: 10 * 60 * 1000 },
   { command: 'pnpm', args: ['run', 'typecheck'], timeoutMs: 10 * 60 * 1000 },
   { command: 'pnpm', args: ['run', 'build:ui'], timeoutMs: 2 * 60 * 1000 },
+  { command: 'pnpm', args: ['run', 'build:plugin'], timeoutMs: 2 * 60 * 1000 },
 ] as const
 
 function clearPendingBaseCheck(sync: SyncRecord): void {

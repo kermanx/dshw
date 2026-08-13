@@ -235,6 +235,7 @@ test('updates dshw with a fast-forward pull before installing, checking, and reb
     ['pnpm', 'install', '--frozen-lockfile'],
     ['pnpm', 'run', 'typecheck'],
     ['pnpm', 'run', 'build:ui'],
+    ['pnpm', 'run', 'build:plugin'],
   ])
 })
 

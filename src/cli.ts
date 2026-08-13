@@ -150,6 +150,7 @@ async function openWithWarning(label: string, command: string, args: readonly st
 
 async function buildUi(): Promise<void> {
   await runOrThrow('pnpm', ['run', 'build:ui'], { cwd: DSHW_ROOT, timeoutMs: 2 * 60 * 1000 })
+  await runOrThrow('pnpm', ['run', 'build:plugin'], { cwd: DSHW_ROOT, timeoutMs: 2 * 60 * 1000 })
 }
 
 async function doctor(): Promise<void> {

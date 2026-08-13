@@ -6,9 +6,31 @@
   "bin": {
     "dshw": "src/cli.ts"
   },
+  "exports": {
+    ".": "./plugin/lib/index.cjs",
+    "./client": {
+      "types": "./plugin/lib/client.d.ts",
+      "default": "./plugin/lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  },
   "scripts": {
     "build:ui": "vite build",
+    "build:plugin": "node scripts/build-plugin.mjs",
     "check": "pnpm run typecheck && pnpm run build:ui && pnpm test",
+    "check:plugin": "tsc -p plugin/tsconfig.json --noEmit",
     "dshw": "node src/cli.ts",
     "dev": "node src/cli.ts dev",
     "dev:kernel": "DSHW_DEV_MODE=1 DSHW_PORT=7851 DSHW_DATA_ROOT=.dshw/dev node --watch --watch-preserve-output src/cli.ts daemon",
