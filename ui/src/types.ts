@@ -5,7 +5,10 @@ import type {
   DshwRepositoryStatus,
   DshWorkerProgress,
   EventRecord,
+  GitGraphBranch,
+  GitGraphCommit,
   HarnessRepositoryStatus,
+  GitGraphSnapshot,
   JobRecord,
   JobPage,
   LogPage,
@@ -25,7 +28,7 @@ import type {
   WorktreeCleanupPreview,
 } from '../../src/types.ts'
 
-export type { CiCheck, DshRunRecord, DshwRepositoryStatus, DshWorkerProgress, EventRecord, HarnessRepositoryStatus, JobPage, JobRecord, LogPage, PrDashboardRecord, PrDashboardStatus, PullRequestReview, ReviewRequestRecord, SyncRecord, WorkerConfig, WorkerConfigInput, WorkerModelCatalog, WorkerModelOption, WorkerReasoningEffort, WorkerTypeAvailability, WorktreeCleanupCandidate, WorktreeCleanupPreview }
+export type { CiCheck, DshRunRecord, DshwRepositoryStatus, DshWorkerProgress, EventRecord, GitGraphBranch, GitGraphCommit, GitGraphSnapshot, HarnessRepositoryStatus, JobPage, JobRecord, LogPage, PrDashboardRecord, PrDashboardStatus, PullRequestReview, ReviewRequestRecord, SyncRecord, WorkerConfig, WorkerConfigInput, WorkerModelCatalog, WorkerModelOption, WorkerReasoningEffort, WorkerTypeAvailability, WorktreeCleanupCandidate, WorktreeCleanupPreview }
 
 export interface WorkflowSnapshot extends Omit<ServiceState, 'prDashboardCache'> {
   service: {

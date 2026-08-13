@@ -5,6 +5,7 @@ const props = withDefaults(defineProps<{ name: string, size?: number }>(), { siz
 
 const icons: Record<string, string> = {
   branch: 'i-lucide:git-pull-request',
+  'git-graph': 'i-lucide:git-graph',
   repository: 'i-lucide:folder-git-2',
   worktree: 'i-lucide:git-fork',
   review: 'i-lucide:eye',

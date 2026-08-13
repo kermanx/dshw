@@ -28,6 +28,7 @@ import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchT
 import { assessCiAutoFix, ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { readHarnessRepositoryStatus } from './harness-repository.ts'
 import { mergePrDashboardSyncState } from './pr-dashboard.ts'
+import { readGitGraph } from './git-graph.ts'
 import { StateStore } from './state.ts'
 import type { CiCheck, CloneGitStatus, CloneRecord, DshwRepositoryStatus, DshWorkerProgress, HarnessRepositoryStatus, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord, WorkerConfigInput, WorkerExecutionConfig, WorktreeCleanupCandidate, WorktreeCleanupPreview } from './types.ts'
 import { after, id, isTaskCancelled, messageOf, now, run, runOrThrow, TaskCancelledError } from './util.ts'
@@ -242,6 +243,10 @@ class WorkflowService {
     }
     if (method === 'GET' && url === '/api/state') {
       this.#json(response, 200, await this.#snapshot())
+      return
+    }
+    if (method === 'GET' && url === '/api/git-graph') {
+      this.#json(response, 200, await readGitGraph(HARNESS_ROOT, this.#prDashboard))
       return
     }
     if (method === 'GET' && url === '/api/events') {
@@ -967,6 +972,8 @@ class WorkflowService {
             isDraft: pr.isDraft,
             branch: pr.headRefName,
             baseRefName: pr.baseRefName,
+            headOid: pr.headRefOid,
+            baseOid: pr.baseRefOid,
             mergeable: pr.mergeable,
             mergeStateStatus: pr.mergeStateStatus,
             ...(conflictPaths === undefined ? {} : { conflictPaths }),

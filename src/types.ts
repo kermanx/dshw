@@ -373,6 +373,10 @@ export interface PrDashboardRecord {
   isDraft: boolean
   branch: string
   baseRefName: string
+  /** Exact remote PR head observed during the latest GitHub refresh. */
+  headOid?: string
+  /** PR-specific base snapshot observed during the latest GitHub refresh. */
+  baseOid?: string
   mergeable: string
   mergeStateStatus: string
   conflictPaths?: string[]
@@ -392,6 +396,38 @@ export interface PrDashboardRecord {
   unresolvedComments?: number
   agentPausedReason?: string
   updatedAt: string
+}
+
+export interface GitGraphCommit {
+  hash: string
+  parents: string[]
+  subject: string
+  body: string
+  author: {
+    name: string
+    email: string
+    timestamp: number
+  }
+  refs: string[]
+}
+
+export interface GitGraphBranch {
+  name: string
+  label: string
+  oid: string
+  kind: 'master' | 'pr'
+  number?: number
+  title?: string
+  url?: string
+  isDraft?: boolean
+}
+
+export interface GitGraphSnapshot {
+  repoSlug: string
+  generatedAt: string
+  commits: GitGraphCommit[]
+  branches: GitGraphBranch[]
+  truncated: boolean
 }
 
 export interface PrDashboardStatus {

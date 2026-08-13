@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import HarnessStatus from './components/HarnessStatus.vue'
 import Icon from './components/Icon.vue'
 import JobsTable from './components/JobsTable.vue'
@@ -14,8 +14,10 @@ import { relativeTime, shortTime } from './format.ts'
 import type { JobRecord, Tone } from './types.ts'
 import { useWorkflow } from './use-workflow.ts'
 
+const GitTree = defineAsyncComponent(() => import('./components/GitTree.vue'))
+
 const { snapshot, connection, load } = useWorkflow()
-const views = ['prs', 'reviews', 'jobs', 'logs', 'settings'] as const
+const views = ['prs', 'reviews', 'git', 'jobs', 'logs', 'settings'] as const
 type View = typeof views[number]
 const initialHash = location.hash.slice(1)
 const initialView = (initialHash === 'activity' ? 'logs' : initialHash) as View
@@ -27,6 +29,7 @@ type WorkerAction = 'merge-base' | 'fix-ci' | 'resolve-comments'
 const workerLaunch = ref<{ name: string, action: WorkerAction }>()
 const pending = reactive(new Set<string>())
 const currentTime = ref(Date.now())
+const gitGraphRefreshKey = ref(0)
 const toast = reactive({ message: '', bad: false, visible: false })
 let clock: number | undefined
 let toastTimer: number | undefined
@@ -77,6 +80,7 @@ function openLogs(eventId?: string): void {
 const tabs = computed(() => [
   { id: 'prs', icon: 'branch', label: 'Pull requests', count: prCount.value },
   { id: 'reviews', icon: 'review', label: 'Reviews', count: snapshot.value?.reviewRequests.length ?? 0 },
+  { id: 'git', icon: 'git-graph', label: 'Git', count: 0 },
   { id: 'jobs', icon: 'list', label: 'Jobs', count: runningJobs.value },
   { id: 'logs', icon: 'history', label: 'Logs', count: 0 },
   { id: 'settings', icon: 'settings', label: 'Settings', count: 0 },
@@ -267,6 +271,12 @@ onBeforeUnmount(() => {
         :title="prRefreshTitle"
         @click="post('/api/prs/refresh', {}, 'prs-refresh')"
       ><Icon name="sync" :size="13" :class="{ 'animate-spin': pending.has('prs-refresh') }" /></button>
+      <button
+        v-else-if="view === 'git'"
+        class="icon-btn ml-auto mr-6px self-center"
+        title="重新读取 Git tree"
+        @click="gitGraphRefreshKey += 1"
+      ><Icon name="sync" :size="13" /></button>
     </nav>
 
     <main class="row-start-3 min-h-0 overflow-hidden flex flex-col bg-surface">
@@ -301,6 +311,7 @@ onBeforeUnmount(() => {
             @refresh="post('/api/prs/refresh', {}, 'prs-refresh')"
             @open-logs="openLogs"
           />
+          <GitTree v-else-if="view === 'git'" :refresh-key="gitGraphRefreshKey" />
           <JobsTable
             v-else-if="view === 'jobs'"
             :jobs="snapshot.jobs"
