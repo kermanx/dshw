@@ -12,7 +12,7 @@ import { AGENT_STEER_INTERVAL_MS, CLONES_ROOT, DSHW_ROOT } from '../src/config.t
 import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
 import { resolveUiAssetPath } from '../src/ui-static.ts'
-import { DSHW_UPDATE_STEPS, HARNESS_RECONFIGURE_STEPS, observeBaseTip, readOutputPage, scheduleBaseCheck, summarizePrDashboardErrors, worktreeNeedsCleanupDecision } from '../src/service.ts'
+import { countVisibleRunningJobs, DSHW_UPDATE_STEPS, HARNESS_RECONFIGURE_STEPS, observeBaseTip, readOutputPage, scheduleBaseCheck, summarizePrDashboardErrors, worktreeNeedsCleanupDecision } from '../src/service.ts'
 import { pageJobs, readEventLogPage } from '../src/state.ts'
 import { appendAdditionalInstruction, cancelDshWorker, dshWorkerLaunchSpec, headlessDshArguments, inspectDshWorker, missingTypertRuntimeArtifacts, parseDshOutcome, renderPeriodicAgentReminder, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
 import { dshLaunchEnvironmentXml, dshWorkerLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
@@ -294,6 +294,33 @@ test('pages jobs from newest to oldest without overlaps', () => {
   const third = pageJobs(jobs, second.nextCursor, 35)
   assert.deepEqual(third.records.map(job => job.id), Array.from({ length: 10 }, (_, index) => `job-${9 - index}`))
   assert.equal(third.hasMore, false)
+})
+
+test('counts only visible running jobs in the status bar', () => {
+  const visible: JobRecord = {
+    id: 'job-visible',
+    type: 'resolve-comments',
+    status: 'running',
+    createdAt: new Date(0).toISOString(),
+    summary: 'resolve review comments',
+  }
+  const background: JobRecord = {
+    id: 'job-background',
+    type: 'sync-check',
+    status: 'running',
+    createdAt: new Date(0).toISOString(),
+    summary: 'refresh PR state',
+  }
+  const completed: JobRecord = {
+    id: 'job-completed',
+    type: 'fix-ci',
+    status: 'succeeded',
+    createdAt: new Date(0).toISOString(),
+    summary: 'fixed CI',
+  }
+
+  assert.equal(countVisibleRunningJobs([visible, background, completed]), 1)
+  assert.equal(countVisibleRunningJobs([{ ...visible, status: 'succeeded' }, background, completed]), 0)
 })
 
 test('labels job executors with the selected Worker name and legacy fallbacks', () => {

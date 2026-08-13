@@ -104,6 +104,11 @@ export function worktreeNeedsCleanupDecision(status: CloneGitStatus): boolean {
   return status.staged || status.unstaged || status.merging || status.ahead > 0
 }
 
+/** Count only running jobs that are visible in the Jobs view. */
+export function countVisibleRunningJobs(jobs: readonly JobRecord[]): number {
+  return jobs.filter(job => job.status === 'running' && job.type !== 'sync-check').length
+}
+
 export const HARNESS_RECONFIGURE_STEPS = [
   { command: 'git', args: ['clean', '-fdx'] },
   { command: 'git', args: ['pull', '--ff-only', 'origin', 'master'], timeoutMs: 5 * 60 * 1000 },
@@ -511,7 +516,7 @@ class WorkflowService {
         startedAt: this.#store.state.serviceStartedAt,
         installationId: this.#installation.id,
         draining: this.#draining,
-        activeJobs: this.#syncLocks.size + (this.#runningUpdate ? 1 : 0) + (this.#updatingDshw ? 1 : 0) + (this.#cleaningWorktrees ? 1 : 0),
+        activeJobs: countVisibleRunningJobs(jobs),
         updatingDshw: this.#updatingDshw,
         port: PORT,
         devMode: DEV_MODE,
@@ -1176,6 +1181,7 @@ class WorkflowService {
       await this.#store.changed()
     } finally {
       this.#syncLocks.delete(sync.id)
+      this.#broadcast()
     }
   }
 
