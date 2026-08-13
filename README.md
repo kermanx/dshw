@@ -63,6 +63,30 @@ dshw status
 
 全局命令仍使用这份源码 clone，运行数据也仍保存在该 clone 的 `.dshw/` 中。
 
+## 作为 DeepSeek Harness 插件使用
+
+dshw 本身就是一个可安装的 Harness 插件组合包（bundle）：`package.json` 声明了
+`dsh.bundle`（patch 层 `cordis.patch.yml`）和 `dsh.client`（浏览器端 bundle，导出
+`./client`）。安装后，Harness Web 左侧栏底部会出现一个 **看板** 入口（展开态为图标 +
+文字，收起态为图标；悬停与选中样式与侧栏其他条目一致）。点击后看板占据左侧栏右侧的
+全部空间（侧栏保持可见），内嵌 dshw 的看板 UI（由本机 dshw daemon 提供），并支持在
+浏览器新标签中打开。
+
+```sh
+# 先构建插件 bundle（daemon 的 start/restart 流程会自动构建，手动安装前需要一次）
+pnpm run build:plugin
+
+# 安装进 Harness 的 web profile（需要 dsh 命令可用）
+dsh plugin --profile web add /Users/kermanx/workspace/dshw
+
+# 重启 Harness Web 服务后生效
+```
+
+插件源码位于 `plugin/`（React 组件 + 构建脚本 `scripts/build-plugin.mjs`），产物为
+`plugin/lib/client.js`（已忽略，不入库）。看板默认连接 `http://127.0.0.1:7849`；如果
+dshw 运行在其他端口，可以在看板面板的连接失败界面修改服务地址（保存在浏览器
+localStorage）。卸载：`dsh plugin --profile web remove dshw`。
+
 ## 本地目录
 
 所有 dshw 管理的数据都位于仓库内：
