@@ -6,6 +6,8 @@ import { run, runOrThrow, TaskCancelledError } from './util.ts'
 
 const TRANSIENT_GIT_NETWORK_RETRY_DELAYS_MS = [250, 500, 1_000] as const
 
+export type CloneMaintenanceAction = 'discard-unstaged' | 'discard-staged' | 'abort-merge' | 'discard-unpushed' | 'pull'
+
 export function isTransientGitNetworkError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return /\bSSL_ERROR_SYSCALL\b/iu.test(message)
@@ -176,6 +178,41 @@ export async function cloneGitStatus(root: string, remoteHeadOid: string): Promi
     run('git', ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'], { cwd: root }),
   ])
   return parseCloneGitStatus(status.stdout, divergence.stdout, mergeHead.code === 0)
+}
+
+/** Run a narrowly scoped maintenance action for a managed PR worktree. */
+export async function maintainClone(root: string, branch: string, action: CloneMaintenanceAction): Promise<void> {
+  if (action === 'discard-unstaged') {
+    await runOrThrow('git', ['restore', '--worktree', '--', '.'], { cwd: root })
+    await runOrThrow('git', ['clean', '-fd'], { cwd: root })
+    return
+  }
+  if (action === 'discard-staged') {
+    const status = await cloneGitStatus(root, 'HEAD')
+    if (status.unstaged || status.merging) throw new Error('请先撤销未暂存或终止 merge')
+    await runOrThrow('git', ['restore', '--source=HEAD', '--staged', '--worktree', '--', '.'], { cwd: root })
+    return
+  }
+  if (action === 'abort-merge') {
+    await runOrThrow('git', ['merge', '--abort'], { cwd: root })
+    return
+  }
+
+  await fetchBranch(root, branch)
+  const remoteRef = `refs/remotes/origin/${branch}`
+  const status = await cloneGitStatus(root, remoteRef)
+  if (action === 'discard-unpushed') {
+    if (status.staged || status.unstaged || status.merging) {
+      throw new Error('请先丢弃或提交未提交更改，再丢弃未推送提交')
+    }
+    if (status.ahead === 0) throw new Error('当前没有未推送提交')
+    await runOrThrow('git', ['reset', '--hard', remoteRef], { cwd: root })
+    return
+  }
+
+  if (status.ahead > 0) throw new Error('本地含有未推送提交，无法 fast-forward 拉取')
+  if (status.behind === 0) return
+  await runOrThrow('git', ['merge', '--ff-only', remoteRef], { cwd: root })
 }
 
 /** Compute conflicted paths without changing the worktree or index. */

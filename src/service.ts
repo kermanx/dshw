@@ -24,7 +24,8 @@ import {
 } from './config.ts'
 import { createPrClone, listClones, removeClone } from './clone.ts'
 import { readDshwRepositoryStatus } from './dshw-repository.ts'
-import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
+import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, maintainClone, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
+import type { CloneMaintenanceAction } from './git.ts'
 import { assessCiAutoFix, ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { readHarnessRepositoryStatus } from './harness-repository.ts'
 import { mergePrDashboardSyncState } from './pr-dashboard.ts'
@@ -355,6 +356,29 @@ class WorkflowService {
       await this.#discoverMyPrs()
       await this.#refreshPrDashboard()
       this.#json(response, 202, { accepted: true, prs: this.#prDashboard.length })
+      return
+    }
+    if (method === 'POST' && url === '/api/clone/maintenance') {
+      if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
+      const body = await readBody(request)
+      const clone = await findClone(bodyString(body, 'name'))
+      const action = bodyString(body, 'action') as CloneMaintenanceAction | undefined
+      if (action !== 'discard-unstaged' && action !== 'discard-staged' && action !== 'abort-merge' && action !== 'discard-unpushed' && action !== 'pull') {
+        throw new Error('未知 clone 维护操作')
+      }
+      const sync = this.#store.state.syncs.find(candidate => candidate.clonePath === clone.path)
+      if (sync !== undefined && this.#syncLocks.has(sync.id)) throw new Error(`${clone.name} 已有任务执行中`)
+      await maintainClone(clone.path, clone.branch, action)
+      const label = action === 'discard-unstaged'
+        ? '已撤销未暂存更改'
+        : action === 'discard-staged'
+          ? '已撤销未提交更改'
+          : action === 'abort-merge'
+            ? '已终止 merge'
+            : action === 'discard-unpushed' ? '已丢弃未推送提交' : '已拉取远端提交'
+      this.#store.event('info', 'clone-maintenance', `${clone.name}: ${label}`)
+      await this.#refreshPrDashboardAfterAction()
+      this.#json(response, 200, { completed: true })
       return
     }
     if (method === 'POST' && url === '/api/repository/refresh') {

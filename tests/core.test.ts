@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { removeCloneRecord, validateCloneName } from '../src/clone.ts'
 import { resolveCommandTarget } from '../src/command-target.ts'
-import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, mergeConflictPaths, repoSlugFromRemote } from '../src/git.ts'
+import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, maintainClone, mergeConflictPaths, repoSlugFromRemote } from '../src/git.ts'
 import { assessCiAutoFix, ciLaneKey, rollupChecks, selectCiAutoFixChecks, summarizeChecks } from '../src/github.ts'
 import { AGENT_STEER_INTERVAL_MS, CLONES_ROOT, DSHW_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
@@ -392,6 +392,61 @@ test('summarizes local staged, unstaged, merging, ahead, and behind state', asyn
     await runOrThrow('git', ['commit', '-m', 'local files'], { cwd: root })
     await runOrThrow('git', ['merge', '--no-commit', 'remote'], { cwd: root })
     assert.equal((await cloneGitStatus(root, remoteHead)).merging, true)
+    await maintainClone(root, 'main', 'abort-merge')
+    assert.equal((await cloneGitStatus(root, remoteHead)).merging, false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('discards local worktree changes and commits, then fast-forwards from the remote branch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-clone-maintenance-'))
+  const remote = join(root, 'remote.git')
+  const source = join(root, 'source')
+  const clone = join(root, 'clone')
+  try {
+    await runOrThrow('git', ['init', '--bare', remote])
+    await mkdir(source)
+    await runOrThrow('git', ['init', '-b', 'main'], { cwd: source })
+    await runOrThrow('git', ['config', 'user.name', 'dshw test'], { cwd: source })
+    await runOrThrow('git', ['config', 'user.email', 'dshw@example.invalid'], { cwd: source })
+    await writeFile(join(source, 'base.txt'), 'base\n')
+    await runOrThrow('git', ['add', 'base.txt'], { cwd: source })
+    await runOrThrow('git', ['commit', '-m', 'base'], { cwd: source })
+    await runOrThrow('git', ['remote', 'add', 'origin', remote], { cwd: source })
+    await runOrThrow('git', ['push', '-u', 'origin', 'main'], { cwd: source })
+    await runOrThrow('git', ['clone', '--branch', 'main', remote, clone])
+    await runOrThrow('git', ['config', 'user.name', 'dshw test'], { cwd: clone })
+    await runOrThrow('git', ['config', 'user.email', 'dshw@example.invalid'], { cwd: clone })
+
+    await writeFile(join(clone, 'staged.txt'), 'staged\n')
+    await runOrThrow('git', ['add', 'staged.txt'], { cwd: clone })
+    await writeFile(join(clone, 'base.txt'), 'dirty\n')
+    await writeFile(join(clone, 'untracked.txt'), 'untracked\n')
+    await maintainClone(clone, 'main', 'discard-unstaged')
+    assert.deepEqual(await cloneGitStatus(clone, 'HEAD'), {
+      unstaged: false,
+      staged: true,
+      merging: false,
+      ahead: 0,
+      behind: 0,
+    })
+    await maintainClone(clone, 'main', 'discard-staged')
+    assert.equal((await runOrThrow('git', ['status', '--porcelain=v1'], { cwd: clone })).stdout, '')
+
+    await writeFile(join(clone, 'local.txt'), 'local\n')
+    await runOrThrow('git', ['add', 'local.txt'], { cwd: clone })
+    await runOrThrow('git', ['commit', '-m', 'local'], { cwd: clone })
+    await maintainClone(clone, 'main', 'discard-unpushed')
+    assert.equal(await commitOid(clone, 'HEAD'), await commitOid(clone, 'origin/main'))
+
+    await writeFile(join(source, 'remote.txt'), 'remote\n')
+    await runOrThrow('git', ['add', 'remote.txt'], { cwd: source })
+    await runOrThrow('git', ['commit', '-m', 'remote'], { cwd: source })
+    await runOrThrow('git', ['push'], { cwd: source })
+    const remoteHead = await commitOid(source, 'HEAD')
+    await maintainClone(clone, 'main', 'pull')
+    assert.equal(await commitOid(clone, 'HEAD'), remoteHead)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

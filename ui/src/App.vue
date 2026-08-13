@@ -301,6 +301,7 @@ onBeforeUnmount(() => {
             @open-job="openJob"
             @open-activity="openLogs"
             @refresh="post('/api/prs/refresh', {}, 'prs-refresh')"
+            @git-action="(name, action) => post('/api/clone/maintenance', { name, action }, `git-maintenance:${name}`)"
             @toggle-sync="(name, enabled) => post('/api/sync/toggle', { name, enabled }, `sync-toggle:${name}`)"
           />
           <ReviewRequests
