@@ -15,7 +15,7 @@ const PAGE_SIZE = 100
 const GRAPH_NODE_RADIUS = 2
 const GRAPH_TOP = ROW_HEIGHT / 2 - GRAPH_NODE_RADIUS * 4
 const GRAPH_LEFT_PADDING = 12
-const GRAPH_TEXT_GAP = 8
+const GRAPH_TEXT_GAP = 12
 const palette = ['#007acc', '#388a34', '#bf8803', '#a1260d', '#7b61a8', '#00838f', '#ad4e00', '#5b7c19', '#6c5ce7', '#c44569']
 
 const graph = ref<GitGraphSnapshot>()
@@ -305,11 +305,11 @@ onBeforeUnmount(() => {
         </template>
       </div>
 
-      <div v-if="loading && !graph" class="empty-state">
+      <div v-if="loading && !graph" class="empty-state min-h-0 flex-1 p-24px">
         <StatusDot tone="accent" pulse />
         <span>正在读取 Git 历史…</span>
       </div>
-      <div v-else-if="error" class="empty-state">
+      <div v-else-if="error" class="empty-state min-h-0 flex-1 p-24px">
         <Icon name="alert" :size="18" class="text-danger" />
         <span class="text-danger">Git tree 加载失败</span>
         <span class="max-w-560px text-center text-11.5px">{{ error }}</span>
