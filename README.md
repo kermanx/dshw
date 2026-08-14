@@ -2,7 +2,9 @@
 
 `dshw` 是 DeepSeek Harness 的本机 PR 工作流工具。它会追踪你创建的 open PR，管理独立
 worktree，并提供 PR、review、CI 和后台任务状态页。它以 **dsh 插件**的形式嵌入 Harness
-Web（左侧栏入口，六个视图全部原生渲染，无 iframe）。
+Web。
+
+![](./assets/screenshot.png)
 
 ## 准备环境
 
@@ -11,10 +13,7 @@ Web（左侧栏入口，六个视图全部原生渲染，无 iframe）。
 - pnpm 11+
 - Git
 - GitHub CLI，并已运行 `gh auth login`
-- VS Code 的 `code` 命令（看板面板的 VS Code 按钮与 `dshw code` 命令需要）
-
-作为插件使用时，还需要本机可用的 `dsh` 命令（例如从 deepseek-harness checkout 运行
-`pnpm dsh web`，或全局安装 dsh），以及一个正在运行的 dsh Web 服务。
+- DeepSeek Harness
 
 ## 开始使用
 
