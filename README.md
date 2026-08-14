@@ -36,33 +36,24 @@ CLI 会逐步显示当前阶段、耗时，并在长时间操作中持续报告�
 
 ## 安装到你的 dsh
 
-把看板装进自己的 Harness Web，左侧栏底部会出现"看板"入口（展开态图标+文字、收起态
-图标，悬停/选中样式与侧栏其他条目一致）。点击后看板占据侧栏右侧全部空间（侧栏保持
-可见），Pull requests（修 CI / 解决评论 / 合并 / sync 开关）、Reviews、Git（提交图 +
-分支聚焦）、Jobs（任务详情 / 终止 / 暂停 / Steer）、Logs（日志详情）与 Settings
-（仓库管理 / Worker 配置与排序 / Worktree 清理）六个视图全部原生渲染、经 SSE 实时
-更新。
+前提：本机已有可用的 `dsh` 命令和正在运行的 dsh Web 服务。
 
 ```sh
 # 1. daemon 已启动后，把本仓库安装进 dsh 的 web profile
 dsh plugin --profile web add "$PWD"
 
 # 2. 重启你的 dsh web 服务（停掉后重新运行 `dsh web` / `pnpm dsh web`），
-#    刷新页面即可在左侧栏底部看到看板入口
+#    刷新页面即可在左侧栏底部看到"看板"入口
 ```
 
-dshw 是一个标准 Harness 插件组合包（bundle）：`package.json` 声明了 `dsh.bundle`
-（patch 层 `cordis.patch.yml`）和 `dsh.client`（浏览器端 bundle，导出 `./client`），
-因此 `dsh plugin add` 直接可装。插件本体只是看板外壳，数据全部来自本机 dshw
-daemon（API 已启用 CORS）；daemon 未运行时，面板会提示连接失败并允许修改服务地址
-（保存在浏览器 localStorage）。
+安装后，看板占据左侧栏右侧全部空间（侧栏保持可见），包含 Pull requests / Reviews /
+Git / Jobs / Logs / Settings 六个视图，数据实时更新。
 
 - **卸载**：`dsh plugin --profile web remove dshw`，再重启 dsh web。
-- **更新**：`git pull` 后运行 `pnpm dshw restart`（重建插件 bundle），再重启 dsh web。
+- **更新**：`git pull` 后运行 `pnpm dshw restart`，再重启 dsh web。
 - **换端口**：daemon 用 `DSHW_PORT` 启动在不同端口时，在看板面板的连接失败界面修改
   服务地址即可。
-- 插件只面向 Web 类 profile；`dsh plugin --profile <name>` 中的 `<name>` 要与你的
-  Harness Web 使用的 profile 一致（默认 `web`）。
+- profile 名称要与你的 Harness Web 一致（默认 `web`）；插件只面向 Web 类 profile。
 
 ## 配置模型凭据
 
