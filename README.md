@@ -1,9 +1,8 @@
 # dshw
 
 `dshw` 是 DeepSeek Harness 的本机 PR 工作流工具。它会追踪你创建的 open PR，管理独立
-worktree，并提供 PR、review、CI 和后台任务状态页。它既可以**作为 dsh 插件**嵌入
-Harness Web（左侧栏入口，六个视图原生渲染，无 iframe），也可以**独立运行**为浏览器
-看板。
+worktree，并提供 PR、review、CI 和后台任务状态页。它以 **dsh 插件**的形式嵌入 Harness
+Web（左侧栏入口，六个视图全部原生渲染，无 iframe）。
 
 ## 准备环境
 
@@ -12,22 +11,21 @@ Harness Web（左侧栏入口，六个视图原生渲染，无 iframe），也�
 - pnpm 11+
 - Git
 - GitHub CLI，并已运行 `gh auth login`
-- VS Code 的 `code` 命令（独立看板模式需要）
+- VS Code 的 `code` 命令（看板面板的 VS Code 按钮与 `dshw code` 命令需要）
 
 作为插件使用时，还需要本机可用的 `dsh` 命令（例如从 deepseek-harness checkout 运行
 `pnpm dsh web`，或全局安装 dsh），以及一个正在运行的 dsh Web 服务。
 
 ## 开始使用
 
-dshw 的 daemon 是看板的数据来源：无论是插件还是独立看板，都通过
-`http://127.0.0.1:7849`（默认端口，可用 `DSHW_PORT` 修改）上的 HTTP API 与 SSE
-提供快照。因此**先启动 daemon**：
+dshw 的 daemon 是看板的数据来源：看板通过 `http://127.0.0.1:7849`（默认端口，可用
+`DSHW_PORT` 修改）上的 HTTP API 与 SSE 拉取快照。因此**先启动 daemon**：
 
 ```sh
 git clone https://github.com/deepseek-harness/dshw.git
 cd dshw
 pnpm install
-pnpm dshw start --no-open   # 初始化并后台启动 daemon（自动构建 UI 与插件 bundle）
+pnpm dshw start              # 初始化并后台启动 daemon（自动构建插件 bundle 与 VS Code workspace）
 ```
 
 首次启动会在当前 clone 内创建 `.dshw/`，克隆托管的 DeepSeek Harness 仓库，准备
@@ -65,18 +63,6 @@ daemon（API 已启用 CORS）；daemon 未运行时，面板会提示连接失�
   服务地址即可。
 - 插件只面向 Web 类 profile；`dsh plugin --profile <name>` 中的 `<name>` 要与你的
   Harness Web 使用的 profile 一致（默认 `web`）。
-
-### 方式二：独立看板（不装插件）
-
-在浏览器打开 dshw 自己的看板页面：
-
-```sh
-pnpm dshw start    # 默认打开 VS Code workspace 和浏览器看板
-```
-
-不希望 `start` 自动打开窗口时，使用 `pnpm dshw start --no-open`；只关闭 VS Code、
-仍打开浏览器看板时，可使用 `--no-code`。环境检查可运行 `pnpm dshw doctor`。看板页面
-与插件里是同一套数据与操作，只是以独立窗口的形式呈现。
 
 ## 配置模型凭据
 
@@ -167,11 +153,10 @@ worker 不启动 Harness Web 服务，也不占用 TCP 端口。控制只通过�
 ## 常用命令
 
 ```sh
-pnpm dshw start [--no-open]  # 初始化并启动；默认打开 VS Code 和浏览器看板
+pnpm dshw start              # 初始化并启动后台服务（构建插件 bundle 与 VS Code workspace）
 pnpm dshw stop               # 停止后台服务
-pnpm dshw restart            # 构建 UI 并安全重启
+pnpm dshw restart            # 构建插件 bundle 并安全重启
 pnpm dshw status             # 查看服务摘要
-pnpm dshw ui                 # 打开状态页
 pnpm dshw code [name|repo-id] # 打开当前分支对应的 worktree
 pnpm dshw doctor             # 检查本机依赖和服务状态
 ```

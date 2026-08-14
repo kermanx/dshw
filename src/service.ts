@@ -35,7 +35,6 @@ import { StateStore } from './state.ts'
 import type { CiCheck, CloneGitStatus, CloneRecord, DshwRepositoryStatus, DshWorkerProgress, HarnessRepositoryStatus, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord, WorkerConfigInput, WorkerExecutionConfig, WorktreeCleanupCandidate, WorktreeCleanupPreview } from './types.ts'
 import { after, id, isTaskCancelled, messageOf, now, run, runOrThrow, TaskCancelledError } from './util.ts'
 import { refreshCodeWorkspace } from './workspace.ts'
-import { serveUiAsset } from './ui-static.ts'
 import { assertManagedHarnessOwned, ensureInstallation, ensureManagedHarness, requireDaemonInstallation, type InstallationRecord } from './install.ts'
 import { WorkerConfigStore } from './worker-config.ts'
 import { WorkerRegistry } from './worker-driver.ts'
@@ -123,7 +122,6 @@ export const DSHW_UPDATE_STEPS = [
   { command: 'git', args: ['pull', '--ff-only'], timeoutMs: 5 * 60 * 1000 },
   { command: 'pnpm', args: ['install', '--frozen-lockfile'], timeoutMs: 10 * 60 * 1000 },
   { command: 'pnpm', args: ['run', 'typecheck'], timeoutMs: 10 * 60 * 1000 },
-  { command: 'pnpm', args: ['run', 'build:ui'], timeoutMs: 2 * 60 * 1000 },
   { command: 'pnpm', args: ['run', 'build:plugin'], timeoutMs: 2 * 60 * 1000 },
 ] as const
 
@@ -522,7 +520,10 @@ class WorkflowService {
       return
     }
     if (method === 'GET' && !url.startsWith('/api/')) {
-      await serveUiAsset(url, response)
+      // The standalone browser UI was removed: the kanban now lives in the
+      // DeepSeek Harness plugin. Keep a plain notice at the root.
+      response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+      response.end('dshw 后台服务运行中。看板已迁移到 DeepSeek Harness 插件，请通过 Harness Web 的左侧栏入口使用。\n')
       return
     }
     this.#json(response, 404, { error: 'not found' })

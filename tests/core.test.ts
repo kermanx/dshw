@@ -11,20 +11,18 @@ import { assessCiAutoFix, ciLaneKey, rollupChecks, selectCiAutoFixChecks, summar
 import { AGENT_STEER_INTERVAL_MS, CLONES_ROOT, DSHW_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
-import { resolveUiAssetPath } from '../src/ui-static.ts'
 import { countVisibleRunningJobs, DSHW_UPDATE_STEPS, HARNESS_RECONFIGURE_STEPS, observeBaseTip, readOutputPage, scheduleBaseCheck, summarizePrDashboardErrors, worktreeNeedsCleanupDecision } from '../src/service.ts'
 import { pageJobs, readEventLogPage } from '../src/state.ts'
 import { appendAdditionalInstruction, cancelDshWorker, dshWorkerLaunchSpec, headlessDshArguments, inspectDshWorker, missingTypertRuntimeArtifacts, parseDshOutcome, renderPeriodicAgentReminder, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
 import { dshLaunchEnvironmentXml, dshWorkerLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
-import { mergeProgressOutput, parseProgressOutput } from '../ui/src/progress-output.ts'
+import { jobExecutor, mergeProgressOutput, parseProgressOutput } from '../plugin/src/data.ts'
 import type { DshWorkerHandle, EventRecord, JobRecord, SyncRecord } from '../src/types.ts'
 import { parseServiceOwner, renderServicePlist } from '../src/service-manager.ts'
 import { WorkerConfigStore } from '../src/worker-config.ts'
 import { codexModelCatalogFrom, findCodexExecutable } from '../src/codex-runtime.ts'
 import { codexThreadStartParams, codexTurnStartParams, formatCodexThreadItem } from '../src/codex-session-worker.ts'
 import { dshModelCatalog } from '../src/worker-driver.ts'
-import { jobExecutor } from '../ui/src/format.ts'
 
 test('forwards the Harness credential and endpoint launch variables', () => {
   assert.equal(dshLaunchEnvironmentXml({
@@ -234,7 +232,6 @@ test('updates dshw with a fast-forward pull before installing, checking, and reb
     ['git', 'pull', '--ff-only'],
     ['pnpm', 'install', '--frozen-lockfile'],
     ['pnpm', 'run', 'typecheck'],
-    ['pnpm', 'run', 'build:ui'],
     ['pnpm', 'run', 'build:plugin'],
   ])
 })
@@ -733,11 +730,6 @@ test('terminates a cancellable process group', async () => {
   assert.ok(Date.now() - startedAt < 5_000)
 })
 
-test('keeps production UI assets inside the built UI directory', () => {
-  assert.match(resolveUiAssetPath('/') ?? '', /\/ui\/dist\/index\.html$/)
-  assert.match(resolveUiAssetPath('/assets/app.js') ?? '', /\/ui\/dist\/assets\/app\.js$/)
-  assert.equal(resolveUiAssetPath('/..%2f..%2fprivate.txt'), undefined)
-})
 
 test('renders editable dsh markdown prompt placeholders', () => {
   assert.equal(renderPromptTemplate('PR {{ prNumber }} at {{clonePath}}', {

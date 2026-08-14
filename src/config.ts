@@ -3,7 +3,6 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const DSHW_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
-export const UI_DIST_ROOT = join(DSHW_ROOT, 'ui', 'dist')
 const DEFAULT_DATA_ROOT = join(DSHW_ROOT, '.dshw')
 export const DATA_ROOT = resolve(process.env.DSHW_DATA_ROOT ?? DEFAULT_DATA_ROOT)
 export const HARNESS_ROOT = resolve(process.env.DSHW_HARNESS_ROOT ?? join(DATA_ROOT, 'managed', 'deepseek-harness'))

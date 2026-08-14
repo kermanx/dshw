@@ -4,7 +4,6 @@ import { access } from 'node:fs/promises'
 import { formatClonePath, resolveClone } from './clone.ts'
 import { resolveCommandTarget } from './command-target.ts'
 import { CODE_WORKSPACE_FILE, DSHW_ROOT, HOST, PORT, SERVICE_LABEL, SERVICE_PLIST } from './config.ts'
-import { runDevPreview } from './dev.ts'
 import { ensureHarnessRuntime } from './dsh-runtime.ts'
 import { ensureInstallation, ensureManagedHarness, readInstallation, type InstallationRecord } from './install.ts'
 import { runService } from './service.ts'
@@ -35,17 +34,15 @@ try {
       break
     }
     case 'start': {
-      const openTargets = parseStartArgs(args)
+      requireNoArgs(args)
       const installation = await progressStep('初始化本地数据目录', ensureInstallation)
       await progressStep('检查后台服务和端口', () => assertServiceAvailable(installation))
       await progressStep('准备托管仓库（首次运行需要 clone，可能耗时较久）', () => ensureManagedHarness(installation))
       await progressStep('准备固定的 dsh runtime（首次运行需要安装和构建，可能耗时较久）', ensureHarnessRuntime)
-      await progressStep('构建 Web 看板', buildUi)
+      await progressStep('构建插件 bundle', buildPlugin)
       await progressStep('生成 VS Code workspace', refreshWorkspaceWithWarning)
       await progressStep('启动后台服务并等待就绪', () => startService(installation))
-      if (openTargets.code) await progressStep('打开 VS Code', () => openWithWarning('VS Code', 'code', [CODE_WORKSPACE_FILE]))
-      if (openTargets.dashboard) await progressStep('打开浏览器看板', () => openWithWarning('浏览器看板', 'open', [`http://${HOST}:${PORT}`]))
-      console.log(`dshw 后台服务已启动：http://${HOST}:${PORT}`)
+      console.log('dshw 后台服务已启动；看板请通过 DeepSeek Harness 插件使用（见 README）')
       break
     }
     case 'stop': {
@@ -60,7 +57,7 @@ try {
       const installation = await progressStep('读取当前安装', requireInstallation)
       await progressStep('验证后台服务 ownership', () => assertOwnedControl(installation))
       await progressStep('检查固定的 dsh runtime', ensureHarnessRuntime)
-      await progressStep('重新构建 Web 看板', buildUi)
+      await progressStep('重新构建插件 bundle', buildPlugin)
       await progressStep('安全重启并等待服务恢复', () => restartService(installation))
       console.log('dshw 后台服务已安全重启；运行中的 dsh 任务不受影响')
       break
@@ -69,14 +66,7 @@ try {
       requireNoArgs(args)
       const installation = await progressStep('读取当前安装', requireInstallation)
       const state = await progressStep('连接并验证后台服务', () => getWorkflowState(installation))
-      console.log(`服务运行中；${state.service.activeJobs} 个任务执行中；追踪 ${state.syncs.length} 个 PR；UI：http://${HOST}:${PORT}`)
-      break
-    }
-    case 'ui': {
-      requireNoArgs(args)
-      const installation = await progressStep('读取当前安装', requireInstallation)
-      await progressStep('连接并验证后台服务', () => getWorkflowState(installation))
-      await progressStep('打开浏览器看板', () => runOrThrow('open', [`http://${HOST}:${PORT}`]))
+      console.log(`服务运行中；${state.service.activeJobs} 个任务执行中；追踪 ${state.syncs.length} 个 PR`)
       break
     }
     case 'doctor': {
@@ -87,11 +77,6 @@ try {
     case 'daemon': {
       requireNoArgs(args)
       await runService()
-      break
-    }
-    case 'dev': {
-      requireNoArgs(args)
-      await runDevPreview()
       break
     }
     case 'help':
@@ -114,13 +99,6 @@ async function requireInstallation(): Promise<InstallationRecord> {
   return installation
 }
 
-function parseStartArgs(args: readonly string[]): { code: boolean; dashboard: boolean } {
-  if (args.length === 0) return { code: true, dashboard: true }
-  if (args.length === 1 && args[0] === '--no-code') return { code: false, dashboard: true }
-  if (args.length === 1 && args[0] === '--no-open') return { code: false, dashboard: false }
-  throw new Error('start 只接受可选参数 --no-open 或 --no-code')
-}
-
 function requireNoArgs(args: readonly string[]): void {
   if (args.length !== 0) throw new Error('此子命令不接受参数')
 }
@@ -137,19 +115,7 @@ async function refreshWorkspaceWithWarning(): Promise<void> {
   }
 }
 
-async function openWithWarning(label: string, command: string, args: readonly string[]): Promise<void> {
-  try {
-    const result = await run(command, args)
-    if (result.code !== 0) {
-      console.warn(`dshw: 服务已启动，但${label}打开失败：${result.stderr.trim() || result.stdout.trim() || `找不到 ${command} 命令`}`)
-    }
-  } catch (error) {
-    console.warn(`dshw: 服务已启动，但${label}打开失败：${messageOf(error)}`)
-  }
-}
-
-async function buildUi(): Promise<void> {
-  await runOrThrow('pnpm', ['run', 'build:ui'], { cwd: DSHW_ROOT, timeoutMs: 2 * 60 * 1000 })
+async function buildPlugin(): Promise<void> {
   await runOrThrow('pnpm', ['run', 'build:plugin'], { cwd: DSHW_ROOT, timeoutMs: 2 * 60 * 1000 })
 }
 
@@ -244,14 +210,12 @@ function helpText(): string {
   return `Usage: dshw <command> [options]
 
 Commands:
-  start [--no-open]  初始化并启动后台服务；默认打开 VS Code 和浏览器看板
+  start              初始化并启动后台服务（构建插件 bundle 与 VS Code workspace）
   stop               停止当前 clone 拥有的后台服务
-  restart            构建 UI 并安全重启后台服务
+  restart            构建插件 bundle 并安全重启后台服务
   status             查看后台服务摘要
-  ui                 在浏览器打开状态页
   code [arg]         用 VS Code 打开当前分支对应的 worktree
   doctor             检查本机依赖、登录和服务状态
-  dev                启动 Vite 开发预览（端口 7850）
   help               显示帮助
 
 运行数据保存在 ${DSHW_ROOT}/.dshw；服务只注册到当前用户的 launchd。

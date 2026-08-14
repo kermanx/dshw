@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { findBusyJob, findWorkingAgent } from '../ui/src/pr-job-state.ts'
+import { findBusyJob, findWorkingAgent } from '../plugin/src/data.ts'
 import type { JobRecord, PrDashboardRecord } from '../src/types.ts'
 
 const pr = {

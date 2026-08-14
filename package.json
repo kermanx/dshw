@@ -27,27 +27,21 @@
     }
   },
   "scripts": {
-    "build:ui": "vite build",
     "build:plugin": "node scripts/build-plugin.mjs",
-    "check": "pnpm run typecheck && pnpm run build:ui && pnpm test",
+    "check": "pnpm run typecheck && pnpm run build:plugin && pnpm test",
     "check:plugin": "tsc -p plugin/tsconfig.json --noEmit",
     "dshw": "node src/cli.ts",
-    "dev": "node src/cli.ts dev",
     "dev:kernel": "DSHW_DEV_MODE=1 DSHW_PORT=7851 DSHW_DATA_ROOT=.dshw/dev node --watch --watch-preserve-output src/cli.ts daemon",
     "dev:test": "node --test --watch tests/*.test.ts",
     "test": "node --test tests/*.test.ts",
-    "typecheck": "tsc --noEmit && vue-tsc -p ui/tsconfig.json --noEmit"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@iconify-json/lucide": "^1.2.122",
     "@types/node": "^24.0.0",
     "@types/react": "18.3.28",
     "@types/react-dom": "18.3.7",
-    "@vitejs/plugin-vue": "^6.0.8",
     "typescript": "^6.0.0",
-    "unocss": "^66.7.5",
-    "vite": "^8.2.1",
-    "vue-tsc": "^3.3.9"
+    "vite": "^8.2.1"
   },
   "engines": {
     "node": ">=24.0.0",
