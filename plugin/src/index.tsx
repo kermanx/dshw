@@ -12,15 +12,15 @@
  * state). Reachability is probed with a no-cors fetch, which rejects on
  * network failure without needing CORS headers from the daemon.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  IconBranchOutline16, IconCloseOutline16, IconRefreshOutline16, IconRightUpOutline16, Tooltip,
+  IconBranchOutline16, IconCloseOutline16, IconCodeOutline16, IconRefreshOutline16, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { en, zh } from './locales.ts'
-import { KanbanWorkspace } from './pr-dashboard.tsx'
+import { KanbanWorkspace } from './workspace.tsx'
 
 /** Locale namespace owned by this plugin. */
 const NS = 'kanban'
@@ -212,7 +212,24 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
   const [draft, setDraft] = useState(baseUrl)
   const [status, setStatus] = useState<PanelStatus>('checking')
   const [refreshKey, setRefreshKey] = useState(0)
+  const [codeNotice, setCodeNotice] = useState<string>()
+  const codeNoticeTimer = useRef<number | undefined>(undefined)
   const [left, setLeft] = useState(measureSidebarRight)
+
+  const openCodeWorkspace = (): void => {
+    fetch(`${baseUrl}/api/open-code`, { method: 'POST' })
+      .then(async (response) => {
+        const value = await response.json() as { error?: string }
+        if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`)
+        setCodeNotice(undefined)
+      })
+      .catch((error: unknown) => {
+        setCodeNotice(`打开 VS Code 失败：${error instanceof Error ? error.message : String(error)}`)
+        if (codeNoticeTimer.current !== undefined) window.clearTimeout(codeNoticeTimer.current)
+        codeNoticeTimer.current = window.setTimeout(() => { setCodeNotice(undefined) }, 4_000)
+      })
+  }
+  useEffect(() => () => { if (codeNoticeTimer.current !== undefined) window.clearTimeout(codeNoticeTimer.current) }, [])
 
   // Follow the sidebar's right edge while open (drag-resize, collapse, narrow
   // auto-collapse) so the panel always fills exactly the space beside it.
@@ -275,8 +292,24 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
     <div style={overlayStyle(left)} role="presentation">
       <section style={panelStyle} role="dialog" aria-modal="true" aria-label={t('panel.title')} data-dshw-kanban="root">
         <header style={headerStyle}>
-          <span style={titleStyle}>{t('panel.title')}</span>
+          <span style={titleGroupStyle}>
+            <span style={logoStyle}>dw</span>
+            <span style={titleStyle}>dshw</span>
+            <span style={subtitleStyle}>DeepSeek Harness workflow</span>
+          </span>
+          {codeNotice !== null && <span style={codeNoticeStyle}>{codeNotice}</span>}
           <span style={actionsStyle}>
+            <button
+              type="button"
+              data-dshw-kanban="icon"
+              className="dshw-icon"
+              aria-label={t('panel.code')}
+              title={t('panel.code')}
+              onClick={openCodeWorkspace}
+              style={iconButtonStyle}
+            >
+              <IconCodeOutline16 size={14} />
+            </button>
             <button
               type="button"
               data-dshw-kanban="icon"
@@ -286,16 +319,6 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
               style={iconButtonStyle}
             >
               <IconRefreshOutline16 size={14} />
-            </button>
-            <button
-              type="button"
-              data-dshw-kanban="icon"
-              className="dshw-icon"
-              aria-label={t('panel.openBrowser')}
-              onClick={() => { window.open(baseUrl, '_blank') }}
-              style={iconButtonStyle}
-            >
-              <IconRightUpOutline16 size={14} />
             </button>
             <button
               type="button"
@@ -405,18 +428,59 @@ const headerStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  minHeight: 40,
-  padding: '0 8px 0 16px',
+  gap: 12,
+  minHeight: 36,
+  padding: '0 8px 0 12px',
   boxSizing: 'border-box',
   borderBottom: '1px solid #e7e7e7',
-  background: '#f3f3f3',
+  background: '#dddddd',
+}
+
+const titleGroupStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  minWidth: 0,
+}
+
+const logoStyle: CSSProperties = {
+  flex: 'none',
+  display: 'grid',
+  placeItems: 'center',
+  width: 18,
+  height: 18,
+  borderRadius: 4,
+  background: '#007acc',
+  color: '#ffffff',
+  fontSize: 10,
+  fontWeight: 700,
+  letterSpacing: '-0.02em',
 }
 
 const titleStyle: CSSProperties = {
+  flex: 'none',
   fontSize: 13,
   fontWeight: 600,
   lineHeight: '20px',
   color: '#333333',
+}
+
+const subtitleStyle: CSSProperties = {
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontSize: 12,
+  color: '#616161',
+}
+
+const codeNoticeStyle: CSSProperties = {
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontSize: 11.5,
+  color: '#a1260d',
 }
 
 const actionsStyle: CSSProperties = {

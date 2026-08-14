@@ -7,6 +7,7 @@ import {
   BASE_DEBOUNCE_MAX_MS,
   CI_WATCH_INTERVAL_MS,
   CLONES_ROOT,
+  CODE_WORKSPACE_FILE,
   DEV_MODE,
   DSHW_ROOT,
   DSHW_UPDATE_CHECK_INTERVAL_MS,
@@ -511,6 +512,13 @@ class WorkflowService {
       const job = this.#store.state.jobs.findLast(candidate => candidate.type === 'reconfigure-harness' && candidate.status === 'running')
       if (job === undefined) throw new Error('重新配置任务未能启动')
       this.#json(response, 202, { accepted: true, jobId: job.id })
+      return
+    }
+    if (method === 'POST' && url === '/api/open-code') {
+      // Open the generated VS Code workspace on the host (used by the kanban
+      // panel's VS Code button). `code` may be absent from the daemon's PATH.
+      await runOrThrow('code', [CODE_WORKSPACE_FILE])
+      this.#json(response, 200, { ok: true })
       return
     }
     if (method === 'GET' && !url.startsWith('/api/')) {
