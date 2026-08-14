@@ -10,9 +10,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  IconBranchOutline16, IconCodeOutline16, IconEditOutline16, IconInspectOutline12,
-  IconListPenOutline16, IconRefreshOutline16, IconSettingsOutline16, IconTrashOutline16,
-  IconUserOutline16,
+  IconBranchOutline16, IconCodeOutline16, IconInspectOutline12,
+  IconListPenOutline16, IconSettingsOutline16, IconUserOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { CommitGraph } from '@dreamcatcher-tech/commit-graph'
 import type {
@@ -63,12 +62,176 @@ const ciLabel = (value: string): string => ({ passed: '通过', failed: '失败'
 const reviewLabel = (value: string): string => ({ APPROVED: '已批准', CHANGES_REQUESTED: '需修改', REVIEW_REQUIRED: '待 review' })[value] ?? '无要求'
 const mergeLabel = (value: string): string => ({ MERGEABLE: '可合并', CONFLICTING: '冲突', UNKNOWN: '计算中' })[value] ?? value
 
-const ok = 'var(--dsw-alias-state-success-primary)'
-const warn = 'var(--dsw-alias-state-warn-primary)'
-const bad = 'var(--dsw-alias-state-error-primary)'
-const faint = 'var(--dsw-alias-label-tertiary)'
+/* ── dshw design tokens (ui/src/style.css — VS Code Light Modern palette) ── */
 
-const toneColor = (tone: Tone): string => tone === 'ok' ? ok : tone === 'warn' ? warn : tone === 'bad' ? bad : tone === 'accent' ? 'var(--dsw-alias-state-business-primary)' : faint
+const C_SURFACE = '#ffffff'
+const C_TEXT = '#333333'
+const C_SECONDARY = '#616161'
+const C_MUTED = '#717171'
+const C_FAINT = '#9a9a9a'
+const C_LINK = '#006ab1'
+const C_ACCENT = '#007acc'
+const C_ACCENT_SOFT = 'rgba(0, 122, 204, .12)'
+const C_SUCCESS = '#388a34'
+const C_WARNING = '#bf8803'
+const C_DANGER = '#a1260d'
+const C_HOVER = '#f0f0f0'
+const C_WIDGET = '#f3f3f3'
+const C_BORDER = '#e7e7e7'
+const C_BADGE = '#c4c4c4'
+const C_BADGE_FG = '#333333'
+const C_WARN_SOFT = 'rgba(191, 136, 3, .12)'
+const C_OVERLAY = 'rgba(0, 0, 0, .32)'
+const C_SHADOW_POP = '0 4px 16px rgba(0, 0, 0, .16), 0 0 2px rgba(0, 0, 0, .08)'
+const FONT_MONO = 'ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace'
+
+/* Semantic status colors (uno.config.ts st-*): text uses muted for neutral. */
+const ok = C_SUCCESS
+const warn = C_WARNING
+const bad = C_DANGER
+
+const toneColor = (tone: Tone): string => tone === 'ok' ? C_SUCCESS : tone === 'warn' ? C_WARNING : tone === 'bad' ? C_DANGER : tone === 'accent' ? C_ACCENT : C_MUTED
+
+/** Lucide stroke-icon base (24px grid, currentColor; Icon.vue presetIcons). */
+function Lucide({ size = 15, children }: { size?: number; children: ReactNode }): ReactNode {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  )
+}
+
+/** Status glyph (StatusIcon.vue port): circle-check / circle-x / circle-dashed / circle-dot. */
+function StatusIcon({ tone, size = 13 }: { tone: Tone; size?: number }): ReactNode {
+  const color = tone === 'ok' ? C_SUCCESS : tone === 'bad' ? C_DANGER : tone === 'warn' ? C_WARNING : C_FAINT
+  return (
+    <span style={{ display: 'inline-flex', flex: 'none', color }} aria-hidden="true">
+      <Lucide size={size}>
+        {tone === 'ok' && (<><circle cx="12" cy="12" r="10" /><path d="m9 12 2 2 4-4" /></>)}
+        {tone === 'bad' && (<><circle cx="12" cy="12" r="10" /><path d="m15 9-6 6" /><path d="m9 9 6 6" /></>)}
+        {tone === 'warn' && (
+          <>
+            <path d="M10.1 2.182a10 10 0 0 1 3.8 0" />
+            <path d="M13.9 21.818a10 10 0 0 1-3.8 0" />
+            <path d="M17.609 3.721a10 10 0 0 1 2.69 2.7" />
+            <path d="M2.182 13.9a10 10 0 0 1 0-3.8" />
+            <path d="M20.279 17.609a10 10 0 0 1-2.7 2.69" />
+            <path d="M21.818 10.1a10 10 0 0 1 0 3.8" />
+            <path d="M3.721 6.391a10 10 0 0 1 2.7-2.69" />
+            <path d="M6.391 3.721a10 10 0 0 1 2.69 2.7" />
+          </>
+        )}
+        {tone === 'neutral' && (<><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="1" /></>)}
+        {tone === 'accent' && (<><circle cx="12" cy="12" r="10" /><path d="m9 12 2 2 4-4" /></>)}
+      </Lucide>
+    </span>
+  )
+}
+
+/** Colored status dot (StatusDot.vue port; jobs / busy / loading states). */
+function StatusDot({ tone, pulse }: { tone: Tone; pulse?: boolean }): ReactNode {
+  const color = tone === 'ok' ? C_SUCCESS : tone === 'warn' ? C_WARNING : tone === 'bad' ? C_DANGER : tone === 'accent' ? C_ACCENT : C_FAINT
+  return (
+    <span
+      data-dshw-kanban={pulse === true ? 'pulse' : undefined}
+      aria-hidden="true"
+      style={{ display: 'inline-block', flex: 'none', width: 8, height: 8, borderRadius: '50%', background: color }}
+    />
+  )
+}
+
+/** Common lucide glyphs used across the views (Icon.vue names). */
+const GPlus = ({ size = 12 }: { size?: number }): ReactNode => <Lucide size={size}><path d="M5 12h14" /><path d="M12 5v14" /></Lucide>
+const GPencil = ({ size = 12 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
+    <path d="m15 5 4 4" />
+  </Lucide>
+)
+const GTrash = ({ size = 12 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M3 6h18" />
+    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+    <line x1="10" x2="10" y1="11" y2="17" />
+    <line x1="14" x2="14" y1="11" y2="17" />
+  </Lucide>
+)
+const GKey = ({ size = 11 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z" />
+    <circle cx="16.5" cy="7.5" r=".5" fill="currentColor" />
+  </Lucide>
+)
+const GGrip = ({ size = 13 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <circle cx="9" cy="12" r="1" />
+    <circle cx="9" cy="5" r="1" />
+    <circle cx="9" cy="19" r="1" />
+    <circle cx="15" cy="12" r="1" />
+    <circle cx="15" cy="5" r="1" />
+    <circle cx="15" cy="19" r="1" />
+  </Lucide>
+)
+const GDownload = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="7 10 12 15 17 10" />
+    <line x1="12" x2="12" y1="15" y2="3" />
+  </Lucide>
+)
+const GSync = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+    <path d="M21 3v5h-5" />
+    <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+    <path d="M8 16H3v5" />
+  </Lucide>
+)
+const GReset = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+    <path d="M3 3v5h5" />
+  </Lucide>
+)
+const GWorktree = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <circle cx="12" cy="18" r="3" />
+    <circle cx="6" cy="6" r="3" />
+    <circle cx="18" cy="6" r="3" />
+    <path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9" />
+    <path d="M12 12v3" />
+  </Lucide>
+)
+const GRepository = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-9a2 2 0 0 0-2 2Z" />
+    <circle cx="13" cy="12" r="2" />
+  </Lucide>
+)
+const GAlert = ({ size = 13 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <circle cx="12" cy="12" r="10" />
+    <line x1="12" x2="12" y1="8" y2="12" />
+    <line x1="12" x2="12.01" y1="16" y2="16" />
+  </Lucide>
+)
+const GClose = ({ size = 15 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M18 6 6 18" />
+    <path d="m6 6 12 12" />
+  </Lucide>
+)
 
 const ciTone = (value: string): Tone => value === 'passed' ? 'ok' : value === 'failed' ? 'bad' : value === 'pending' ? 'warn' : 'neutral'
 const reviewTone = (value: string): Tone => value === 'APPROVED' ? 'ok' : value === 'CHANGES_REQUESTED' ? 'bad' : 'neutral'
@@ -168,16 +331,6 @@ function useKanbanData(baseUrl: string, refreshKey: number): { snapshot?: Kanban
 }
 
 /* ── tiny primitives ── */
-
-/** Colored status dot (StatusDot port). */
-function StatusDot({ tone, pulse }: { tone: Tone; pulse?: boolean }): ReactNode {
-  return (
-    <span
-      aria-hidden="true"
-      style={{ display: 'inline-block', flex: 'none', width: 8, height: 8, borderRadius: '50%', background: toneColor(tone) }}
-    />
-  )
-}
 
 /** Hover popover anchored near the trigger (Teleport port of the Vue popovers). */
 function HoverPopover({ label, width, children, render, maxHeight }: {
@@ -422,6 +575,7 @@ function PrsView({ snapshot, connection, pending, showToast, post, refresh, open
     <>
       {status !== undefined && status.state === 'error' && (
         <div style={errorStripStyle}>
+          <span style={{ display: 'inline-flex', flex: 'none', color: warn }}><GAlert size={13} /></span>
           <span style={errorStripTextStyle}>PR 状态刷新失败，正在显示上次可用数据</span>
         </div>
       )}
@@ -491,6 +645,7 @@ function ReviewsView({ snapshot, connection }: ViewProps): ReactNode {
     <>
       {status !== undefined && status.state === 'error' && (
         <div style={errorStripStyle}>
+          <span style={{ display: 'inline-flex', flex: 'none', color: warn }}><GAlert size={13} /></span>
           <span style={errorStripTextStyle}>Reviews 刷新失败，正在显示上次可用数据</span>
         </div>
       )}
@@ -529,9 +684,9 @@ function ReviewsView({ snapshot, connection }: ViewProps): ReactNode {
                 <tr key={pr.number}>
                   <td style={tdStyle}>
                     <div style={cellMainStyle}>
-                      <a style={titleLinkStyle} href={pr.url} title={pr.title} target="_blank" rel="noreferrer">
+                      <a style={titleLinkStyle} data-dshw-kanban="titlelink" href={pr.url} title={pr.title} target="_blank" rel="noreferrer">
                         <span style={numberStyle}>#{pr.number}</span>
-                        <span style={{ ...titleStyle, ...(pr.isDraft ? { color: 'var(--dsw-alias-label-secondary)' } : {}) }}>{pr.title}</span>
+                        <span style={{ ...titleStyle, ...(pr.isDraft ? { color: C_SECONDARY } : {}) }}>{pr.title}</span>
                       </a>
                       {pr.isDraft && <span style={draftBadgeStyle}>草稿</span>}
                     </div>
@@ -618,7 +773,7 @@ function JobsView({ baseUrl, snapshot, pending, post }: ViewProps): ReactNode {
       {records.length === 0 && !loading && (
         <div style={emptyStateStyle}>
           <span>{error ? `任务加载失败：${error}` : '暂无任务'}</span>
-          {error !== '' && <button type="button" style={actionLinkStyle} onClick={loadInitial}>重试</button>}
+          {error !== '' && <button type="button" className="dshw-link" style={actionLinkStyle} onClick={loadInitial}>重试</button>}
         </div>
       )}
       {records.length > 0 && (
@@ -641,6 +796,7 @@ function JobsView({ baseUrl, snapshot, pending, post }: ViewProps): ReactNode {
                 return (
                   <tr
                     key={job.id}
+                    data-dshw-kanban="row"
                     tabIndex={0}
                     onClick={() => { setSelected(job) }}
                     onKeyDown={event => { if (event.key === 'Enter') setSelected(job) }}
@@ -680,9 +836,9 @@ function JobsView({ baseUrl, snapshot, pending, post }: ViewProps): ReactNode {
           </table>
           <div style={jobsFooterStyle}>
             {loading && <span>正在加载更多任务…</span>}
-            {!loading && error !== '' && <button type="button" style={actionLinkStyle} onClick={loadMore}>加载失败，重试</button>}
+            {!loading && error !== '' && <button type="button" className="dshw-link" style={actionLinkStyle} onClick={loadMore}>加载失败，重试</button>}
             {!loading && error === '' && !hasMore && <span>已显示全部任务</span>}
-            {!loading && error === '' && hasMore && <button type="button" style={actionLinkStyle} onClick={loadMore}>加载更多任务</button>}
+            {!loading && error === '' && hasMore && <button type="button" className="dshw-link" style={actionLinkStyle} onClick={loadMore}>加载更多任务</button>}
           </div>
         </div>
       )}
@@ -737,7 +893,7 @@ function JobDialog({ job, baseUrl, pending, post, onClose }: {
             <StatusDot tone={jobTone(job.status)} pulse={job.status === 'running'} />
             {jobLabel(job.status)}
           </span>
-          <button type="button" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}>✕</button>
+          <button type="button" className="dshw-icon" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}><GClose size={15} /></button>
         </header>
         <div style={jobDialogMetaStyle} title={job.summary}>{job.summary}</div>
         <div style={jobOutputStyle}>
@@ -748,6 +904,7 @@ function JobDialog({ job, baseUrl, pending, post, onClose }: {
             <>
               <button
                 type="button"
+                className="dshw-btn-ghost"
                 style={dialogActionButtonStyle}
                 disabled={pending.has(`pause:${job.id}`)}
                 onClick={() => { void post('/api/jobs/pause', { jobId: job.id }, `pause:${job.id}`) }}
@@ -768,7 +925,7 @@ function JobDialog({ job, baseUrl, pending, post, onClose }: {
               <button type="button" style={dialogActionButtonStyle} disabled={steerDraft.trim() === ''} onClick={steer}>发送</button>
             </>
           )}
-          <button type="button" style={dialogCancelStyle} onClick={onClose}>关闭</button>
+          <button type="button" className="dshw-btn-ghost" style={dialogCancelStyle} onClick={onClose}>关闭</button>
         </footer>
       </section>
     </div>,
@@ -853,7 +1010,7 @@ function LogsView({ baseUrl, snapshot, connection }: ViewProps): ReactNode {
       {records.length === 0 && !loading && (
         <div style={emptyStateStyle}>
           <span>{error ? `日志加载失败：${error}` : '暂无日志'}</span>
-          {error !== '' && <button type="button" style={actionLinkStyle} onClick={loadInitial}>重试</button>}
+          {error !== '' && <button type="button" className="dshw-link" style={actionLinkStyle} onClick={loadInitial}>重试</button>}
         </div>
       )}
       {records.length > 0 && (
@@ -871,6 +1028,7 @@ function LogsView({ baseUrl, snapshot, connection }: ViewProps): ReactNode {
               {records.map(record => (
                 <tr
                   key={record.id}
+                  data-dshw-kanban="row"
                   tabIndex={0}
                   role="button"
                   aria-label={`查看日志详情：${record.message}`}
@@ -900,9 +1058,9 @@ function LogsView({ baseUrl, snapshot, connection }: ViewProps): ReactNode {
           </table>
           <div style={jobsFooterStyle}>
             {loading && <span>正在加载更多日志…</span>}
-            {!loading && error !== '' && <button type="button" style={actionLinkStyle} onClick={loadMore}>加载失败，重试</button>}
+            {!loading && error !== '' && <button type="button" className="dshw-link" style={actionLinkStyle} onClick={loadMore}>加载失败，重试</button>}
             {!loading && error === '' && !hasMore && <span>已显示全部日志</span>}
-            {!loading && error === '' && hasMore && <button type="button" style={actionLinkStyle} onClick={loadMore}>加载更多日志</button>}
+            {!loading && error === '' && hasMore && <button type="button" className="dshw-link" style={actionLinkStyle} onClick={loadMore}>加载更多日志</button>}
           </div>
         </div>
       )}
@@ -937,7 +1095,7 @@ function LogDialog({ record, onClose }: { record: EventRecord; onClose: () => vo
         <header style={dialogHeaderStyle}>
           <span style={jobDialogTitleStyle}>日志详情</span>
           <span style={logIdStyle} title={record.id}>{record.id}</span>
-          <button type="button" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}>✕</button>
+          <button type="button" className="dshw-icon" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}><GClose size={15} /></button>
         </header>
         <div style={logMetaStyle}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: toneColor(levelTone(record.level)) }}>
@@ -1041,12 +1199,12 @@ function PrRow({ pr, jobs, busy, workingAgent, pending, onAction, onChooseWorker
   // markup and the engine drops the row from the fixed column model, which
   // drifts the header/body columns apart. Draft dimming rides the row itself.
   return (
-    <tr style={pr.isDraft ? draftRowStyle : trStyle}>
+    <tr data-dshw-kanban="row" style={pr.isDraft ? draftRowStyle : trStyle}>
       <td style={tdStyle}>
         <div style={cellMainStyle}>
-          <a style={titleLinkStyle} href={pr.url} title={pr.title} target="_blank" rel="noreferrer">
+          <a style={titleLinkStyle} data-dshw-kanban="titlelink" href={pr.url} title={pr.title} target="_blank" rel="noreferrer">
             <span style={numberStyle}>#{pr.number}</span>
-            <span style={{ ...titleStyle, ...(pr.isDraft ? { color: 'var(--dsw-alias-label-secondary)' } : {}) }}>{pr.title}</span>
+            <span style={{ ...titleStyle, ...(pr.isDraft ? { color: C_SECONDARY } : {}) }}>{pr.title}</span>
           </a>
           {pr.isDraft && <span style={draftBadgeStyle}>草稿</span>}
         </div>
@@ -1128,7 +1286,7 @@ function CiCell({ pr, busy, workingAgent, pending, onAction, onChooseWorker }: {
           {ordered.length === 0 && <div style={popoverEmptyStyle}>尚无 checks</div>}
           {ordered.map(check => (
             <a key={`${check.name}-${check.link}`} style={popoverRowStyle} href={check.link || pr.url} target="_blank" rel="noreferrer" title={check.workflow}>
-              <StatusDot tone={checkTone(check)} />
+              <StatusIcon tone={checkTone(check)} size={12} />
               <span style={popoverRowTextStyle}>{check.name}</span>
               <span style={{ ...popoverRowBadgeStyle, color: toneColor(checkTone(check)) }}>{checkLabel(check)}</span>
             </a>
@@ -1137,7 +1295,7 @@ function CiCell({ pr, busy, workingAgent, pending, onAction, onChooseWorker }: {
       )}>
         {(_, setOpen) => (
           <>
-            <span style={statusGlyphStyle}><StatusDot tone={ciTone(pr.ciStatus)} /></span>
+            <span style={statusGlyphStyle}><StatusIcon tone={ciTone(pr.ciStatus)} /></span>
             <span style={statusTextStyle}>{ciLabel(pr.ciStatus)}</span>
             {pr.checks.length > 0 && <span style={countStyle}>{passed}/{pr.checks.length}</span>}
             <span style={{ marginLeft: 'auto' }} onClick={(e) => { e.stopPropagation(); setOpen(true) }} />
@@ -1151,7 +1309,7 @@ function CiCell({ pr, busy, workingAgent, pending, onAction, onChooseWorker }: {
             {note !== '' && <span style={noteSeparatorStyle}>·</span>}
             <button
               type="button"
-              style={actionLinkStyle}
+              className="dshw-link" style={actionLinkStyle}
               disabled={workingAgent !== undefined || pending.has(`fix-ci:${pr.cloneName}`)}
               title={workingAgent !== undefined ? '该 PR 已有 Agent 正在工作' : '单击使用默认 Worker · 右键选择 Worker'}
               onClick={() => { onAction(pr.cloneName, 'fix-ci') }}
@@ -1205,7 +1363,7 @@ function ReviewCell({ pr, busy, workingAgent, pending, onAction, onChooseWorker 
                 <a key={`requested-${login}`} style={popoverPersonRowStyle} href={`https://github.com/${login}`} target="_blank" rel="noreferrer">
                   <img style={avatarStyle} src={avatar(login)} alt={login} />
                   <span style={popoverRowTextStyle}>@{login}</span>
-                  <span style={{ ...popoverRowBadgeStyle, color: warn }}><StatusDot tone="warn" />等待 review</span>
+                  <span style={{ ...popoverRowBadgeStyle, color: warn }}><StatusIcon tone="warn" size={11} />等待 review</span>
                 </a>
               ))}
             </div>
@@ -1218,7 +1376,7 @@ function ReviewCell({ pr, busy, workingAgent, pending, onAction, onChooseWorker 
                   <img style={avatarStyle} src={avatar(item.login)} alt={item.login} />
                   <span style={popoverRowTextStyle}>@{item.login}</span>
                   <span style={{ ...popoverRowBadgeStyle, color: toneColor(reviewStateTone(item.review, pr)) }}>
-                    <StatusDot tone={reviewStateTone(item.review, pr)} />
+                    <StatusIcon tone={reviewStateTone(item.review, pr)} size={11} />
                     {reviewState(item.review, pr)}
                   </span>
                 </a>
@@ -1229,7 +1387,7 @@ function ReviewCell({ pr, busy, workingAgent, pending, onAction, onChooseWorker 
       )}>
         {(_, setOpen) => (
           <>
-            <span style={statusGlyphStyle}><StatusDot tone={reviewTone(pr.reviewDecision)} /></span>
+            <span style={statusGlyphStyle}><StatusIcon tone={reviewTone(pr.reviewDecision)} /></span>
             <span style={statusTextStyle}>{reviewLabel(pr.reviewDecision)}</span>
             {people.length > 0 && (
               <span style={avatarStackStyle} aria-hidden="true">
@@ -1248,7 +1406,7 @@ function ReviewCell({ pr, busy, workingAgent, pending, onAction, onChooseWorker 
             <span style={noteSeparatorStyle}>·</span>
             <button
               type="button"
-              style={actionLinkStyle}
+              className="dshw-link" style={actionLinkStyle}
               disabled={workingAgent !== undefined || pending.has(`resolve-comments:${pr.cloneName}`)}
               title={workingAgent !== undefined ? '该 PR 已有 Agent 正在工作' : '单击使用默认 Worker · 右键选择 Worker'}
               onClick={() => { onAction(pr.cloneName, 'resolve-comments') }}
@@ -1291,7 +1449,7 @@ function MergeCell({ pr, busy, workingAgent, pending, jobs, onAction, onChooseWo
           )}>
             {(_, setOpen) => (
               <>
-                <span style={statusGlyphStyle}><StatusDot tone="bad" /></span>
+                <span style={statusGlyphStyle}><StatusIcon tone="bad" /></span>
                 <span style={statusTextStyle}>冲突</span>
                 <span style={{ marginLeft: 'auto' }} onClick={(e) => { e.stopPropagation(); setOpen(true) }} />
               </>
@@ -1300,7 +1458,7 @@ function MergeCell({ pr, busy, workingAgent, pending, jobs, onAction, onChooseWo
         )
         : (
           <span style={{ ...mergeableLabelStyle, color: toneColor(mergeTone(pr.mergeable)) }}>
-            <StatusDot tone={mergeTone(pr.mergeable)} />
+            <StatusIcon tone={mergeTone(pr.mergeable)} />
             {mergeLabel(pr.mergeable)}
           </span>
         )}
@@ -1313,7 +1471,7 @@ function MergeCell({ pr, busy, workingAgent, pending, jobs, onAction, onChooseWo
           <span style={noteSeparatorStyle}>·</span>
           <button
             type="button"
-            style={actionLinkStyle}
+            className="dshw-link" style={actionLinkStyle}
             disabled={workingAgent !== undefined || pending.has(`merge-base:${pr.cloneName}`)}
             title={workingAgent !== undefined ? '该 PR 已有 Agent 正在工作' : '单击使用默认 Worker · 右键选择 Worker'}
             onClick={() => { onAction(pr.cloneName, 'merge-base') }}
@@ -1332,7 +1490,7 @@ function MergeCell({ pr, busy, workingAgent, pending, jobs, onAction, onChooseWo
           {(pr.autoMergeSkippedReason !== undefined || failedMerge !== undefined) && <span style={noteSeparatorStyle}>·</span>}
           <button
             type="button"
-            style={actionLinkStyle}
+            className="dshw-link" style={actionLinkStyle}
             disabled={(action === 'merge-base' && workingAgent !== undefined)
               || pending.has(`merge-base:${pr.cloneName}`)
               || pending.has(`merge-base-direct:${pr.cloneName}`)}
@@ -1385,7 +1543,7 @@ function LocalGitChip({ status, pending, onAction }: {
       </div>
     )}>
       {(_, setOpen) => (
-        <span style={gitChipStyle}>{label}</span>
+        <span data-dshw-kanban="gitchip" style={gitChipStyle}>{label}</span>
       )}
     </HoverPopover>
   )
@@ -1484,7 +1642,7 @@ const rootStyle: CSSProperties = {
   minHeight: 0,
   display: 'flex',
   flexDirection: 'column',
-  background: 'var(--dsw-alias-bg-base)',
+  background: C_SURFACE,
 }
 
 const errorStripStyle: CSSProperties = {
@@ -1494,13 +1652,13 @@ const errorStripStyle: CSSProperties = {
   gap: 7,
   minHeight: 32,
   padding: '0 12px',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
   fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary)',
-  background: 'color-mix(in srgb, var(--dsw-alias-state-warn-tertiary) 60%, transparent)',
+  color: C_SECONDARY,
+  background: C_WARN_SOFT,
 }
 
-const errorStripTextStyle: CSSProperties = { color: 'var(--dsw-alias-label-secondary)' }
+const errorStripTextStyle: CSSProperties = { color: C_SECONDARY }
 
 const loadingStripStyle: CSSProperties = {
   flex: 'none',
@@ -1509,10 +1667,10 @@ const loadingStripStyle: CSSProperties = {
   gap: 7,
   minHeight: 32,
   padding: '0 12px',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
   fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary)',
-  background: 'color-mix(in srgb, var(--dsw-alias-bg-base) 50%, var(--dsw-alias-interactive-bg-hover))',
+  color: C_SECONDARY,
+  background: C_HOVER,
 }
 
 const tableScrollStyle: CSSProperties = {
@@ -1538,18 +1696,18 @@ const tableStyle: CSSProperties = {
 const thStyle: CSSProperties = {
   height: 30,
   padding: '0 12px',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
   textAlign: 'left',
   whiteSpace: 'nowrap',
   fontSize: 11,
   fontWeight: 500,
   textTransform: 'uppercase',
   letterSpacing: '0.05em',
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
   position: 'sticky',
   top: 0,
   zIndex: 1,
-  background: 'var(--dsw-alias-bg-base)',
+  background: C_SURFACE,
 }
 
 const trStyle: CSSProperties = { }
@@ -1558,7 +1716,7 @@ const tdStyle: CSSProperties = {
   height: 54,
   padding: '5px 12px',
   verticalAlign: 'middle',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
 }
 
 const draftRowStyle: CSSProperties = { opacity: 0.7, filter: 'saturate(0.5)' }
@@ -1575,7 +1733,7 @@ const titleLinkStyle: CSSProperties = {
   textDecoration: 'none',
 }
 
-const numberStyle: CSSProperties = { flex: 'none', fontFamily: 'monospace', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }
+const numberStyle: CSSProperties = { flex: 'none', fontFamily: 'monospace', fontSize: 12, color: C_MUTED }
 
 const titleStyle: CSSProperties = {
   overflow: 'hidden',
@@ -1583,16 +1741,21 @@ const titleStyle: CSSProperties = {
   whiteSpace: 'nowrap',
   fontWeight: 500,
   fontSize: 13,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const draftBadgeStyle: CSSProperties = {
   flex: 'none',
-  padding: '1px 6px',
-  borderRadius: 6,
-  fontSize: 10,
-  background: 'var(--dsw-alias-interactive-bg-hover)',
-  color: 'var(--dsw-alias-label-secondary)',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  minWidth: 16,
+  padding: '0 4px',
+  borderRadius: 3,
+  fontSize: 10.5,
+  lineHeight: '14px',
+  background: C_BADGE,
+  color: C_BADGE_FG,
 }
 
 const cellSubStyle: CSSProperties = {
@@ -1600,10 +1763,11 @@ const cellSubStyle: CSSProperties = {
   alignItems: 'center',
   gap: 5,
   minWidth: 0,
-  marginTop: 2,
-  fontFamily: 'monospace',
-  fontSize: 11,
-  color: 'var(--dsw-alias-label-tertiary)',
+  height: 16,
+  marginTop: 1,
+  fontFamily: FONT_MONO,
+  fontSize: 11.5,
+  color: C_MUTED,
 }
 
 const subTextStyle: CSSProperties = { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
@@ -1618,6 +1782,7 @@ const gitChipStyle: CSSProperties = {
   cursor: 'pointer',
   background: 'transparent',
   border: 'none',
+  lineHeight: '18px',
 }
 
 const cellColumnStyle: CSSProperties = { display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2, minWidth: 0 }
@@ -1632,7 +1797,7 @@ const popoverTriggerStyle: CSSProperties = {
   border: 'none',
   background: 'transparent',
   cursor: 'pointer',
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
   fontFamily: 'inherit',
   fontSize: 12.5,
   textAlign: 'left',
@@ -1642,7 +1807,7 @@ const statusGlyphStyle: CSSProperties = { display: 'inline-flex', flex: 'none' }
 
 const statusTextStyle: CSSProperties = { whiteSpace: 'nowrap', color: 'inherit' }
 
-const countStyle: CSSProperties = { flex: 'none', fontFamily: 'monospace', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }
+const countStyle: CSSProperties = { flex: 'none', fontFamily: 'monospace', fontSize: 11, color: C_MUTED }
 
 const cellNoteRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }
 
@@ -1651,10 +1816,10 @@ const cellNoteStyle: CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
   fontSize: 11.5,
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: C_MUTED,
 }
 
-const noteSeparatorStyle: CSSProperties = { flex: 'none', fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary)' }
+const noteSeparatorStyle: CSSProperties = { flex: 'none', fontSize: 11.5, color: C_MUTED }
 
 const actionLinkStyle: CSSProperties = {
   display: 'inline-flex',
@@ -1668,7 +1833,7 @@ const actionLinkStyle: CSSProperties = {
   cursor: 'pointer',
   whiteSpace: 'nowrap',
   fontSize: 11.5,
-  color: 'var(--dsw-alias-state-business-primary)',
+  color: C_LINK,
   fontFamily: 'inherit',
 }
 
@@ -1678,7 +1843,7 @@ const busyRowStyle: CSSProperties = {
   gap: 5,
   width: 'fit-content',
   fontSize: 11.5,
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_LINK,
 }
 
 const mergeableLabelStyle: CSSProperties = {
@@ -1704,7 +1869,7 @@ const syncSwitchStyle = (on: boolean): CSSProperties => ({
   border: 'none',
   cursor: 'pointer',
   transition: 'background-color 150ms',
-  background: on ? 'var(--dsw-alias-state-business-primary)' : 'var(--dsw-alias-interactive-bg-hover-solid)',
+  background: on ? C_ACCENT : C_BADGE,
 })
 
 const syncKnobStyle = (on: boolean): CSSProperties => ({
@@ -1720,7 +1885,7 @@ const syncKnobStyle = (on: boolean): CSSProperties => ({
   transform: on ? 'translateX(12px)' : 'none',
 })
 
-const syncLabelStyle: CSSProperties = { fontSize: 12.5, whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-tertiary)' }
+const syncLabelStyle: CSSProperties = { fontSize: 12.5, whiteSpace: 'nowrap', color: C_MUTED }
 
 const pausedButtonStyle: CSSProperties = {
   display: 'inline-flex',
@@ -1742,14 +1907,14 @@ const popoverStyle: CSSProperties = {
   zIndex: 120,
   overflow: 'auto',
   padding: 4,
-  border: '1px solid var(--dsw-alias-border-l2)',
+  border: '1px solid C_BORDER',
   borderRadius: 8,
-  background: 'var(--dsw-alias-bg-base)',
-  boxShadow: 'var(--dsw-shadow-lv2)',
+  background: C_SURFACE,
+  boxShadow: C_SHADOW_POP,
   boxSizing: 'border-box',
 }
 
-const popoverEmptyStyle: CSSProperties = { padding: '8px 10px', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }
+const popoverEmptyStyle: CSSProperties = { padding: '8px 10px', fontSize: 12, color: C_MUTED }
 
 const popoverRowStyle: CSSProperties = {
   display: 'flex',
@@ -1759,7 +1924,7 @@ const popoverRowStyle: CSSProperties = {
   padding: '0 8px',
   borderRadius: 6,
   fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
   textDecoration: 'none',
 }
 
@@ -1769,21 +1934,21 @@ const popoverRowBadgeStyle: CSSProperties = { display: 'inline-flex', alignItems
 
 const popoverSectionStyle: CSSProperties = { paddingBottom: 4 }
 
-const popoverSectionSpacedStyle: CSSProperties = { marginTop: 3, paddingTop: 4, borderTop: '1px solid var(--dsw-alias-border-l2)' }
+const popoverSectionSpacedStyle: CSSProperties = { marginTop: 3, paddingTop: 4, borderTop: '1px solid C_BORDER' }
 
-const popoverSectionTitleStyle: CSSProperties = { padding: '4px 7px', fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--dsw-alias-label-tertiary)' }
+const popoverSectionTitleStyle: CSSProperties = { padding: '4px 7px', fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: C_MUTED }
 
 const popoverPersonRowStyle: CSSProperties = { ...popoverRowStyle, minHeight: 32 }
 
-const avatarStyle: CSSProperties = { width: 20, height: 20, borderRadius: '50%', flex: 'none', objectFit: 'cover', background: 'var(--dsw-alias-interactive-bg-hover)' }
+const avatarStyle: CSSProperties = { width: 20, height: 20, borderRadius: '50%', flex: 'none', objectFit: 'cover', background: C_HOVER }
 
 const avatarStackStyle: CSSProperties = { display: 'inline-flex', flex: 'none', alignItems: 'center', paddingLeft: 3 }
 
-const stackAvatarStyle: CSSProperties = { width: 16, height: 16, marginLeft: -3, borderRadius: '50%', flex: 'none', objectFit: 'cover', border: '1px solid var(--dsw-alias-bg-base)' }
+const stackAvatarStyle: CSSProperties = { width: 16, height: 16, marginLeft: -3, borderRadius: '50%', flex: 'none', objectFit: 'cover', border: '1px solid C_SURFACE' }
 
-const stackMoreStyle: CSSProperties = { marginLeft: 3, fontSize: 10.5, color: 'var(--dsw-alias-label-tertiary)' }
+const stackMoreStyle: CSSProperties = { marginLeft: 3, fontSize: 10.5, color: C_MUTED }
 
-const conflictPathStyle: CSSProperties = { padding: '2px 0', fontFamily: 'monospace', fontSize: 11.5, lineHeight: 1.45, overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-secondary)' }
+const conflictPathStyle: CSSProperties = { padding: '2px 0', fontFamily: 'monospace', fontSize: 11.5, lineHeight: 1.45, overflowWrap: 'anywhere', color: C_SECONDARY }
 
 const popoverActionStyle: CSSProperties = {
   display: 'flex',
@@ -1798,7 +1963,7 @@ const popoverActionStyle: CSSProperties = {
   cursor: 'pointer',
   textAlign: 'left',
   fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
   fontFamily: 'inherit',
 }
 
@@ -1811,7 +1976,7 @@ const dialogOverlayStyle: CSSProperties = {
   justifyContent: 'center',
 }
 
-const dialogMaskStyle: CSSProperties = { position: 'absolute', inset: 0, background: 'color-mix(in srgb, var(--dsw-alias-bg-base) 70%, transparent)' }
+const dialogMaskStyle: CSSProperties = { position: 'absolute', inset: 0, background: C_OVERLAY }
 
 const dialogStyle: CSSProperties = {
   position: 'relative',
@@ -1821,13 +1986,13 @@ const dialogStyle: CSSProperties = {
   maxWidth: 'calc(100vw - 32px)',
   padding: 16,
   boxSizing: 'border-box',
-  border: '1px solid var(--dsw-alias-border-l1)',
+  border: '1px solid C_BORDER',
   borderRadius: 12,
-  background: 'var(--dsw-alias-bg-base)',
-  boxShadow: 'var(--dsw-shadow-lv2)',
+  background: C_SURFACE,
+  boxShadow: C_SHADOW_POP,
 }
 
-const dialogTitleStyle: CSSProperties = { marginBottom: 10, fontSize: 13, fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }
+const dialogTitleStyle: CSSProperties = { marginBottom: 10, fontSize: 13, fontWeight: 500, color: C_TEXT }
 
 const dialogListStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 260, overflow: 'auto' }
 
@@ -1846,36 +2011,36 @@ const dialogWorkerRowStyle: CSSProperties = {
   fontFamily: 'inherit',
 }
 
-const dialogWorkerNameStyle: CSSProperties = { fontSize: 13, color: 'var(--dsw-alias-label-primary)' }
+const dialogWorkerNameStyle: CSSProperties = { fontSize: 13, color: C_TEXT }
 
-const dialogWorkerTypeStyle: CSSProperties = { fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary)' }
+const dialogWorkerTypeStyle: CSSProperties = { fontSize: 11.5, color: C_MUTED }
 
 const dialogInputStyle: CSSProperties = {
   marginTop: 10,
   height: 34,
   padding: '0 10px',
   boxSizing: 'border-box',
-  border: '1px solid var(--dsw-alias-border-l2)',
+  border: '1px solid C_BORDER',
   borderRadius: 8,
   outline: 'none',
   background: 'transparent',
   fontFamily: 'inherit',
   fontSize: 12.5,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const dialogCloseRowStyle: CSSProperties = { display: 'flex', justifyContent: 'flex-end', marginTop: 12 }
 
 const dialogCancelStyle: CSSProperties = {
-  height: 30,
-  padding: '0 14px',
-  border: '1px solid var(--dsw-alias-border-l2)',
-  borderRadius: 8,
+  height: 26,
+  padding: '0 11px',
+  border: 'none',
+  borderRadius: 4,
   background: 'transparent',
   cursor: 'pointer',
   fontFamily: 'inherit',
-  fontSize: 12.5,
-  color: 'var(--dsw-alias-label-secondary)',
+  fontSize: 12,
+  color: C_SECONDARY,
 }
 
 const emptyStateStyle: CSSProperties = {
@@ -1883,17 +2048,18 @@ const emptyStateStyle: CSSProperties = {
   flexDirection: 'column',
   alignItems: 'center',
   justifyContent: 'center',
-  gap: 6,
+  gap: 2,
   height: '100%',
   minHeight: 200,
-  color: 'var(--dsw-alias-label-tertiary)',
+  fontSize: 12.5,
+  color: C_MUTED,
 }
 
-const emptyStateLineStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--dsw-alias-label-secondary)' }
+const emptyStateLineStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, color: C_SECONDARY }
 
-const emptyStateTitleStyle: CSSProperties = { margin: 0, fontSize: 13, color: 'var(--dsw-alias-label-secondary)' }
+const emptyStateTitleStyle: CSSProperties = { margin: 0, fontSize: 13, color: C_SECONDARY }
 
-const emptyStateSubStyle: CSSProperties = { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }
+const emptyStateSubStyle: CSSProperties = { margin: 0, fontSize: 12, color: C_MUTED }
 
 const toastStyle: CSSProperties = {
   position: 'fixed',
@@ -1902,12 +2068,12 @@ const toastStyle: CSSProperties = {
   zIndex: 140,
   maxWidth: 420,
   padding: '8px 14px',
-  border: '1px solid var(--dsw-alias-border-l2)',
+  border: '1px solid C_BORDER',
   borderRadius: 8,
-  background: 'var(--dsw-alias-bg-base)',
-  boxShadow: 'var(--dsw-shadow-lv2)',
+  background: C_SURFACE,
+  boxShadow: C_SHADOW_POP,
   fontSize: 12.5,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 /* ── tab bar + view area ── */
@@ -1916,10 +2082,10 @@ const tabbarStyle: CSSProperties = {
   flex: 'none',
   display: 'flex',
   alignItems: 'stretch',
-  height: 38,
+  height: 35,
   overflowX: 'auto',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
-  background: 'var(--dsw-alias-bg-base)',
+  borderBottom: '1px solid C_BORDER',
+  background: C_WIDGET,
 }
 
 const tabStyle = (active: boolean): CSSProperties => ({
@@ -1928,9 +2094,8 @@ const tabStyle = (active: boolean): CSSProperties => ({
   gap: 6,
   padding: '0 12px',
   border: 'none',
-  borderBottom: active ? '2px solid var(--dsw-alias-state-business-primary)' : '2px solid transparent',
-  background: 'transparent',
-  color: active ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
+  background: active ? C_SURFACE : '#ececec',
+  color: active ? C_TEXT : 'rgba(51, 51, 51, .7)',
   fontFamily: 'inherit',
   fontSize: 12.5,
   whiteSpace: 'nowrap',
@@ -1939,14 +2104,16 @@ const tabStyle = (active: boolean): CSSProperties => ({
 
 const tabCountStyle: CSSProperties = {
   flex: 'none',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
   minWidth: 16,
-  padding: '0 5px',
-  borderRadius: 8,
-  textAlign: 'center',
+  padding: '0 4px',
+  borderRadius: 3,
   fontSize: 10.5,
-  lineHeight: '15px',
-  background: 'var(--dsw-alias-interactive-bg-hover)',
-  color: 'var(--dsw-alias-label-secondary)',
+  lineHeight: '14px',
+  background: C_BADGE,
+  color: C_BADGE_FG,
 }
 
 const viewAreaStyle: CSSProperties = {
@@ -1958,15 +2125,15 @@ const viewAreaStyle: CSSProperties = {
 
 /* ── reviews / jobs / logs shared cell styles ── */
 
-const authorStyle: CSSProperties = { fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)' }
+const authorStyle: CSSProperties = { fontSize: 12.5, color: C_SECONDARY }
 
-const timeStyle: CSSProperties = { fontFamily: 'var(--ds-font-family-code)', fontSize: 11, whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-tertiary)' }
+const timeStyle: CSSProperties = { fontFamily: FONT_MONO, fontSize: 11, whiteSpace: 'nowrap', color: C_FAINT }
 
 const tdCompactStyle: CSSProperties = {
   height: 32,
   padding: '0 12px',
   verticalAlign: 'middle',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
 }
 
 const cellBlockStyle: CSSProperties = {
@@ -1974,9 +2141,9 @@ const cellBlockStyle: CSSProperties = {
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
-  fontFamily: 'var(--ds-font-family-code)',
+  fontFamily: FONT_MONO,
   fontSize: 11.5,
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
 }
 
 const jobSummaryStyle: CSSProperties = {
@@ -1986,7 +2153,7 @@ const jobSummaryStyle: CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
   fontSize: 12.5,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const logMessageStyle: CSSProperties = {
@@ -1996,7 +2163,7 @@ const logMessageStyle: CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
   fontSize: 12.5,
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
 }
 
 const dangerButtonStyle: CSSProperties = {
@@ -2004,13 +2171,13 @@ const dangerButtonStyle: CSSProperties = {
   marginLeft: 'auto',
   height: 22,
   padding: '0 8px',
-  border: '1px solid var(--dsw-alias-state-error-secondary)',
+  border: '1px solid C_DANGER',
   borderRadius: 6,
   background: 'transparent',
   cursor: 'pointer',
   fontFamily: 'inherit',
   fontSize: 11.5,
-  color: 'var(--dsw-alias-state-error-primary)',
+  color: C_DANGER,
 }
 
 const jobsScrollStyle: CSSProperties = { flex: 1, minHeight: 0, overflow: 'auto' }
@@ -2022,7 +2189,7 @@ const jobsFooterStyle: CSSProperties = {
   justifyContent: 'center',
   gap: 8,
   fontSize: 11.5,
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: C_MUTED,
 }
 
 /* ── job dialog ── */
@@ -2034,10 +2201,10 @@ const jobDialogStyle: CSSProperties = {
   width: 'min(760px, calc(100vw - 48px))',
   height: 'min(620px, calc(100vh - 48px))',
   overflow: 'hidden',
-  border: '1px solid var(--dsw-alias-border-l1)',
+  border: '1px solid C_BORDER',
   borderRadius: 12,
-  background: 'var(--dsw-alias-bg-base)',
-  boxShadow: 'var(--dsw-shadow-lv2)',
+  background: C_SURFACE,
+  boxShadow: C_SHADOW_POP,
 }
 
 const dialogHeaderStyle: CSSProperties = {
@@ -2048,10 +2215,10 @@ const dialogHeaderStyle: CSSProperties = {
   minHeight: 46,
   padding: '0 12px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
 }
 
-const jobDialogTitleStyle: CSSProperties = { fontSize: 13.5, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
+const jobDialogTitleStyle: CSSProperties = { fontSize: 13.5, fontWeight: 600, color: C_TEXT }
 
 const jobDialogStatusStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, whiteSpace: 'nowrap' }
 
@@ -2066,7 +2233,7 @@ const dialogCloseButtonStyle: CSSProperties = {
   borderRadius: 6,
   background: 'transparent',
   cursor: 'pointer',
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
   fontFamily: 'inherit',
   fontSize: 13,
 }
@@ -2076,9 +2243,9 @@ const jobDialogMetaStyle: CSSProperties = {
   minHeight: 34,
   padding: '6px 14px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
   fontSize: 11.5,
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
@@ -2088,7 +2255,7 @@ const jobOutputStyle: CSSProperties = {
   flex: 1,
   minHeight: 0,
   overflow: 'auto',
-  background: 'var(--dsw-alias-bg-base)',
+  background: C_SURFACE,
 }
 
 const jobOutputPreStyle: CSSProperties = {
@@ -2096,12 +2263,12 @@ const jobOutputPreStyle: CSSProperties = {
   margin: 0,
   padding: 14,
   boxSizing: 'border-box',
-  fontFamily: 'var(--ds-font-family-code)',
+  fontFamily: FONT_MONO,
   fontSize: 12,
   lineHeight: 1.6,
   whiteSpace: 'pre-wrap',
   overflowWrap: 'anywhere',
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const jobDialogFooterStyle: CSSProperties = {
@@ -2112,19 +2279,19 @@ const jobDialogFooterStyle: CSSProperties = {
   minHeight: 48,
   padding: '0 12px',
   boxSizing: 'border-box',
-  borderTop: '1px solid var(--dsw-alias-border-l2)',
+  borderTop: '1px solid C_BORDER',
 }
 
 const dialogActionButtonStyle: CSSProperties = {
-  height: 28,
-  padding: '0 12px',
-  border: '1px solid var(--dsw-alias-border-l2)',
-  borderRadius: 7,
+  height: 26,
+  padding: '0 11px',
+  border: 'none',
+  borderRadius: 4,
   background: 'transparent',
   cursor: 'pointer',
   fontFamily: 'inherit',
   fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
 }
 
 const steerInputStyle: CSSProperties = {
@@ -2133,13 +2300,13 @@ const steerInputStyle: CSSProperties = {
   height: 28,
   padding: '0 10px',
   boxSizing: 'border-box',
-  border: '1px solid var(--dsw-alias-border-l2)',
+  border: '1px solid C_BORDER',
   borderRadius: 7,
   outline: 'none',
   background: 'transparent',
   fontFamily: 'inherit',
   fontSize: 12,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 /* ── log dialog ── */
@@ -2151,19 +2318,19 @@ const logDialogStyle: CSSProperties = {
   width: 'min(760px, calc(100vw - 48px))',
   height: 'min(620px, calc(100vh - 48px))',
   overflow: 'hidden',
-  border: '1px solid var(--dsw-alias-border-l1)',
+  border: '1px solid C_BORDER',
   borderRadius: 12,
-  background: 'var(--dsw-alias-bg-base)',
-  boxShadow: 'var(--dsw-shadow-lv2)',
+  background: C_SURFACE,
+  boxShadow: C_SHADOW_POP,
 }
 
 const logIdStyle: CSSProperties = {
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
-  fontFamily: 'var(--ds-font-family-code)',
+  fontFamily: FONT_MONO,
   fontSize: 10.5,
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: C_MUTED,
 }
 
 const logMetaStyle: CSSProperties = {
@@ -2175,20 +2342,20 @@ const logMetaStyle: CSSProperties = {
   minHeight: 42,
   padding: '8px 14px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
   fontSize: 11.5,
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
 }
 
 const logMetaItemStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }
 
-const logMetaKeyStyle: CSSProperties = { color: 'var(--dsw-alias-label-tertiary)' }
+const logMetaKeyStyle: CSSProperties = { color: C_MUTED }
 
 const logBodyStyle: CSSProperties = {
   flex: 1,
   minHeight: 0,
   overflow: 'auto',
-  background: 'var(--dsw-alias-bg-base)',
+  background: C_SURFACE,
 }
 
 const logBodyPreStyle: CSSProperties = {
@@ -2196,12 +2363,12 @@ const logBodyPreStyle: CSSProperties = {
   margin: 0,
   padding: 16,
   boxSizing: 'border-box',
-  fontFamily: 'var(--ds-font-family-code)',
+  fontFamily: FONT_MONO,
   fontSize: 12.5,
   lineHeight: 1.65,
   whiteSpace: 'pre-wrap',
   overflowWrap: 'anywhere',
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const dialogFooterStyle: CSSProperties = {
@@ -2212,7 +2379,7 @@ const dialogFooterStyle: CSSProperties = {
   minHeight: 48,
   padding: '0 12px',
   boxSizing: 'border-box',
-  borderTop: '1px solid var(--dsw-alias-border-l2)',
+  borderTop: '1px solid C_BORDER',
 }
 
 /* ── Git view (GitTree.vue port, reusing @dreamcatcher-tech/commit-graph) ── */
@@ -2420,6 +2587,7 @@ function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: number 
                   role="button"
                   tabIndex={0}
                   aria-pressed={active}
+                  data-dshw-kanban="gitbranch"
                   onClick={() => { focusBranch(branch) }}
                   onKeyDown={event => {
                     if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); focusBranch(branch) }
@@ -2475,7 +2643,7 @@ function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: number 
           <div style={emptyStateStyle}>
             <span style={{ ...emptyStateTitleStyle, color: bad }}>Git tree 加载失败</span>
             <span style={emptyStateSubStyle}>{error}</span>
-            <button type="button" style={actionLinkStyle} onClick={load}>重试</button>
+            <button type="button" className="dshw-link" style={actionLinkStyle} onClick={load}>重试</button>
           </div>
         )}
         {graph !== undefined && (
@@ -2497,6 +2665,7 @@ function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: number 
               {orderedCommits.map(commit => (
                 <div
                   key={commit.hash}
+                  data-dshw-kanban="gitrow"
                   style={{ ...gitCommitRowStyle, paddingLeft: graphWidth }}
                   title={`${commit.hash}\n${commit.subject}\n${commit.author.name} <${commit.author.email}>`}
                 >
@@ -2526,7 +2695,7 @@ function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: number 
                 </div>
               ))}
               {hasMore && (
-                <button type="button" style={{ ...gitLoadMoreStyle, top: graphHeight }} onClick={loadMore}>
+                <button type="button" data-dshw-kanban="loadmore" style={{ ...gitLoadMoreStyle, top: graphHeight }} onClick={loadMore}>
                   加载更多（剩余 {allOrderedCommits.length - orderedCommits.length} 条）
                 </button>
               )}
@@ -2545,19 +2714,19 @@ const gitLayoutStyle: CSSProperties = {
   minHeight: 0,
   display: 'grid',
   gridTemplateColumns: '270px minmax(0, 1fr)',
-  background: 'var(--dsw-alias-bg-base)',
+  background: C_SURFACE,
 }
 
 const gitSidebarStyle: CSSProperties = {
   minHeight: 0,
   overflowY: 'auto',
-  borderRight: '1px solid var(--dsw-alias-border-l2)',
-  background: 'var(--dsw-alias-bg-base)',
+  borderRight: '1px solid C_BORDER',
+  background: C_SURFACE,
 }
 
 const gitSidebarHeaderStyle: CSSProperties = {
   padding: '10px 12px',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
 }
 
 const gitSidebarTitleStyle: CSSProperties = {
@@ -2566,12 +2735,12 @@ const gitSidebarTitleStyle: CSSProperties = {
   gap: 6,
   fontSize: 12.5,
   fontWeight: 600,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const gitSidebarTitleTextStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 
-const gitSidebarSubStyle: CSSProperties = { marginTop: 3, fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary)' }
+const gitSidebarSubStyle: CSSProperties = { marginTop: 3, fontSize: 11.5, color: C_MUTED }
 
 const gitSidebarListStyle: CSSProperties = { padding: '5px 0' }
 
@@ -2584,7 +2753,7 @@ const gitBranchItemStyle: CSSProperties = {
 
 const gitBranchItemActiveStyle: CSSProperties = {
   ...gitBranchItemStyle,
-  background: 'color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent)',
+  background: C_ACCENT_SOFT,
 }
 
 const gitBranchDotStyle: CSSProperties = {
@@ -2604,12 +2773,12 @@ const gitBranchLineStyle: CSSProperties = {
   minWidth: 0,
   fontSize: 12,
   fontWeight: 500,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const gitPrLinkStyle: CSSProperties = { flex: 'none', color: 'inherit', textDecoration: 'none' }
 
-const gitBranchSeparatorStyle: CSSProperties = { color: 'var(--dsw-alias-label-tertiary)' }
+const gitBranchSeparatorStyle: CSSProperties = { color: C_MUTED }
 
 const gitBranchNameStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 
@@ -2620,15 +2789,15 @@ const gitBranchTitleStyle: CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
   fontSize: 11,
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: C_MUTED,
 }
 
 const gitBranchOidStyle: CSSProperties = {
   display: 'block',
   marginTop: 1,
-  fontFamily: 'var(--ds-font-family-code)',
+  fontFamily: FONT_MONO,
   fontSize: 10.5,
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: C_FAINT,
 }
 
 const gitMainStyle: CSSProperties = {
@@ -2636,7 +2805,7 @@ const gitMainStyle: CSSProperties = {
   minHeight: 0,
   display: 'flex',
   flexDirection: 'column',
-  background: 'var(--dsw-alias-bg-base)',
+  background: C_SURFACE,
 }
 
 const gitToolbarStyle: CSSProperties = {
@@ -2647,12 +2816,12 @@ const gitToolbarStyle: CSSProperties = {
   height: 36,
   padding: '0 12px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
   fontSize: 11.5,
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: C_MUTED,
 }
 
-const gitToolbarTitleStyle: CSSProperties = { fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
+const gitToolbarTitleStyle: CSSProperties = { fontWeight: 600, color: C_TEXT }
 
 const gitRefreshRowStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5 }
 
@@ -2667,15 +2836,15 @@ const gitCommitRowStyle: CSSProperties = {
   height: ROW_HEIGHT,
   paddingRight: 12,
   boxSizing: 'border-box',
-  borderBottom: '1px solid color-mix(in srgb, var(--dsw-alias-border-l2) 55%, transparent)',
+  borderBottom: `1px solid color-mix(in srgb, ${C_BORDER} 55%, transparent)`,
 }
 
 const gitHashStyle: CSSProperties = {
   flex: 'none',
   width: 58,
-  fontFamily: 'var(--ds-font-family-code)',
+  fontFamily: FONT_MONO,
   fontSize: 10.5,
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: C_FAINT,
   textDecoration: 'none',
 }
 
@@ -2688,7 +2857,7 @@ const gitSubjectStyle: CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
   fontSize: 12,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const gitAuthorStyle: CSSProperties = {
@@ -2698,16 +2867,16 @@ const gitAuthorStyle: CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
   fontSize: 11,
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: C_MUTED,
 }
 
 const gitTimeStyle: CSSProperties = {
   flex: 'none',
   width: 70,
   textAlign: 'right',
-  fontFamily: 'var(--ds-font-family-code)',
+  fontFamily: FONT_MONO,
   fontSize: 10.5,
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: C_FAINT,
 }
 
 const gitLoadMoreStyle: CSSProperties = {
@@ -2720,7 +2889,7 @@ const gitLoadMoreStyle: CSSProperties = {
   cursor: 'pointer',
   fontFamily: 'inherit',
   fontSize: 11.5,
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: C_MUTED,
 }
 
 const refChipStyle = (color: string): CSSProperties => ({
@@ -3021,10 +3190,10 @@ function SettingsView(props: ViewProps): ReactNode {
       <div style={settingsHeaderStyle}>设置</div>
       <div style={settingsLayoutStyle}>
         <aside style={settingsNavStyle}>
-          <button type="button" style={section === 'repository' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('repository') }}>
-            仓库管理
+          <button type="button" className="dshw-nav" style={section === 'repository' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('repository') }}>
+            <GRepository size={12} />仓库管理
           </button>
-          <button type="button" style={section === 'workers' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('workers') }}>
+          <button type="button" className="dshw-nav" style={section === 'workers' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('workers') }}>
             Workers
           </button>
         </aside>
@@ -3036,19 +3205,22 @@ function SettingsView(props: ViewProps): ReactNode {
               <span style={settingsSectionSubStyle}>dshw、主仓库与 Worktree</span>
               <button
                 type="button"
+                className="dshw-icon"
                 style={{ ...smallIconButtonStyle, marginLeft: 'auto' }}
                 title="刷新仓库状态"
                 aria-label="刷新仓库状态"
                 disabled={busy}
                 onClick={refreshRepositoryState}
               >
-                <IconRefreshOutline16 size={13} />
+                <GSync size={13} />
               </button>
             </div>
             <div style={settingsBodyStyle}>
               <div style={settingsCardStyle}>
+              <div style={repoCardStyle}>
                 <RepoRow
-                  icon="更新"
+                  first
+                  icon={<GDownload size={14} />}
                   title="更新 dshw"
                   detail="拉取最新代码、安装依赖并重新构建，然后安全重启服务"
                   note={dshwRepositoryLag()}
@@ -3058,7 +3230,7 @@ function SettingsView(props: ViewProps): ReactNode {
                   onClick={() => { void post('/api/dshw/update', {}, 'update-dshw') }}
                 />
                 <RepoRow
-                  icon="同步"
+                  icon={<GSync size={14} />}
                   title="同步主仓库"
                   detail="更新 deepseek-harness 仓库到最新上游"
                   note={repositoryLag()}
@@ -3068,7 +3240,7 @@ function SettingsView(props: ViewProps): ReactNode {
                   onClick={() => { void post('/api/update', {}, 'update-harness') }}
                 />
                 <RepoRow
-                  icon="清理"
+                  icon={<GWorktree size={14} />}
                   title="清理 Worktree"
                   detail="删除不再对应 active PR 的 Worktree；本地内容会逐项确认"
                   note={worktreeSummary()}
@@ -3078,7 +3250,7 @@ function SettingsView(props: ViewProps): ReactNode {
                   onClick={() => { void inspectWorktreeCleanup() }}
                 />
                 <RepoRow
-                  icon="重置"
+                  icon={<GReset size={14} />}
                   title="重新初始化工作环境"
                   detail="清理生成文件，更新 master，重新安装依赖并运行 typecheck"
                   note=""
@@ -3087,6 +3259,7 @@ function SettingsView(props: ViewProps): ReactNode {
                   disabled={false}
                   onClick={confirmReconfigure}
                 />
+              </div>
               </div>
             </div>
           </section>
@@ -3097,12 +3270,12 @@ function SettingsView(props: ViewProps): ReactNode {
             <div style={settingsSectionHeaderStyle}>
               <span style={settingsSectionTitleStyle}>Workers</span>
               <span style={settingsSectionSubStyle}>拖动排序 · 第一项为默认</span>
-              <button type="button" style={addButtonStyle} onClick={openCreate}>＋ 添加</button>
+              <button type="button" style={addButtonStyle} onClick={openCreate}><GPlus size={12} />添加</button>
             </div>
             {workers.length === 0 ? (
               <div style={emptyStateStyle}>
                 <span>暂无 Worker</span>
-                <button type="button" style={actionLinkStyle} onClick={openCreate}>添加配置</button>
+                <button type="button" className="dshw-link" style={actionLinkStyle} onClick={openCreate}>添加配置</button>
               </div>
             ) : (
               <div style={jobsScrollStyle}>
@@ -3158,9 +3331,9 @@ function SettingsView(props: ViewProps): ReactNode {
                           setDisplayedWorkers([...workers])
                         }}
                       >
-                        <td style={tdCompactStyle}><span style={{ color: worker.enabled ? 'var(--dsw-alias-label-tertiary)' : faint, cursor: worker.enabled ? 'grab' : 'default' }}>⠿</span></td>
+                        <td style={tdCompactStyle}><span style={{ display: 'inline-flex', color: worker.enabled ? C_MUTED : C_FAINT, cursor: worker.enabled ? 'grab' : 'default' }}><GGrip size={13} /></span></td>
                         <td style={tdCompactStyle}>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: workerAvailable(worker) ? ok : faint }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: workerAvailable(worker) ? ok : C_MUTED }}>
                             <StatusDot tone={workerAvailable(worker) ? 'ok' : 'neutral'} />{workerStatus(worker)}
                           </span>
                         </td>
@@ -3169,21 +3342,21 @@ function SettingsView(props: ViewProps): ReactNode {
                           {index === 0 && worker.enabled && <span style={defaultBadgeStyle}>默认</span>}
                         </td>
                         <td style={tdCompactStyle}>
-                          <span style={{ fontSize: 12, color: 'var(--dsw-alias-label-secondary)' }}>{typeLabel(worker.type)}</span>
-                          {worker.type === 'claude-code' && <span style={{ fontSize: 10.5, color: 'var(--dsw-alias-label-tertiary)' }}>未支持</span>}
+                          <span style={{ fontSize: 12, color: C_SECONDARY }}>{typeLabel(worker.type)}</span>
+                          {worker.type === 'claude-code' && <span style={{ fontSize: 10.5, color: C_MUTED }}>未支持</span>}
                         </td>
                         <td style={tdCompactStyle}><span style={cellBlockStyle} title={worker.model}>{worker.model || '—'}</span></td>
-                        <td style={tdCompactStyle}><span style={{ fontFamily: 'var(--ds-font-family-code)', fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)' }}>{worker.reasoningEffort || '默认'}</span></td>
+                        <td style={tdCompactStyle}><span style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: C_SECONDARY }}>{worker.reasoningEffort || '默认'}</span></td>
                         <td style={tdCompactStyle}><span style={cellBlockStyle} title={worker.baseUrl}>{worker.type === 'dsh' ? worker.baseUrl || '默认' : '—'}</span></td>
                         <td style={tdCompactStyle}>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: worker.hasApiKey ? 'var(--dsw-alias-label-secondary)' : warn }}>
-                            {credentialLabel(worker)}
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: worker.hasApiKey ? C_SECONDARY : warn }}>
+                            <GKey size={11} />{credentialLabel(worker)}
                           </span>
                         </td>
                         <td style={tdCompactStyle}>
                           <span style={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
-                            <button type="button" style={smallIconButtonStyle} aria-label="编辑" onClick={() => { openEdit(worker) }}><IconEditOutline16 size={12} /></button>
-                            <button type="button" style={{ ...smallIconButtonStyle, color: 'var(--dsw-alias-state-error-primary)' }} aria-label="删除" disabled={removing === worker.id} onClick={() => { void remove(worker) }}><IconTrashOutline16 size={12} /></button>
+                            <button type="button" className="dshw-icon" style={smallIconButtonStyle} aria-label="编辑" onClick={() => { openEdit(worker) }}><GPencil size={12} /></button>
+                            <button type="button" className="dshw-icon dshw-danger" style={{ ...smallIconButtonStyle, color: C_DANGER }} aria-label="删除" disabled={removing === worker.id} onClick={() => { void remove(worker) }}><GTrash size={12} /></button>
                           </span>
                         </td>
                       </tr>
@@ -3238,8 +3411,9 @@ function SettingsView(props: ViewProps): ReactNode {
 }
 
 /** One repository-management row. */
-function RepoRow({ icon, title, detail, note, warn, buttonLabel, disabled, onClick }: {
-  icon: string
+function RepoRow({ first = false, icon, title, detail, note, warn, buttonLabel, disabled, onClick }: {
+  first?: boolean
+  icon: ReactNode
   title: string
   detail: string
   note: string
@@ -3249,16 +3423,16 @@ function RepoRow({ icon, title, detail, note, warn, buttonLabel, disabled, onCli
   onClick: () => void
 }): ReactNode {
   return (
-    <div style={repoRowStyle}>
+    <div style={first ? { ...repoRowStyle, borderTop: 'none' } : repoRowStyle}>
       <span style={repoIconStyle}>{icon}</span>
       <div style={repoTextStyle}>
         <div style={repoTitleStyle}>
           <span>{title}</span>
-          {note !== '' && <span style={{ fontSize: 10.5, fontWeight: 400, color: warn ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-tertiary)' }}>{note}</span>}
+          {note !== '' && <span style={{ fontSize: 10.5, fontWeight: 400, color: warn ? C_WARNING : C_MUTED }}>{note}</span>}
         </div>
         <div style={repoDetailStyle}>{detail}</div>
       </div>
-      <button type="button" style={repoButtonStyle} disabled={disabled} onClick={onClick}>{buttonLabel}</button>
+      <button type="button" className="dshw-btn-default" style={repoButtonStyle} disabled={disabled} onClick={onClick}>{buttonLabel}</button>
     </div>
   )
 }
@@ -3296,15 +3470,15 @@ function WorktreeCleanupDialog({ preview, decisions, loading, deleteCount, clean
       <section style={{ ...dialogStyle, width: 620, maxHeight: '80vh' }} role="dialog" aria-modal="true" aria-label="清理 Worktree">
         <header style={dialogHeaderStyle}>
           <span style={jobDialogTitleStyle}>清理 Worktree</span>
-          <button type="button" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}>✕</button>
+          <button type="button" className="dshw-icon" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}><GClose size={15} /></button>
         </header>
         <div style={{ padding: 14, overflow: 'auto' }}>
-          <p style={{ margin: 0, fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary)' }}>
+          <p style={{ margin: 0, fontSize: 11.5, color: C_MUTED }}>
             只处理不再对应 active PR、且没有运行中任务占用的 Worktree。
             {cleanCount > 0 ? ` ${cleanCount} 个无本地内容的 Worktree 将直接删除。` : ''}
           </p>
-          <div style={{ marginTop: 12, marginBottom: 5, fontSize: 10.5, fontWeight: 600, color: 'var(--dsw-alias-label-secondary)' }}>需要确认的本地内容</div>
-          <div style={{ border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, overflow: 'auto', maxHeight: 320 }}>
+          <div style={{ marginTop: 12, marginBottom: 5, fontSize: 10.5, fontWeight: 600, color: C_SECONDARY }}>需要确认的本地内容</div>
+          <div style={{ border: '1px solid C_BORDER', borderRadius: 8, overflow: 'auto', maxHeight: 320 }}>
             {risky.map(candidate => (
               <div key={candidate.name} style={cleanupRowStyle}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -3329,9 +3503,9 @@ function WorktreeCleanupDialog({ preview, decisions, loading, deleteCount, clean
           </div>
         </div>
         <footer style={dialogFooterStyle}>
-          <span style={{ fontSize: 10.5, color: 'var(--dsw-alias-label-tertiary)' }}>选择删除后不会保留 stash 或本地分支</span>
+          <span style={{ fontSize: 10.5, color: C_MUTED }}>选择删除后不会保留 stash 或本地分支</span>
           <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-            <button type="button" style={dialogActionButtonStyle} disabled={loading} onClick={onClose}>取消</button>
+            <button type="button" className="dshw-btn-ghost" style={dialogActionButtonStyle} disabled={loading} onClick={onClose}>取消</button>
             <button type="button" style={primaryButtonStyle} disabled={loading || deleteCount === 0} onClick={onExecute}>
               {loading ? '清理中' : `清理 ${deleteCount} 个`}
             </button>
@@ -3377,10 +3551,10 @@ function WorkerFormDialog({ form, editing, typeAvailable, codexReason, modelCata
       <section style={{ ...dialogStyle, width: 560, maxHeight: '85vh', overflow: 'auto' }} role="dialog" aria-modal="true" aria-label={editing === undefined ? '添加 Worker' : '编辑 Worker'}>
         <header style={dialogHeaderStyle}>
           <span style={jobDialogTitleStyle}>{editing === undefined ? '添加 Worker' : '编辑 Worker'}</span>
-          <button type="button" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}>✕</button>
+          <button type="button" className="dshw-icon" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}><GClose size={15} /></button>
         </header>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '11px 12px', padding: 14 }}>
-          <div style={{ gridColumn: '1 / -1', fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--dsw-alias-label-tertiary)' }}>基本</div>
+          <div style={{ gridColumn: '1 / -1', fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: C_MUTED }}>基本</div>
           <label style={formFieldStyle}>
             <span style={formLabelStyle}>名称</span>
             <input autoFocus style={formInputStyle} placeholder="例如：日常 dsh" value={form.name}
@@ -3401,9 +3575,9 @@ function WorkerFormDialog({ form, editing, typeAvailable, codexReason, modelCata
             启用
           </label>
           {!typeAvailable && codexReason !== undefined && (
-            <div style={{ gridColumn: '1 / -1', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }}>{codexReason}</div>
+            <div style={{ gridColumn: '1 / -1', fontSize: 11, color: C_MUTED }}>{codexReason}</div>
           )}
-          <div style={{ gridColumn: '1 / -1', marginTop: 2, fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--dsw-alias-label-tertiary)' }}>模型</div>
+          <div style={{ gridColumn: '1 / -1', marginTop: 2, fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: C_MUTED }}>模型</div>
           {form.type === 'dsh' && (
             <label style={formFieldStyle}>
               <span style={formLabelStyle}>Provider</span>
@@ -3427,11 +3601,11 @@ function WorkerFormDialog({ form, editing, typeAvailable, codexReason, modelCata
               {effortOptions.map(effort => <option key={effort.id} value={effort.id}>{effort.name}</option>)}
             </select>
           </label>
-          {modelLoading && <div style={{ gridColumn: '1 / -1', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }}>正在读取可用模型…</div>}
+          {modelLoading && <div style={{ gridColumn: '1 / -1', fontSize: 11, color: C_MUTED }}>正在读取可用模型…</div>}
           {modelError !== '' && <div style={{ gridColumn: '1 / -1', fontSize: 11, color: warn }}>模型列表读取失败：{modelError}</div>}
           {form.type === 'dsh' && (
             <>
-              <div style={{ gridColumn: '1 / -1', marginTop: 2, fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--dsw-alias-label-tertiary)' }}>连接</div>
+              <div style={{ gridColumn: '1 / -1', marginTop: 2, fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: C_MUTED }}>连接</div>
               <label style={{ ...formFieldStyle, gridColumn: '1 / -1' }}>
                 <span style={formLabelStyle}>Base URL</span>
                 <input style={formInputStyle} type="url" placeholder="留空则使用 DEEPSEEK_BASE_URL" value={form.baseUrl ?? ''}
@@ -3470,7 +3644,7 @@ function WorkerFormDialog({ form, editing, typeAvailable, codexReason, modelCata
         </div>
         <footer style={dialogFooterStyle}>
           <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-            <button type="button" style={dialogActionButtonStyle} onClick={onClose}>取消</button>
+            <button type="button" className="dshw-btn-ghost" style={dialogActionButtonStyle} onClick={onClose}>取消</button>
             <button type="button" style={primaryButtonStyle} disabled={saving || !formValid} onClick={onSave}>
               {saving ? '保存中' : '保存'}
             </button>
@@ -3491,10 +3665,10 @@ const settingsHeaderStyle: CSSProperties = {
   height: 40,
   padding: '0 14px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
   fontSize: 13,
   fontWeight: 600,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const settingsLayoutStyle: CSSProperties = {
@@ -3507,7 +3681,7 @@ const settingsLayoutStyle: CSSProperties = {
 const settingsNavStyle: CSSProperties = {
   minHeight: 0,
   padding: 6,
-  borderRight: '1px solid var(--dsw-alias-border-l2)',
+  borderRight: '1px solid C_BORDER',
 }
 
 const settingsNavItemStyle: CSSProperties = {
@@ -3526,13 +3700,13 @@ const settingsNavItemStyle: CSSProperties = {
   fontFamily: 'inherit',
   fontSize: 12,
   fontWeight: 500,
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
 }
 
 const settingsNavActiveStyle: CSSProperties = {
   ...settingsNavItemStyle,
-  background: 'var(--dsw-alias-interactive-bg-hover)',
-  color: 'var(--dsw-alias-label-primary)',
+  background: C_HOVER,
+  color: C_TEXT,
 }
 
 const settingsSectionStyle: CSSProperties = { minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }
@@ -3545,12 +3719,12 @@ const settingsSectionHeaderStyle: CSSProperties = {
   height: 40,
   padding: '0 12px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
 }
 
-const settingsSectionTitleStyle: CSSProperties = { fontSize: 12.5, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
+const settingsSectionTitleStyle: CSSProperties = { fontSize: 12.5, fontWeight: 600, color: C_TEXT }
 
-const settingsSectionSubStyle: CSSProperties = { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }
+const settingsSectionSubStyle: CSSProperties = { fontSize: 11, color: C_MUTED }
 
 const settingsBodyStyle: CSSProperties = { flex: 1, minHeight: 0, overflow: 'auto' }
 
@@ -3562,6 +3736,12 @@ const settingsCardStyle: CSSProperties = {
   boxSizing: 'border-box',
 }
 
+const repoCardStyle: CSSProperties = {
+  overflow: 'hidden',
+  border: '1px solid C_BORDER',
+  borderRadius: 4,
+}
+
 const repoRowStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -3569,8 +3749,7 @@ const repoRowStyle: CSSProperties = {
   minHeight: 64,
   padding: '0 14px',
   boxSizing: 'border-box',
-  border: '1px solid var(--dsw-alias-border-l2)',
-  borderRadius: 8,
+  borderTop: '1px solid C_BORDER',
 }
 
 const repoIconStyle: CSSProperties = {
@@ -3581,8 +3760,8 @@ const repoIconStyle: CSSProperties = {
   height: 28,
   borderRadius: 8,
   fontSize: 11,
-  background: 'var(--dsw-alias-interactive-bg-hover)',
-  color: 'var(--dsw-alias-label-secondary)',
+  background: C_HOVER,
+  color: C_SECONDARY,
 }
 
 const repoTextStyle: CSSProperties = { flex: 1, minWidth: 0 }
@@ -3593,34 +3772,43 @@ const repoTitleStyle: CSSProperties = {
   gap: 7,
   fontSize: 12.5,
   fontWeight: 500,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
-const repoDetailStyle: CSSProperties = { marginTop: 1, fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }
+const repoDetailStyle: CSSProperties = { marginTop: 1, fontSize: 11, color: C_MUTED }
 
 const repoButtonStyle: CSSProperties = {
   flex: 'none',
-  height: 30,
-  padding: '0 14px',
-  border: '1px solid var(--dsw-alias-border-l2)',
-  borderRadius: 8,
-  background: 'transparent',
+  display: 'inline-flex',
+  alignItems: 'center',
+  height: 26,
+  padding: '0 11px',
+  border: 'none',
+  borderRadius: 4,
+  background: C_HOVER,
   cursor: 'pointer',
   fontFamily: 'inherit',
   fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary)',
+  lineHeight: 'none',
+  whiteSpace: 'nowrap',
+  color: C_SECONDARY,
 }
 
 const addButtonStyle: CSSProperties = {
   marginLeft: 'auto',
-  height: 28,
-  padding: '0 12px',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 5,
+  height: 26,
+  padding: '0 11px',
   border: 'none',
-  borderRadius: 8,
-  background: 'var(--dsw-alias-state-business-primary)',
+  borderRadius: 4,
+  background: C_ACCENT,
   cursor: 'pointer',
   fontFamily: 'inherit',
   fontSize: 12,
+  lineHeight: 'none',
+  whiteSpace: 'nowrap',
   color: '#fff',
 }
 
@@ -3630,17 +3818,22 @@ const workerNameStyle: CSSProperties = {
   whiteSpace: 'nowrap',
   fontSize: 12.5,
   fontWeight: 500,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const defaultBadgeStyle: CSSProperties = {
   flex: 'none',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  minWidth: 16,
   marginLeft: 6,
-  padding: '1px 6px',
-  borderRadius: 6,
-  fontSize: 10,
-  background: 'var(--dsw-alias-interactive-bg-hover)',
-  color: 'var(--dsw-alias-label-secondary)',
+  padding: '0 4px',
+  borderRadius: 3,
+  fontSize: 10.5,
+  lineHeight: '14px',
+  background: C_BADGE,
+  color: C_BADGE_FG,
 }
 
 const cleanupRowStyle: CSSProperties = {
@@ -3650,12 +3843,12 @@ const cleanupRowStyle: CSSProperties = {
   minHeight: 52,
   padding: '0 10px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  borderBottom: '1px solid C_BORDER',
 }
 
-const cleanupNameStyle: CSSProperties = { fontFamily: 'var(--ds-font-family-code)', fontSize: 11.5, fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }
+const cleanupNameStyle: CSSProperties = { fontFamily: FONT_MONO, fontSize: 11.5, fontWeight: 500, color: C_TEXT }
 
-const cleanupBranchStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10.5, color: 'var(--dsw-alias-label-tertiary)' }
+const cleanupBranchStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10.5, color: C_MUTED }
 
 const cleanupSelectStyle: CSSProperties = {
   flex: 'none',
@@ -3663,28 +3856,28 @@ const cleanupSelectStyle: CSSProperties = {
   height: 28,
   padding: '0 7px',
   boxSizing: 'border-box',
-  border: '1px solid var(--dsw-alias-border-l2)',
+  border: '1px solid C_BORDER',
   borderRadius: 6,
-  background: 'var(--dsw-alias-bg-base)',
+  background: C_SURFACE,
   outline: 'none',
   fontFamily: 'inherit',
   fontSize: 11.5,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const primaryButtonStyle: CSSProperties = {
-  height: 28,
-  padding: '0 14px',
+  height: 26,
+  padding: '0 11px',
   border: 'none',
-  borderRadius: 8,
-  background: 'var(--dsw-alias-state-business-primary)',
+  borderRadius: 4,
+  background: C_ACCENT,
   cursor: 'pointer',
   fontFamily: 'inherit',
   fontSize: 12,
   color: '#fff',
 }
 
-const formFieldStyle: CSSProperties = { display: 'block', fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)' }
+const formFieldStyle: CSSProperties = { display: 'block', fontSize: 11.5, color: C_SECONDARY }
 
 const formLabelStyle: CSSProperties = { display: 'block', marginBottom: 4 }
 
@@ -3693,13 +3886,13 @@ const formInputStyle: CSSProperties = {
   height: 28,
   padding: '0 8px',
   boxSizing: 'border-box',
-  border: '1px solid var(--dsw-alias-border-l2)',
+  border: '1px solid C_BORDER',
   borderRadius: 6,
   outline: 'none',
-  background: 'var(--dsw-alias-bg-base)',
+  background: C_SURFACE,
   fontFamily: 'inherit',
   fontSize: 12.5,
-  color: 'var(--dsw-alias-label-primary)',
+  color: C_TEXT,
 }
 
 const smallIconButtonStyle: CSSProperties = {
@@ -3713,5 +3906,5 @@ const smallIconButtonStyle: CSSProperties = {
   padding: 0,
   background: 'transparent',
   cursor: 'pointer',
-  color: 'var(--dsw-alias-label-secondary)',
+  color: C_SECONDARY,
 }

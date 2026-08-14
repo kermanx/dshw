@@ -65,6 +65,25 @@ const STYLE_TEXT = `
 [data-dshw-kanban="gitgraph"] > div > div:nth-child(n + 2) { display: none !important; }
 [data-dshw-kanban="gitgraph"] svg { position: absolute; inset: 0 auto auto 0; }
 [data-dshw-kanban="gitgraph"] g[filter*="_curved_path_"] { filter: none; }
+/* dshw view chrome (VS Code Light palette; style.css shortcuts) */
+@keyframes dshw-dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+[data-dshw-kanban="pulse"] { animation: dshw-dot-pulse 1.2s ease-in-out infinite; }
+[data-dshw-kanban="row"]:hover td { background: #f0f0f0; }
+[data-dshw-kanban="gitrow"]:hover { background: #f0f0f0; }
+[data-dshw-kanban="gitbranch"]:hover { background: #f0f0f0; }
+[data-dshw-kanban="gitbranch"][aria-pressed="true"] { background: rgba(0, 122, 204, .12); }
+[data-dshw-kanban="gitchip"]:hover { background: rgba(191, 136, 3, .12); }
+[data-dshw-kanban="githash"]:hover { color: #006ab1; text-decoration: underline; }
+[data-dshw-kanban="gitpr"]:hover { color: #006ab1; text-decoration: underline; }
+.dshw-link:hover { text-decoration: underline; }
+.dshw-nav:hover { background: #f0f0f0; }
+[data-dshw-kanban="loadmore"]:hover { background: #f0f0f0; }
+[data-dshw-kanban="titlelink"]:hover { text-decoration: underline; }
+.dshw-icon:hover { background: #f0f0f0; color: #333333; }
+.dshw-danger:hover { background: rgba(161, 38, 13, .1); }
+.dshw-btn-default:hover { background: #f3f3f3; }
+.dshw-btn-ghost:hover { background: #f0f0f0; }
+[data-dshw-kanban="row"] { transition: background-color 100ms; }
 `
 
 /** The framework-injected locale seat type (entry `locale` option). */
@@ -230,6 +249,7 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
             <button
               type="button"
               data-dshw-kanban="icon"
+              className="dshw-icon"
               aria-label={t('panel.refresh')}
               onClick={refresh}
               style={iconButtonStyle}
@@ -239,6 +259,7 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
             <button
               type="button"
               data-dshw-kanban="icon"
+              className="dshw-icon"
               aria-label={t('panel.openBrowser')}
               onClick={() => { window.open(baseUrl, '_blank') }}
               style={iconButtonStyle}
@@ -248,6 +269,7 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
             <button
               type="button"
               data-dshw-kanban="icon"
+              className="dshw-icon"
               aria-label={t('panel.close')}
               onClick={onClose}
               style={iconButtonStyle}
@@ -342,8 +364,8 @@ const panelStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
-  background: 'var(--dsw-alias-bg-base)',
-  boxShadow: 'var(--dsw-shadow-lv2)',
+  background: '#ffffff',
+  boxShadow: '0 4px 16px rgba(0, 0, 0, .16), 0 0 2px rgba(0, 0, 0, .08)',
 }
 
 const headerStyle: CSSProperties = {
@@ -351,18 +373,18 @@ const headerStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  minHeight: 46,
+  minHeight: 40,
   padding: '0 8px 0 16px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid var(--dsw-alias-border-l2)',
-  background: 'var(--dsw-alias-bg-base)',
+  borderBottom: '1px solid #e7e7e7',
+  background: '#f3f3f3',
 }
 
 const titleStyle: CSSProperties = {
   fontSize: 13,
-  fontWeight: 500,
+  fontWeight: 600,
   lineHeight: '20px',
-  color: 'var(--dsw-alias-label-primary)',
+  color: '#333333',
 }
 
 const actionsStyle: CSSProperties = {
@@ -381,7 +403,7 @@ const iconButtonStyle: CSSProperties = {
   borderRadius: 8,
   padding: 0,
   cursor: 'pointer',
-  color: 'var(--dsw-alias-label-secondary)',
+  color: '#616161',
 }
 
 const loadingStyle: CSSProperties = {
@@ -390,7 +412,7 @@ const loadingStyle: CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
   fontSize: 13,
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: '#717171',
 }
 
 const unreachableStyle: CSSProperties = {
@@ -408,7 +430,7 @@ const unreachableTitleStyle: CSSProperties = {
   margin: 0,
   fontSize: 14,
   fontWeight: 500,
-  color: 'var(--dsw-alias-label-primary)',
+  color: '#333333',
 }
 
 const unreachableDetailStyle: CSSProperties = {
@@ -417,7 +439,7 @@ const unreachableDetailStyle: CSSProperties = {
   textAlign: 'center',
   fontSize: 12,
   lineHeight: '18px',
-  color: 'var(--dsw-alias-label-secondary)',
+  color: '#616161',
 }
 
 const urlFieldStyle: CSSProperties = {
@@ -429,7 +451,7 @@ const urlFieldStyle: CSSProperties = {
 
 const urlLabelStyle: CSSProperties = {
   fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary)',
+  color: '#616161',
 }
 
 const urlInputStyle: CSSProperties = {
@@ -437,23 +459,23 @@ const urlInputStyle: CSSProperties = {
   height: 34,
   padding: '0 12px',
   boxSizing: 'border-box',
-  border: '1px solid var(--dsw-alias-border-l2)',
-  borderRadius: 10,
+  border: '1px solid #e7e7e7',
+  borderRadius: 4,
   outline: 'none',
-  background: 'transparent',
+  background: '#ffffff',
   fontFamily: 'inherit',
-  fontSize: 13,
-  color: 'var(--dsw-alias-label-primary)',
+  fontSize: 12.5,
+  color: '#333333',
 }
 
 const saveButtonStyle: CSSProperties = {
-  height: 34,
-  padding: '0 16px',
+  height: 26,
+  padding: '0 11px',
   border: 'none',
-  borderRadius: 10,
-  background: 'var(--dsw-alias-state-business-primary)',
+  borderRadius: 4,
+  background: '#007acc',
   color: '#fff',
   fontFamily: 'inherit',
-  fontSize: 13,
+  fontSize: 12,
   cursor: 'pointer',
 }
