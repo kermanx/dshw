@@ -1,6 +1,9 @@
 # dshw
 
-`dshw` 是 DeepSeek Harness 的本机 PR 工作流工具。它会追踪你创建的 open PR，管理独立 worktree，并提供 PR、review、CI 和后台任务状态页。
+`dshw` 是 DeepSeek Harness 的本机 PR 工作流工具。它会追踪你创建的 open PR，管理独立
+worktree，并提供 PR、review、CI 和后台任务状态页。它既可以**作为 dsh 插件**嵌入
+Harness Web（左侧栏入口，六个视图原生渲染，无 iframe），也可以**独立运行**为浏览器
+看板。
 
 ## 准备环境
 
@@ -9,30 +12,71 @@
 - pnpm 11+
 - Git
 - GitHub CLI，并已运行 `gh auth login`
-- VS Code 的 `code` 命令
+- VS Code 的 `code` 命令（独立看板模式需要）
+
+作为插件使用时，还需要本机可用的 `dsh` 命令（例如从 deepseek-harness checkout 运行
+`pnpm dsh web`，或全局安装 dsh），以及一个正在运行的 dsh Web 服务。
 
 ## 开始使用
+
+dshw 的 daemon 是看板的数据来源：无论是插件还是独立看板，都通过
+`http://127.0.0.1:7849`（默认端口，可用 `DSHW_PORT` 修改）上的 HTTP API 与 SSE
+提供快照。因此**先启动 daemon**：
 
 ```sh
 git clone https://github.com/deepseek-harness/dshw.git
 cd dshw
 pnpm install
-pnpm dshw start
+pnpm dshw start --no-open   # 初始化并后台启动 daemon（自动构建 UI 与插件 bundle）
 ```
 
-首次启动会在当前 clone 内创建 `.dshw/`，克隆托管的 DeepSeek Harness 仓库，准备 dshw 固定版本的 dsh runtime，构建 UI，注册当前用户的 macOS LaunchAgent，然后在后台启动服务。固定 runtime 首次安装和构建可能需要几分钟；CLI 会逐步显示当前阶段、耗时，并在长时间操作中持续报告等待时间。命令完成后会退出，并默认打开 VS Code workspace 和浏览器看板。
+首次启动会在当前 clone 内创建 `.dshw/`，克隆托管的 DeepSeek Harness 仓库，准备
+dshw 固定版本的 dsh runtime，构建 UI，注册当前用户的 macOS LaunchAgent，然后在后台
+启动服务。固定 runtime 首次安装和构建可能需要几分钟；CLI 会逐步显示当前阶段、耗时，
+并在长时间操作中持续报告等待时间。以后在仓库目录中直接用 `pnpm dshw status` /
+`pnpm dshw restart` / `pnpm dshw stop` 管理服务。
 
-以后在仓库目录中直接运行：
+### 方式一：安装到你的 dsh（推荐）
+
+把看板装进自己的 Harness Web，左侧栏底部会出现"看板"入口（展开态图标+文字、收起态
+图标，悬停/选中样式与侧栏其他条目一致）。点击后看板占据侧栏右侧全部空间（侧栏保持
+可见），Pull requests（修 CI / 解决评论 / 合并 / sync 开关）、Reviews、Git（提交图 +
+分支聚焦）、Jobs（任务详情 / 终止 / 暂停 / Steer）、Logs（日志详情）与 Settings
+（仓库管理 / Worker 配置与排序 / Worktree 清理）六个视图全部原生渲染、经 SSE 实时
+更新。
 
 ```sh
-pnpm dshw status
-pnpm dshw ui
-pnpm dshw restart
-pnpm dshw stop
-pnpm dshw start
+# 1. daemon 已启动后，把本仓库安装进 dsh 的 web profile
+dsh plugin --profile web add "$PWD"
+
+# 2. 重启你的 dsh web 服务（停掉后重新运行 `dsh web` / `pnpm dsh web`），
+#    刷新页面即可在左侧栏底部看到看板入口
 ```
 
-不希望 `start` 自动打开窗口时，使用 `pnpm dshw start --no-open`。只关闭 VS Code、仍打开浏览器看板时，可使用 `--no-code`。环境检查可运行 `pnpm dshw doctor`。
+dshw 是一个标准 Harness 插件组合包（bundle）：`package.json` 声明了 `dsh.bundle`
+（patch 层 `cordis.patch.yml`）和 `dsh.client`（浏览器端 bundle，导出 `./client`），
+因此 `dsh plugin add` 直接可装。插件本体只是看板外壳，数据全部来自本机 dshw
+daemon（API 已启用 CORS）；daemon 未运行时，面板会提示连接失败并允许修改服务地址
+（保存在浏览器 localStorage）。
+
+- **卸载**：`dsh plugin --profile web remove dshw`，再重启 dsh web。
+- **更新**：`git pull` 后运行 `pnpm dshw restart`（重建插件 bundle），再重启 dsh web。
+- **换端口**：daemon 用 `DSHW_PORT` 启动在不同端口时，在看板面板的连接失败界面修改
+  服务地址即可。
+- 插件只面向 Web 类 profile；`dsh plugin --profile <name>` 中的 `<name>` 要与你的
+  Harness Web 使用的 profile 一致（默认 `web`）。
+
+### 方式二：独立看板（不装插件）
+
+在浏览器打开 dshw 自己的看板页面：
+
+```sh
+pnpm dshw start    # 默认打开 VS Code workspace 和浏览器看板
+```
+
+不希望 `start` 自动打开窗口时，使用 `pnpm dshw start --no-open`；只关闭 VS Code、
+仍打开浏览器看板时，可使用 `--no-code`。环境检查可运行 `pnpm dshw doctor`。看板页面
+与插件里是同一套数据与操作，只是以独立窗口的形式呈现。
 
 ## 配置模型凭据
 
@@ -62,33 +106,6 @@ dshw status
 ```
 
 全局命令仍使用这份源码 clone，运行数据也仍保存在该 clone 的 `.dshw/` 中。
-
-## 作为 DeepSeek Harness 插件使用
-
-dshw 本身就是一个可安装的 Harness 插件组合包（bundle）：`package.json` 声明了
-`dsh.bundle`（patch 层 `cordis.patch.yml`）和 `dsh.client`（浏览器端 bundle，导出
-`./client`）。安装后，Harness Web 左侧栏底部会出现一个 **看板** 入口（展开态为图标 +
-文字，收起态为图标；悬停与选中样式与侧栏其他条目一致）。点击后看板占据左侧栏右侧的
-全部空间（侧栏保持可见），**六个视图全部原生渲染**（无 iframe）：直接通过 daemon 的
-HTTP API（已启用 CORS）拉取快照并经 SSE 实时更新。Pull requests（修 CI / 解决评论 /
-合并 / sync 开关）、Reviews、Git（提交图 + 分支聚焦）、Jobs（任务详情 / 终止 / 暂停 /
-Steer）、Logs（日志详情）与 Settings（仓库管理 / Worker 配置与排序 / Worktree 清理）
-均已移植；完整的 dshw 独立 UI 仍可通过面板右上角"在浏览器中打开"使用。
-
-```sh
-# 先构建插件 bundle（daemon 的 start/restart 流程会自动构建，手动安装前需要一次）
-pnpm run build:plugin
-
-# 安装进 Harness 的 web profile（需要 dsh 命令可用）
-dsh plugin --profile web add /Users/kermanx/workspace/dshw
-
-# 重启 Harness Web 服务后生效
-```
-
-插件源码位于 `plugin/`（React 组件 + 构建脚本 `scripts/build-plugin.mjs`），产物为
-`plugin/lib/client.js`（已忽略，不入库）。看板默认连接 `http://127.0.0.1:7849`；如果
-dshw 运行在其他端口，可以在看板面板的连接失败界面修改服务地址（保存在浏览器
-localStorage）。卸载：`dsh plugin --profile web remove dshw`。
 
 ## 本地目录
 
