@@ -139,6 +139,24 @@ function useKanbanStyles(): void {
 export function KanbanFooterAction({ wide, t }: KanbanFooterActionProps): ReactNode {
   const [open, setOpen] = useState(false)
   useKanbanStyles()
+
+  // Closing the panel when a session is opened: the workspace list rows are
+  // `role=treeitem` with aria-selected (session rows and search results; the
+  // workspace group headers lack aria-selected). A document-level capture
+  // listener fires for clicks anywhere, including the sidebar, and closes the
+  // board — no core changes needed.
+  useEffect(() => {
+    if (!open) return
+    const onDocumentClick = (event: MouseEvent): void => {
+      const target = event.target
+      if (target instanceof Element && target.closest('[role="treeitem"][aria-selected]') !== null) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('click', onDocumentClick, true)
+    return () => { document.removeEventListener('click', onDocumentClick, true) }
+  }, [open])
+
   return (
     <>
       <Tooltip label={t('action.aria')} side="top" delayMs={500}>
@@ -366,7 +384,6 @@ const panelStyle: CSSProperties = {
   flexDirection: 'column',
   overflow: 'hidden',
   background: '#ffffff',
-  boxShadow: '0 4px 16px rgba(0, 0, 0, .16), 0 0 2px rgba(0, 0, 0, .08)',
 }
 
 const headerStyle: CSSProperties = {
