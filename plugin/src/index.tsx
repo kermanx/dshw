@@ -358,7 +358,9 @@ const triggerStyle = (wide: boolean): CSSProperties => ({
   gap: wide ? 8 : 0,
   width: wide ? 'calc(100% + 4px)' : 36,
   height: wide ? 42 : 36,
-  margin: wide ? '4px -2px 0' : '8px 0 10px',
+  /* bottom -2px pulls the settings row up: net gap to it is 2px
+     (the settings trigger keeps its own 4px top margin — core, untouched). */
+  margin: wide ? '4px -2px -2px' : '8px 0 10px',
   padding: wide ? '0 10px 0 8px' : 0,
   boxSizing: 'border-box',
   border: 'none',
