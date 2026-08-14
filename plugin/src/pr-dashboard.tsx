@@ -1519,7 +1519,9 @@ const tableScrollStyle: CSSProperties = {
   flex: 1,
   minHeight: 0,
   overflow: 'auto',
-  padding: '0 16px 16px',
+  /* no horizontal inset: the PR / Reviews tables span the panel edge to edge
+     (cells carry their own 12px padding); bottom padding only for scroll end. */
+  paddingBottom: 16,
 }
 
 const tableStyle: CSSProperties = {
