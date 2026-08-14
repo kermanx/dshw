@@ -29,12 +29,12 @@ pnpm dshw start              # 初始化并后台启动 daemon（自动构建插
 ```
 
 首次启动会在当前 clone 内创建 `.dshw/`，克隆托管的 DeepSeek Harness 仓库，准备
-dshw 固定版本的 dsh runtime，构建 UI，注册当前用户的 macOS LaunchAgent，然后在后台
-启动服务。固定 runtime 首次安装和构建可能需要几分钟；CLI 会逐步显示当前阶段、耗时，
-并在长时间操作中持续报告等待时间。以后在仓库目录中直接用 `pnpm dshw status` /
-`pnpm dshw restart` / `pnpm dshw stop` 管理服务。
+dshw 固定版本的 dsh runtime，构建插件 bundle 与 VS Code workspace，注册当前用户的
+macOS LaunchAgent，然后在后台启动服务。固定 runtime 首次安装和构建可能需要几分钟；
+CLI 会逐步显示当前阶段、耗时，并在长时间操作中持续报告等待时间。以后在仓库目录中
+直接用 `pnpm dshw status` / `pnpm dshw restart` / `pnpm dshw stop` 管理服务。
 
-### 方式一：安装到你的 dsh（推荐）
+## 安装到你的 dsh
 
 把看板装进自己的 Harness Web，左侧栏底部会出现"看板"入口（展开态图标+文字、收起态
 图标，悬停/选中样式与侧栏其他条目一致）。点击后看板占据侧栏右侧全部空间（侧栏保持
