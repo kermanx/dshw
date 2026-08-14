@@ -77,6 +77,7 @@ const STYLE_TEXT = `
 [data-dshw-kanban="gitpr"]:hover { color: #006ab1; text-decoration: underline; }
 .dshw-link:hover { text-decoration: underline; }
 .dshw-nav:hover { background: #f0f0f0; }
+.dshw-poprow:hover { background: #f0f0f0; }
 [data-dshw-kanban="loadmore"]:hover { background: #f0f0f0; }
 [data-dshw-kanban="titlelink"]:hover { text-decoration: underline; }
 .dshw-icon:hover { background: #f0f0f0; color: #333333; }

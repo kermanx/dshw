@@ -1247,7 +1247,7 @@ function PrRow({ pr, jobs, busy, workingAgent, pending, onAction, onChooseWorker
             </span>
           </span>
           {pr.agentPausedReason !== undefined && (
-            <button type="button" style={pausedButtonStyle} title={pr.agentPausedReason} onClick={onRefresh}>
+            <button type="button" className="dshw-link" style={pausedButtonStyle} title={pr.agentPausedReason} onClick={onRefresh}>
               自动任务已暂停 · 查看原因
             </button>
           )}
@@ -1275,7 +1275,7 @@ function CiCell({ pr, busy, workingAgent, pending, onAction, onChooseWorker }: {
   if (busy?.type === 'fix-ci') {
     return (
       <div style={cellColumnStyle}>
-        <span style={busyRowStyle}><StatusDot tone="accent" pulse />修复中 · 查看</span>
+        <span className="dshw-link" style={busyRowStyle}><StatusDot tone="accent" pulse />修复中 · 查看</span>
       </div>
     )
   }
@@ -1347,7 +1347,7 @@ function ReviewCell({ pr, busy, workingAgent, pending, onAction, onChooseWorker 
   if (busy?.type === 'resolve-comments') {
     return (
       <div style={cellColumnStyle}>
-        <span style={busyRowStyle}><StatusDot tone="accent" pulse />解决评论中 · 查看</span>
+        <span className="dshw-link" style={busyRowStyle}><StatusDot tone="accent" pulse />解决评论中 · 查看</span>
       </div>
     )
   }
@@ -1360,7 +1360,7 @@ function ReviewCell({ pr, busy, workingAgent, pending, onAction, onChooseWorker 
             <div style={popoverSectionStyle}>
               <div style={popoverSectionTitleStyle}>等待 Review</div>
               {requested.map(login => (
-                <a key={`requested-${login}`} style={popoverPersonRowStyle} href={`https://github.com/${login}`} target="_blank" rel="noreferrer">
+                <a key={`requested-${login}`} className="dshw-poprow" style={popoverPersonRowStyle} href={`https://github.com/${login}`} target="_blank" rel="noreferrer">
                   <img style={avatarStyle} src={avatar(login)} alt={login} />
                   <span style={popoverRowTextStyle}>@{login}</span>
                   <span style={{ ...popoverRowBadgeStyle, color: warn }}><StatusIcon tone="warn" size={11} />等待 review</span>
@@ -1372,7 +1372,7 @@ function ReviewCell({ pr, busy, workingAgent, pending, onAction, onChooseWorker 
             <div style={{ ...popoverSectionStyle, ...(requested.length > 0 ? popoverSectionSpacedStyle : {}) }}>
               <div style={popoverSectionTitleStyle}>已 Review</div>
               {reviewed.map(item => (
-                <a key={`reviewed-${item.login}`} style={popoverPersonRowStyle} href={`${pr.url}/files`} target="_blank" rel="noreferrer">
+                <a key={`reviewed-${item.login}`} className="dshw-poprow" style={popoverPersonRowStyle} href={`${pr.url}/files`} target="_blank" rel="noreferrer">
                   <img style={avatarStyle} src={avatar(item.login)} alt={item.login} />
                   <span style={popoverRowTextStyle}>@{item.login}</span>
                   <span style={{ ...popoverRowBadgeStyle, color: toneColor(reviewStateTone(item.review, pr)) }}>
@@ -1463,7 +1463,7 @@ function MergeCell({ pr, busy, workingAgent, pending, jobs, onAction, onChooseWo
           </span>
         )}
       {busyHere && (
-        <span style={busyRowStyle}><StatusDot tone="accent" pulse />{busyLabel(busy)} · 查看</span>
+        <span className="dshw-link" style={busyRowStyle}><StatusDot tone="accent" pulse />{busyLabel(busy)} · 查看</span>
       )}
       {!busyHere && autoAt !== undefined && (
         <div style={cellNoteRowStyle}>
@@ -1730,7 +1730,6 @@ const titleLinkStyle: CSSProperties = {
   minWidth: 0,
   overflow: 'hidden',
   color: 'inherit',
-  textDecoration: 'none',
 }
 
 const numberStyle: CSSProperties = { flex: 'none', fontFamily: 'monospace', fontSize: 12, color: C_MUTED }
@@ -2599,7 +2598,7 @@ function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: number 
                     <span style={gitBranchLineStyle}>
                       {branch.kind === 'pr' && branch.url !== undefined ? (
                         <>
-                          <a style={gitPrLinkStyle} href={branch.url} target="_blank" rel="noreferrer" onClick={event => { event.stopPropagation() }}>
+                          <a style={gitPrLinkStyle} data-dshw-kanban="gitpr" href={branch.url} target="_blank" rel="noreferrer" onClick={event => { event.stopPropagation() }}>
                             PR #{branch.number}
                           </a>
                           <span style={gitBranchSeparatorStyle}>·</span>
@@ -2671,6 +2670,7 @@ function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: number 
                 >
                   <a
                     style={gitHashStyle}
+                    data-dshw-kanban="githash"
                     href={commitUrl(commit.hash)}
                     target="_blank"
                     rel="noreferrer"
@@ -2776,7 +2776,7 @@ const gitBranchLineStyle: CSSProperties = {
   color: C_TEXT,
 }
 
-const gitPrLinkStyle: CSSProperties = { flex: 'none', color: 'inherit', textDecoration: 'none' }
+const gitPrLinkStyle: CSSProperties = { flex: 'none', color: 'inherit' }
 
 const gitBranchSeparatorStyle: CSSProperties = { color: C_MUTED }
 
@@ -2845,7 +2845,6 @@ const gitHashStyle: CSSProperties = {
   fontFamily: FONT_MONO,
   fontSize: 10.5,
   color: C_FAINT,
-  textDecoration: 'none',
 }
 
 const gitChipTextStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
