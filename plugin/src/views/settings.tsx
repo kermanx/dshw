@@ -12,7 +12,7 @@ import {
   actionLinkStyle, cellBlockStyle, emptyStateStyle, jobsScrollStyle, tableStyle,
   tdCompactStyle, thStyle,
 } from '../styles.ts'
-import { ok, warn, C_ACCENT, C_BADGE, C_BADGE_FG, C_BORDER, C_DANGER, C_FAINT, C_HOVER, C_MUTED, C_SECONDARY, C_TEXT, C_WARNING, FONT_MONO } from '../theme.ts'
+import { ok, warn, C_ACCENT, C_BADGE, C_BADGE_FG, C_BORDER, C_DANGER, C_FAINT, C_HOVER, C_MUTED, C_SECONDARY, C_SURFACE, C_TEXT, C_WARNING, FONT_MONO } from '../theme.ts'
 import type { ViewProps } from '../workspace.tsx'
 import { WorkerFormDialog, type WorkerForm } from './worker-form-dialog.tsx'
 import { WorktreeCleanupDialog } from './worktree-cleanup-dialog.tsx'
@@ -551,13 +551,18 @@ export const settingsHeaderStyle: CSSProperties = {
   flex: 'none',
   display: 'flex',
   alignItems: 'center',
-  height: 40,
-  padding: '0 14px',
+  height: 30,
+  padding: '0 12px',
   boxSizing: 'border-box',
   borderBottom: `1px solid ${C_BORDER}`,
-  fontSize: 13,
-  fontWeight: 600,
-  color: C_TEXT,
+  /* match the table header (thStyle) look used by the other tabs */
+  background: C_SURFACE,
+  whiteSpace: 'nowrap',
+  fontSize: 11,
+  fontWeight: 500,
+  textTransform: 'uppercase',
+  letterSpacing: '0.05em',
+  color: C_SECONDARY,
 }
 
 export const settingsLayoutStyle: CSSProperties = {
