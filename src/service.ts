@@ -238,6 +238,21 @@ class WorkflowService {
     request: NodeJS.ReadableStream,
     response: ServerResponse,
   ): Promise<void> {
+    // Cross-origin API access for the Harness Web plugin: the native kanban
+    // panel fetches this API and opens the SSE stream from the harness page
+    // origin. The server is loopback-only, so a wildcard origin is safe; JSON
+    // POSTs need the preflight OPTIONS answer.
+    if (url === '/api/identity' || url.startsWith('/api/')) {
+      response.setHeader('access-control-allow-origin', '*')
+      response.setHeader('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
+      response.setHeader('access-control-allow-headers', 'content-type')
+      response.setHeader('access-control-max-age', '86400')
+      if (method === 'OPTIONS') {
+        response.writeHead(204)
+        response.end()
+        return
+      }
+    }
     if (method === 'GET' && url === '/api/identity') {
       this.#json(response, 200, {
         product: 'dshw',

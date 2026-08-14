@@ -2,11 +2,10 @@
  * dshw kanban — browser half.
  *
  * Registers the kanban dashboard as a `sidebar.footer.action` entry (the
- * sidebar foot, above Settings) and opens the dshw daemon UI in a fullscreen
- * panel. Everything the dashboard shows is served by the local dshw daemon
- * (its own Vue UI + HTTP API), embedded here as an iframe — this bundle only
- * provides the harness-shell chrome around it, so the kanban keeps every
- * dshw feature without a rewrite.
+ * sidebar foot, above Settings) and opens it in a panel spanning everything
+ * right of the sidebar. The Pull requests view renders natively (no iframe),
+ * talking to the local dshw daemon API (CORS-enabled) over fetch + SSE; the
+ * remaining dshw views stay reachable via the panel's open-in-browser action.
  *
  * The daemon origin defaults to the dshw loopback port (7849) and can be
  * overridden per browser via localStorage (set in the panel's unreachable
@@ -21,6 +20,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { en, zh } from './locales.ts'
+import { PrDashboard } from './pr-dashboard.tsx'
 
 /** Locale namespace owned by this plugin. */
 const NS = 'kanban'
@@ -131,13 +131,12 @@ function measureSidebarRight(): number {
   return column instanceof HTMLElement ? column.getBoundingClientRect().right : 0
 }
 
-/** Fullscreen panel: header chrome plus the dshw daemon iframe. */
+/** Panel: header chrome plus the native PR kanban (no iframe). */
 function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): ReactNode {
   const [baseUrl, setBaseUrl] = useState(readBaseUrl)
   const [draft, setDraft] = useState(baseUrl)
   const [status, setStatus] = useState<PanelStatus>('checking')
-  const [probe, setProbe] = useState(0)
-  const [frameKey, setFrameKey] = useState(0)
+  const [refreshKey, setRefreshKey] = useState(0)
   const [left, setLeft] = useState(measureSidebarRight)
 
   // Follow the sidebar's right edge while open (drag-resize, collapse, narrow
@@ -165,7 +164,8 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
     return () => { document.removeEventListener('keydown', onKeyDown) }
   }, [onClose])
 
-  // Probe the daemon whenever the target or a manual refresh changes.
+  // Probe the daemon whenever the target changes: reachable → native kanban,
+  // unreachable → the URL editor.
   useEffect(() => {
     let cancelled = false
     setStatus('checking')
@@ -173,11 +173,16 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
       .then(() => { if (!cancelled) setStatus('ready') })
       .catch(() => { if (!cancelled) setStatus('down') })
     return () => { cancelled = true }
-  }, [baseUrl, probe])
+  }, [baseUrl])
 
-  const retry = (): void => {
-    setProbe(value => value + 1)
-    setFrameKey(value => value + 1)
+  const refresh = (): void => {
+    setRefreshKey(value => value + 1)
+    // Ask the daemon to re-sync PRs; the snapshot then arrives over SSE.
+    void fetch(`${baseUrl}/api/prs/refresh`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    }).catch(() => {})
   }
 
   const save = (): void => {
@@ -189,7 +194,6 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
       // Storage unavailable (private mode): keep the in-session override.
     }
     setBaseUrl(next)
-    retry()
   }
 
   return createPortal(
@@ -202,7 +206,7 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
               type="button"
               data-dshw-kanban="icon"
               aria-label={t('panel.refresh')}
-              onClick={retry}
+              onClick={refresh}
               style={iconButtonStyle}
             >
               <IconRefreshOutline16 size={14} />
@@ -229,11 +233,11 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
         </header>
         {status === 'checking' && <div style={loadingStyle}>{t('panel.loading')}</div>}
         {status === 'ready' && (
-          <iframe
-            key={frameKey}
-            src={baseUrl}
-            title={t('panel.title')}
-            style={frameStyle}
+          <PrDashboard
+            baseUrl={baseUrl}
+            refreshKey={refreshKey}
+            t={t}
+            onRefresh={refresh}
           />
         )}
         {status === 'down' && (
@@ -354,13 +358,6 @@ const iconButtonStyle: CSSProperties = {
   padding: 0,
   cursor: 'pointer',
   color: 'var(--dsw-alias-label-secondary)',
-}
-
-const frameStyle: CSSProperties = {
-  flex: 1,
-  minHeight: 0,
-  border: 'none',
-  background: 'var(--dsw-alias-bg-base)',
 }
 
 const loadingStyle: CSSProperties = {
