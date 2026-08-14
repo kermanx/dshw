@@ -20,10 +20,10 @@ import {
   popoverRowStyle, popoverRowTextStyle, popoverSectionSpacedStyle, popoverSectionStyle,
   popoverSectionTitleStyle, avatarStackStyle, stackAvatarStyle,
   stackMoreStyle, statusGlyphStyle, statusTextStyle, subTextStyle, syncCellStyle,
-  syncKnobStyle, syncLabelStyle, syncSwitchRowStyle, syncSwitchStyle, tableScrollStyle,
+  syncKnobStyle, syncSwitchRowStyle, syncSwitchStyle, tableScrollStyle,
   tableStyle, tdStyle, thStyle, titleLinkStyle, titleStyle, trStyle, draftRowStyle,
 } from '../styles.ts'
-import { ok, warn, toneColor, C_SECONDARY } from '../theme.ts'
+import { warn, toneColor, C_SECONDARY } from '../theme.ts'
 import type { ViewProps } from '../workspace.tsx'
 
 /* ── Pull requests view ── */
@@ -66,7 +66,7 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
           <span>正在刷新上次保存的 PR 状态</span>
         </div>
       )}
-      <div style={tableScrollStyle}>
+      <div style={{ ...tableScrollStyle, paddingRight: 12 }}>
         {snapshot === undefined && (
           <div style={emptyStateStyle}>
             <span style={emptyStateLineStyle}>
@@ -82,14 +82,16 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
           </div>
         )}
         {snapshot !== undefined && prs.length > 0 && (
-          <table style={tableStyle}>
+          <table style={{ ...tableStyle, tableLayout: 'auto' }}>
             <thead>
               <tr>
                 <th style={thStyle}>Pull request</th>
-                <th style={{ ...thStyle, width: 210 }}>CI</th>
-                <th style={{ ...thStyle, width: 210 }}>Review</th>
-                <th style={{ ...thStyle, width: 210 }}>Merge</th>
-                <th style={{ ...thStyle, width: 210 }}>Sync</th>
+                {/* CI / Review / Merge / Sync: content-sized columns (max-content),
+                    first column absorbs all remaining width */}
+                <th style={{ ...thStyle, width: 'max-content' }}>CI</th>
+                <th style={{ ...thStyle, width: 'max-content' }}>Review</th>
+                <th style={{ ...thStyle, width: 'max-content' }}>Merge</th>
+                <th style={{ ...thStyle, width: 'max-content' }}>Sync</th>
               </tr>
             </thead>
             <tbody>
@@ -179,9 +181,6 @@ export function PrRow({ pr, jobs, busy, workingAgent, pending, onAction, onChoos
             >
               <span style={syncKnobStyle(pr.syncEnabled === true)} />
             </button>
-            <span style={{ ...syncLabelStyle, ...(pr.syncEnabled === true ? { color: ok } : {}) }}>
-              {pr.syncEnabled === true ? '已开启' : '已关闭'}
-            </span>
           </span>
           {pr.agentPausedReason !== undefined && (
             <button type="button" className="dshw-link" style={pausedButtonStyle} title={pr.agentPausedReason} onClick={onRefresh}>
