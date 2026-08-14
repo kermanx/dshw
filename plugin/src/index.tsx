@@ -52,6 +52,8 @@ const STYLE_TEXT = `
 [data-dshw-kanban="root"] input { font-family: inherit; }
 [data-dshw-kanban="root"] p { margin: 0; }
 [data-dshw-kanban="root"] img { border: 0; }
+[data-dshw-kanban="trigger"],
+[data-dshw-kanban="icon"] { background: transparent; }
 [data-dshw-kanban="trigger"]:hover,
 [data-dshw-kanban="trigger"][data-selected],
 [data-dshw-kanban="icon"]:hover { background: var(--dsw-alias-interactive-bg-hover); }
@@ -104,12 +106,14 @@ function useKanbanStyles(): void {
   }, [])
 }
 
-/** The sidebar-foot trigger (wide row / rail icon) plus the fullscreen panel. */
+/** The sidebar-foot trigger (wide row / rail icon) plus the fullscreen panel.
+ *  Geometry and chrome mirror the settings trigger row (ui-settings-general
+ *  SettingsRoot.module.css .trigger) so both footer entries look identical. */
 export function KanbanFooterAction({ wide, t }: KanbanFooterActionProps): ReactNode {
   const [open, setOpen] = useState(false)
   useKanbanStyles()
   return (
-    <div style={layerStyle}>
+    <>
       <Tooltip label={t('action.aria')} side="top" delayMs={500}>
         <button
           type="button"
@@ -126,7 +130,7 @@ export function KanbanFooterAction({ wide, t }: KanbanFooterActionProps): ReactN
         </button>
       </Tooltip>
       {open && <KanbanPanel t={t} onClose={() => { setOpen(false) }} />}
-    </div>
+    </>
   )
 }
 
@@ -281,38 +285,34 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
 
 /* ── inline styles (tokens from the harness ui-theme variables) ─────────── */
 
-const layerStyle: CSSProperties = {
+/* The trigger mirrors the settings row exactly (ui-settings-general
+   SettingsRoot.module.css .trigger): same geometry, radius, inset, hover and
+   rail variants, so the two footer entries look identical. The base
+   transparent background lives in the stylesheet (not inline) so the
+   :hover/[data-selected] rules can paint over it. */
+const triggerStyle = (wide: boolean): CSSProperties => ({
   flex: 'none',
   display: 'flex',
   alignItems: 'center',
-  width: '100%',
-  height: 49,
-  margin: '8px 0 0',
-}
-
-const triggerStyle = (wide: boolean): CSSProperties => ({
-  display: 'inline-flex',
-  alignItems: 'center',
   justifyContent: wide ? 'flex-start' : 'center',
-  gap: 8,
-  width: wide ? '100%' : 36,
-  height: 36,
-  padding: wide ? '0 12px 0 6px' : 0,
+  gap: wide ? 8 : 0,
+  width: wide ? 'calc(100% + 8px)' : 36,
+  height: wide ? 34 : 36,
+  margin: wide ? '4px -4px 4px' : '8px 0 10px',
+  padding: wide ? '6px 2px 6px 10px' : 0,
   boxSizing: 'border-box',
   border: 'none',
-  borderRadius: wide ? 8 : '50%',
+  borderRadius: wide ? 12 : '50%',
   color: 'var(--dsw-alias-label-primary)',
   fontFamily: 'inherit',
   fontSize: 14,
   lineHeight: '22px',
   cursor: 'pointer',
-  whiteSpace: 'nowrap',
   overflow: 'hidden',
 })
 
 const labelStyle: CSSProperties = {
   overflow: 'hidden',
-  textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 }
 
