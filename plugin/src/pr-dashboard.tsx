@@ -9,10 +9,14 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import {
+  IconBranchOutline16, IconInspectOutline12, IconListPenOutline16, IconSettingsOutline16,
+  IconTreeCorner8x10, IconUserOutline16,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
-  CiCheck, CloneGitStatus, CloneRecord, DshWorkerProgress, HarnessRepositoryStatus,
-  DshwRepositoryStatus, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestReview,
-  ReviewRequestRecord, ServiceState, WorkerConfig, WorkerTypeAvailability,
+  CiCheck, CloneGitStatus, CloneRecord, DshWorkerProgress, EventRecord, HarnessRepositoryStatus,
+  DshwRepositoryStatus, JobPage, JobRecord, LogPage, PrDashboardRecord, PrDashboardStatus,
+  PullRequestReview, ReviewRequestRecord, ServiceState, WorkerConfig, WorkerTypeAvailability,
 } from '../../src/types.ts'
 
 /** Status accent (ui/src/types.ts Tone). */
@@ -230,9 +234,35 @@ function HoverPopover({ label, width, children, render, maxHeight }: {
   )
 }
 
-/* ── the dashboard ── */
+/* ── shared view props + the tabbed workspace ── */
 
-export function PrDashboard({ baseUrl, refreshKey, t, onRefresh }: {
+/** Props shared by every kanban view (data + verbs owned by the workspace). */
+interface ViewProps {
+  baseUrl: string
+  snapshot?: KanbanSnapshot
+  connection: 'connecting' | 'live' | 'reconnecting'
+  pending: ReadonlySet<string>
+  showToast: (message: string, bad?: boolean) => void
+  post: (path: string, body: object, key: string) => Promise<void>
+  refresh: () => void
+  /** Open the worker picker for a PR action (right-click / unavailable default). */
+  openWorkerPicker: (cloneName: string, action: PrAction) => void
+}
+
+type ViewId = 'prs' | 'reviews' | 'git' | 'jobs' | 'logs' | 'settings'
+
+const VIEW_TABS: ReadonlyArray<{ id: ViewId; icon: (p: { size?: number }) => ReactNode; label: string; count: (s: KanbanSnapshot) => number }> = [
+  { id: 'prs', icon: IconBranchOutline16, label: 'Pull requests', count: s => s.prs.length },
+  { id: 'reviews', icon: IconUserOutline16, label: 'Reviews', count: s => s.reviewRequests.length },
+  { id: 'git', icon: IconTreeCorner8x10, label: 'Git', count: () => 0 },
+  { id: 'jobs', icon: IconListPenOutline16, label: 'Jobs', count: s => s.service.activeJobs },
+  { id: 'logs', icon: IconInspectOutline12, label: 'Logs', count: () => 0 },
+  { id: 'settings', icon: IconSettingsOutline16, label: 'Settings', count: () => 0 },
+]
+
+/** Tabbed workspace: owns the data channel, action plumbing and the tab bar;
+ *  every view is presentational over {@link ViewProps}. */
+export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
   baseUrl: string
   refreshKey: number
   t: (key: string, params?: Record<string, string | number>) => string
@@ -241,8 +271,9 @@ export function PrDashboard({ baseUrl, refreshKey, t, onRefresh }: {
   const { snapshot, connection } = useKanbanData(baseUrl, refreshKey)
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set())
   const [toast, setToast] = useState<{ message: string; bad: boolean } | null>(null)
-  const toastTimer = useRef<number | undefined>(undefined)
   const [workerPick, setWorkerPick] = useState<{ cloneName: string; action: PrAction } | null>(null)
+  const [view, setView] = useState<ViewId>('prs')
+  const toastTimer = useRef<number | undefined>(undefined)
 
   const showToast = (message: string, bad = false): void => {
     setToast({ message, bad })
@@ -274,25 +305,12 @@ export function PrDashboard({ baseUrl, refreshKey, t, onRefresh }: {
     }
   }
 
-  const runPrAction = (cloneName: string, action: PrAction): void => {
-    if (action === 'merge-base-direct') {
-      void post('/api/pr-action', { name: cloneName, action }, `merge-base-direct:${cloneName}`)
-      return
-    }
-    const defaultWorker = snapshot?.workers.find(worker => worker.enabled)
-    if (defaultWorker === undefined) {
-      showToast('请先添加可用的 Worker', true)
-      return
-    }
-    const available = snapshot?.workerTypes.find(status => status.type === defaultWorker.type)?.available === true
-    if (available !== true) {
-      chooseWorker(cloneName, action)
-      return
-    }
-    void post('/api/pr-action', { name: cloneName, action }, `${action}:${cloneName}`)
+  const refresh = (): void => {
+    onRefresh?.()
+    void post('/api/prs/refresh', {}, 'prs-refresh')
   }
 
-  const chooseWorker = (cloneName: string, action: PrAction): void => {
+  const openWorkerPicker = (cloneName: string, action: PrAction): void => {
     const usable = snapshot?.workers.some(worker => worker.enabled
       && snapshot.workerTypes.find(status => status.type === worker.type)?.available === true) === true
     if (!usable) {
@@ -314,18 +332,89 @@ export function PrDashboard({ baseUrl, refreshKey, t, onRefresh }: {
     }, `${launch.action}:${launch.cloneName}`)
   }
 
+  const viewProps: ViewProps = {
+    baseUrl,
+    snapshot,
+    connection,
+    pending,
+    showToast,
+    post,
+    refresh,
+    openWorkerPicker,
+  }
+
+  return (
+    <div style={rootStyle} data-dshw-kanban="root">
+      <div style={tabbarStyle} role="tablist" aria-label="dshw views">
+        {VIEW_TABS.map(tab => {
+          const active = view === tab.id
+          const count = snapshot === undefined ? 0 : tab.count(snapshot)
+          const Icon = tab.icon
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              data-selected={active || undefined}
+              onClick={() => { setView(tab.id) }}
+              style={tabStyle(active)}
+            >
+              <Icon size={14} />
+              <span>{tab.label}</span>
+              {count > 0 && <span style={tabCountStyle}>{count}</span>}
+            </button>
+          )
+        })}
+      </div>
+      <div style={viewAreaStyle}>
+        {view === 'prs' && <PrsView {...viewProps} />}
+        {view === 'reviews' && <ReviewsView {...viewProps} />}
+        {view === 'jobs' && <JobsView {...viewProps} />}
+        {view === 'logs' && <LogsView {...viewProps} />}
+        {(view === 'git' || view === 'settings') && <PlaceholderView />}
+      </div>
+      {workerPick !== null && snapshot !== undefined && (
+        <WorkerPicker
+          workers={snapshot.workers}
+          workerTypes={snapshot.workerTypes}
+          onClose={() => { setWorkerPick(null) }}
+          onPick={startWithWorker}
+        />
+      )}
+      {toast !== null && <div style={toastStyle} role="status">{toast.message}</div>}
+    </div>
+  )
+}
+
+/* ── Pull requests view ── */
+
+function PrsView({ snapshot, connection, pending, showToast, post, refresh, openWorkerPicker }: ViewProps): ReactNode {
   const busyByPr = new Map(snapshot?.prs.map(pr => [pr, findBusyJob(pr, snapshot.jobs)]) ?? [])
   const workingAgentByPr = new Map(snapshot?.prs.map(pr => [pr, findWorkingAgent(pr, snapshot.jobs)]) ?? [])
   const prs = snapshot?.prs ?? []
   const status = snapshot?.prDashboard
 
-  const refresh = (): void => {
-    void post('/api/prs/refresh', {}, 'prs-refresh')
-    onRefresh?.()
+  const runPrAction = (cloneName: string, action: PrAction): void => {
+    if (action === 'merge-base-direct') {
+      void post('/api/pr-action', { name: cloneName, action }, `merge-base-direct:${cloneName}`)
+      return
+    }
+    const defaultWorker = snapshot?.workers.find(worker => worker.enabled)
+    if (defaultWorker === undefined) {
+      showToast('请先添加可用的 Worker', true)
+      return
+    }
+    const available = snapshot?.workerTypes.find(status => status.type === defaultWorker.type)?.available === true
+    if (available !== true) {
+      openWorkerPicker(cloneName, action)
+      return
+    }
+    void post('/api/pr-action', { name: cloneName, action }, `${action}:${cloneName}`)
   }
 
   return (
-    <div style={rootStyle} data-dshw-kanban="root">
+    <>
       {status !== undefined && status.state === 'error' && (
         <div style={errorStripStyle}>
           <span style={errorStripTextStyle}>PR 状态刷新失败，正在显示上次可用数据</span>
@@ -373,7 +462,7 @@ export function PrDashboard({ baseUrl, refreshKey, t, onRefresh }: {
                   workingAgent={workingAgentByPr.get(pr)}
                   pending={pending}
                   onAction={runPrAction}
-                  onChooseWorker={chooseWorker}
+                  onChooseWorker={openWorkerPicker}
                   onToggleSync={(name, enabled) => { void post('/api/sync/toggle', { name, enabled }, `sync-toggle:${name}`) }}
                   onGitAction={(name, action) => { void post('/api/clone/maintenance', { name, action }, `git-maintenance:${name}`) }}
                   onRefresh={refresh}
@@ -383,22 +472,562 @@ export function PrDashboard({ baseUrl, refreshKey, t, onRefresh }: {
           </table>
         )}
       </div>
+    </>
+  )
+}
 
-      {workerPick !== null && snapshot !== undefined && (
-        <WorkerPicker
-          workers={snapshot.workers}
-          workerTypes={snapshot.workerTypes}
-          onClose={() => { setWorkerPick(null) }}
-          onPick={startWithWorker}
+/* ── Reviews view (ReviewRequests.vue port) ── */
+
+function ReviewsView({ snapshot, connection }: ViewProps): ReactNode {
+  const requests = [...(snapshot?.reviewRequests ?? [])]
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+  const status = snapshot?.reviewRequestsStatus
+  return (
+    <>
+      {status !== undefined && status.state === 'error' && (
+        <div style={errorStripStyle}>
+          <span style={errorStripTextStyle}>Reviews 刷新失败，正在显示上次可用数据</span>
+        </div>
+      )}
+      {status !== undefined && status.state === 'loading' && requests.length > 0 && (
+        <div style={loadingStripStyle}>
+          <StatusDot tone="accent" pulse />
+          <span>正在刷新上次保存的 Reviews</span>
+        </div>
+      )}
+      <div style={tableScrollStyle}>
+        {snapshot === undefined && (
+          <div style={emptyStateStyle}>
+            <span style={emptyStateLineStyle}>
+              <StatusDot tone="accent" pulse />
+              <span>{connection === 'reconnecting' ? '正在重新连接 dshw daemon…' : '正在加载待 review 的 PR…'}</span>
+            </span>
+          </div>
+        )}
+        {snapshot !== undefined && requests.length === 0 && (
+          <div style={emptyStateStyle}>
+            <p style={emptyStateTitleStyle}>没有待你 review 的 PR</p>
+            <p style={emptyStateSubStyle}>GitHub 上 request 你 review 的 open PR 会显示在这里</p>
+          </div>
+        )}
+        {snapshot !== undefined && requests.length > 0 && (
+          <table style={{ ...tableStyle, minWidth: 600 }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Pull request</th>
+                <th style={{ ...thStyle, width: 160 }}>作者</th>
+                <th style={{ ...thStyle, width: 110 }}>更新于</th>
+              </tr>
+            </thead>
+            <tbody>
+              {requests.map(pr => (
+                <tr key={pr.number}>
+                  <td style={tdStyle}>
+                    <div style={cellMainStyle}>
+                      <a style={titleLinkStyle} href={pr.url} title={pr.title} target="_blank" rel="noreferrer">
+                        <span style={numberStyle}>#{pr.number}</span>
+                        <span style={{ ...titleStyle, ...(pr.isDraft ? { color: 'var(--dsw-alias-label-secondary)' } : {}) }}>{pr.title}</span>
+                      </a>
+                      {pr.isDraft && <span style={draftBadgeStyle}>草稿</span>}
+                    </div>
+                    <div style={cellSubStyle} title={pr.headRefName}>{pr.headRefName} → {pr.baseRefName}</div>
+                  </td>
+                  <td style={tdStyle}><span style={authorStyle}>@{pr.author}</span></td>
+                  <td style={tdStyle}><span style={timeStyle}>{relativeTimeLabel(pr.updatedAt)}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  )
+}
+
+/* ── Jobs view (JobsTable.vue port) ── */
+
+function JobsView({ baseUrl, snapshot, pending, post }: ViewProps): ReactNode {
+  const [records, setRecords] = useState<JobRecord[]>(() =>
+    sortJobs((snapshot?.jobs ?? []).filter(job => job.type !== 'sync-check')))
+  const [cursor, setCursor] = useState<string>()
+  const [hasMore, setHasMore] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [selected, setSelected] = useState<JobRecord>()
+  const scroller = useRef<HTMLDivElement>(null)
+
+  // Live merge: snapshot.jobs is the authoritative running/current set.
+  useEffect(() => {
+    if (snapshot === undefined) return
+    setRecords(previous => mergeJobs(previous, snapshot.jobs.filter(job => job.type !== 'sync-check')))
+  }, [snapshot])
+
+  const fetchPage = async (before?: string): Promise<JobPage> => {
+    const query = before === undefined ? '' : `?before=${encodeURIComponent(before)}`
+    const response = await fetch(`${baseUrl}/api/jobs${query}`)
+    const value = await response.json() as JobPage & { error?: string }
+    if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`)
+    return value
+  }
+
+  const loadMore = async (): Promise<void> => {
+    if (loading || !hasMore) return
+    setLoading(true)
+    setError('')
+    try {
+      const page = await fetchPage(cursor)
+      setRecords(previous => mergeJobs(previous, page.records))
+      setCursor(page.nextCursor)
+      setHasMore(page.hasMore)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadInitial = async (): Promise<void> => {
+    setLoading(true)
+    setError('')
+    try {
+      const page = await fetchPage()
+      setRecords(previous => mergeJobs(previous, page.records))
+      setCursor(page.nextCursor)
+      setHasMore(page.hasMore)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { void loadInitial() }, [baseUrl]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onScroll = (): void => {
+    const element = scroller.current
+    if (element !== null && element.scrollHeight - element.scrollTop - element.clientHeight < 48) void loadMore()
+  }
+
+  return (
+    <>
+      {records.length === 0 && !loading && (
+        <div style={emptyStateStyle}>
+          <span>{error ? `任务加载失败：${error}` : '暂无任务'}</span>
+          {error !== '' && <button type="button" style={actionLinkStyle} onClick={loadInitial}>重试</button>}
+        </div>
+      )}
+      {records.length > 0 && (
+        <div ref={scroller} style={jobsScrollStyle} onScroll={onScroll}>
+          <table style={{ ...tableStyle, minWidth: 880 }}>
+            <thead>
+              <tr>
+                <th style={{ ...thStyle, width: 110 }}>状态</th>
+                <th style={{ ...thStyle, width: 100 }}>目标</th>
+                <th style={{ ...thStyle, width: 120 }}>执行者</th>
+                <th style={thStyle}>任务</th>
+                <th style={{ ...thStyle, width: 100 }}>时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              {records.map(job => {
+                const sync = job.dshWorker?.sync ?? snapshot?.syncs.find(candidate => candidate.id === job.syncId)
+                const target = sync === undefined ? '全局' : `#${sync.prNumber}`
+                const targetTitle = sync === undefined ? '不针对特定 PR' : `${sync.repoSlug}#${sync.prNumber}\n${sync.branch} → ${sync.baseRefName}`
+                return (
+                  <tr
+                    key={job.id}
+                    tabIndex={0}
+                    onClick={() => { setSelected(job) }}
+                    onKeyDown={event => { if (event.key === 'Enter') setSelected(job) }}
+                  >
+                    <td style={tdCompactStyle}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, whiteSpace: 'nowrap', color: toneColor(jobTone(job.status)) }}>
+                        <StatusDot tone={jobTone(job.status)} pulse={job.status === 'running'} />
+                        {jobLabel(job.status)}
+                      </span>
+                    </td>
+                    <td style={tdCompactStyle}>
+                      <span style={cellBlockStyle} title={targetTitle}>{target}</span>
+                    </td>
+                    <td style={tdCompactStyle}>
+                      <span style={cellBlockStyle} title={jobExecutor(job)}>{jobExecutor(job)}</span>
+                    </td>
+                    <td style={tdCompactStyle}>
+                      <div style={cellNoteRowStyle}>
+                        <span style={jobSummaryStyle} title={job.summary}>{kindLabel(job.type)}</span>
+                        {job.status === 'running' && (
+                          <button
+                            type="button"
+                            style={dangerButtonStyle}
+                            disabled={job.cancelRequestedAt !== undefined || pending.has(`cancel:${job.id}`)}
+                            onClick={(event) => { event.stopPropagation(); void post('/api/jobs/cancel', { jobId: job.id }, `cancel:${job.id}`) }}
+                          >{job.cancelRequestedAt !== undefined ? '终止中' : '终止'}</button>
+                        )}
+                      </div>
+                    </td>
+                    <td style={tdCompactStyle}>
+                      <time style={timeStyle}>{shortTimeLabel(job.finishedAt ?? job.startedAt ?? job.createdAt)}</time>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          <div style={jobsFooterStyle}>
+            {loading && <span>正在加载更多任务…</span>}
+            {!loading && error !== '' && <button type="button" style={actionLinkStyle} onClick={loadMore}>加载失败，重试</button>}
+            {!loading && error === '' && !hasMore && <span>已显示全部任务</span>}
+            {!loading && error === '' && hasMore && <button type="button" style={actionLinkStyle} onClick={loadMore}>加载更多任务</button>}
+          </div>
+        </div>
+      )}
+      {selected !== undefined && (
+        <JobDialog
+          job={selected}
+          baseUrl={baseUrl}
+          pending={pending}
+          post={post}
+          onClose={() => { setSelected(undefined) }}
         />
       )}
+    </>
+  )
+}
 
-      {toast !== null && (
-        <div style={toastStyle} role="status">{toast.message}</div>
+/** Simplified job detail: status, summary, output tail, cancel/pause/steer. */
+function JobDialog({ job, baseUrl, pending, post, onClose }: {
+  job: JobRecord
+  baseUrl: string
+  pending: ReadonlySet<string>
+  post: (path: string, body: object, key: string) => Promise<void>
+  onClose: () => void
+}): ReactNode {
+  const [output, setOutput] = useState<string>()
+  const [steerDraft, setSteerDraft] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${baseUrl}/api/jobs/output?jobId=${encodeURIComponent(job.id)}`)
+      .then(response => response.json() as Promise<{ output?: string }>)
+      .then(value => { if (!cancelled) setOutput(value.output ?? '') })
+      .catch(() => { if (!cancelled) setOutput('') })
+    return () => { cancelled = true }
+  }, [baseUrl, job.id])
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKeyDown)
+    return () => { document.removeEventListener('keydown', onKeyDown) }
+  }, [onClose])
+  const steer = (): void => {
+    if (steerDraft.trim() === '') return
+    void post('/api/jobs/steer', { jobId: job.id, prompt: steerDraft.trim() }, `steer:${job.id}`)
+    setSteerDraft('')
+  }
+  return createPortal(
+    <div style={dialogOverlayStyle} role="presentation" data-dshw-kanban="root">
+      <div style={dialogMaskStyle} aria-hidden="true" onClick={onClose} />
+      <section style={jobDialogStyle} role="dialog" aria-modal="true" aria-label={kindLabel(job.type)}>
+        <header style={dialogHeaderStyle}>
+          <span style={jobDialogTitleStyle}>{kindLabel(job.type)}</span>
+          <span style={{ ...jobDialogStatusStyle, color: toneColor(jobTone(job.status)) }}>
+            <StatusDot tone={jobTone(job.status)} pulse={job.status === 'running'} />
+            {jobLabel(job.status)}
+          </span>
+          <button type="button" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}>✕</button>
+        </header>
+        <div style={jobDialogMetaStyle} title={job.summary}>{job.summary}</div>
+        <div style={jobOutputStyle}>
+          <pre style={jobOutputPreStyle}>{output ?? '正在读取输出…'}</pre>
+        </div>
+        <footer style={jobDialogFooterStyle}>
+          {job.status === 'running' && (
+            <>
+              <button
+                type="button"
+                style={dialogActionButtonStyle}
+                disabled={pending.has(`pause:${job.id}`)}
+                onClick={() => { void post('/api/jobs/pause', { jobId: job.id }, `pause:${job.id}`) }}
+              >暂停</button>
+              <button
+                type="button"
+                style={dangerButtonStyle}
+                disabled={job.cancelRequestedAt !== undefined || pending.has(`cancel:${job.id}`)}
+                onClick={() => { void post('/api/jobs/cancel', { jobId: job.id }, `cancel:${job.id}`) }}
+              >{job.cancelRequestedAt !== undefined ? '终止中' : '终止'}</button>
+              <input
+                style={steerInputStyle}
+                placeholder="发送指令（Steer）"
+                value={steerDraft}
+                onChange={event => { setSteerDraft(event.target.value) }}
+                onKeyDown={event => { if (event.key === 'Enter') steer() }}
+              />
+              <button type="button" style={dialogActionButtonStyle} disabled={steerDraft.trim() === ''} onClick={steer}>发送</button>
+            </>
+          )}
+          <button type="button" style={dialogCancelStyle} onClick={onClose}>关闭</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  )
+}
+
+/* ── Logs view (LogPanel.vue port) ── */
+
+function LogsView({ baseUrl, snapshot, connection }: ViewProps): ReactNode {
+  const [records, setRecords] = useState<EventRecord[]>([])
+  const [cursor, setCursor] = useState<string>()
+  const [hasMore, setHasMore] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [selected, setSelected] = useState<EventRecord>()
+  const scroller = useRef<HTMLDivElement>(null)
+
+  // Merge only records newer than the newest known (LogPanel.vue mergeLive).
+  useEffect(() => {
+    if (snapshot === undefined) return
+    setRecords(previous => {
+      const newest = previous[0]
+      if (newest === undefined) return previous
+      const incoming = snapshot.events
+      const newestIndex = incoming.findIndex(record => record.id === newest.id)
+      const fresh = newestIndex >= 0
+        ? incoming.slice(newestIndex + 1)
+        : incoming.filter(record => Date.parse(record.time) > Date.parse(newest.time))
+      return fresh.length > 0 ? mergeRecords(previous, fresh) : previous
+    })
+  }, [snapshot])
+
+  const fetchPage = async (before?: string): Promise<LogPage> => {
+    const query = before === undefined ? '' : `?before=${encodeURIComponent(before)}`
+    const response = await fetch(`${baseUrl}/api/logs${query}`)
+    const value = await response.json() as LogPage & { error?: string }
+    if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`)
+    return value
+  }
+
+  const loadMore = async (): Promise<void> => {
+    if (loading || !hasMore) return
+    setLoading(true)
+    setError('')
+    try {
+      const page = await fetchPage(cursor)
+      setRecords(previous => mergeRecords(previous, page.records))
+      setCursor(page.nextCursor)
+      setHasMore(page.hasMore)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadInitial = async (): Promise<void> => {
+    setLoading(true)
+    setError('')
+    try {
+      const page = await fetchPage()
+      setRecords(sortRecords(page.records))
+      setCursor(page.nextCursor)
+      setHasMore(page.hasMore)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { void loadInitial() }, [baseUrl]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onScroll = (): void => {
+    const element = scroller.current
+    if (element !== null && element.scrollHeight - element.scrollTop - element.clientHeight < 48) void loadMore()
+  }
+
+  return (
+    <>
+      {records.length === 0 && !loading && (
+        <div style={emptyStateStyle}>
+          <span>{error ? `日志加载失败：${error}` : '暂无日志'}</span>
+          {error !== '' && <button type="button" style={actionLinkStyle} onClick={loadInitial}>重试</button>}
+        </div>
       )}
+      {records.length > 0 && (
+        <div ref={scroller} style={jobsScrollStyle} onScroll={onScroll}>
+          <table style={{ ...tableStyle, minWidth: 760 }}>
+            <thead>
+              <tr>
+                <th style={{ ...thStyle, width: 110 }}>级别</th>
+                <th style={{ ...thStyle, width: 130 }}>来源</th>
+                <th style={thStyle}>日志</th>
+                <th style={{ ...thStyle, width: 100 }}>时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              {records.map(record => (
+                <tr
+                  key={record.id}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`查看日志详情：${record.message}`}
+                  onClick={() => { setSelected(record) }}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelected(record) }
+                  }}
+                >
+                  <td style={tdCompactStyle}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, whiteSpace: 'nowrap', color: toneColor(levelTone(record.level)) }}>
+                      <StatusDot tone={levelTone(record.level)} />
+                      {levelLabel(record.level)}
+                    </span>
+                  </td>
+                  <td style={tdCompactStyle}>
+                    <span style={cellBlockStyle} title={record.kind}>{record.kind}</span>
+                  </td>
+                  <td style={tdCompactStyle}>
+                    <span style={logMessageStyle} title={record.message}>{record.message}</span>
+                  </td>
+                  <td style={tdCompactStyle}>
+                    <time style={timeStyle}>{shortTimeLabel(record.time)}</time>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={jobsFooterStyle}>
+            {loading && <span>正在加载更多日志…</span>}
+            {!loading && error !== '' && <button type="button" style={actionLinkStyle} onClick={loadMore}>加载失败，重试</button>}
+            {!loading && error === '' && !hasMore && <span>已显示全部日志</span>}
+            {!loading && error === '' && hasMore && <button type="button" style={actionLinkStyle} onClick={loadMore}>加载更多日志</button>}
+          </div>
+        </div>
+      )}
+      {selected !== undefined && <LogDialog record={selected} onClose={() => { setSelected(undefined) }} />}
+    </>
+  )
+}
+
+/** Log detail dialog (LogDetailsDialog.vue port). */
+function LogDialog({ record, onClose }: { record: EventRecord; onClose: () => void }): ReactNode {
+  const [copied, setCopied] = useState(false)
+  const copiedTimer = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      if (copiedTimer.current !== undefined) window.clearTimeout(copiedTimer.current)
+    }
+  }, [onClose])
+  const copy = (): void => {
+    void navigator.clipboard.writeText(record.message)
+    setCopied(true)
+    if (copiedTimer.current !== undefined) window.clearTimeout(copiedTimer.current)
+    copiedTimer.current = window.setTimeout(() => { setCopied(false) }, 1_500)
+  }
+  const fullTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'medium', hour12: false }).format(new Date(record.time))
+  return createPortal(
+    <div style={dialogOverlayStyle} role="presentation" data-dshw-kanban="root">
+      <div style={dialogMaskStyle} aria-hidden="true" onClick={onClose} />
+      <section style={logDialogStyle} role="dialog" aria-modal="true" aria-label="日志详情">
+        <header style={dialogHeaderStyle}>
+          <span style={jobDialogTitleStyle}>日志详情</span>
+          <span style={logIdStyle} title={record.id}>{record.id}</span>
+          <button type="button" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}>✕</button>
+        </header>
+        <div style={logMetaStyle}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: toneColor(levelTone(record.level)) }}>
+            <StatusDot tone={levelTone(record.level)} />{levelLabel(record.level)}
+          </span>
+          <span style={logMetaItemStyle}><span style={logMetaKeyStyle}>来源</span><code>{record.kind}</code></span>
+          <span style={logMetaItemStyle}><span style={logMetaKeyStyle}>时间</span><time>{fullTime}</time></span>
+        </div>
+        <div style={logBodyStyle}>
+          <pre style={logBodyPreStyle}>{record.message}</pre>
+        </div>
+        <footer style={dialogFooterStyle}>
+          <button type="button" style={dialogActionButtonStyle} onClick={copy}>{copied ? '已复制' : '复制完整日志'}</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  )
+}
+
+/* ── not-yet-ported views ── */
+
+function PlaceholderView(): ReactNode {
+  return (
+    <div style={emptyStateStyle}>
+      <p style={emptyStateTitleStyle}>该视图的原生移植正在进行中</p>
+      <p style={emptyStateSubStyle}>可点击面板右上角「在浏览器中打开」使用完整 dshw UI。</p>
     </div>
   )
 }
+
+/* ── shared list helpers ── */
+
+function sortJobs(jobs: readonly JobRecord[]): JobRecord[] {
+  return [...jobs].sort((left, right) => (
+    Number(right.status === 'running') - Number(left.status === 'running')
+    || Date.parse(right.createdAt) - Date.parse(left.createdAt)
+    || right.id.localeCompare(left.id)
+  ))
+}
+
+function mergeJobs(previous: readonly JobRecord[], incoming: readonly JobRecord[]): JobRecord[] {
+  const byId = new Map(previous.map(job => [job.id, job]))
+  for (const job of incoming) byId.set(job.id, job)
+  return sortJobs([...byId.values()])
+}
+
+function sortRecords(incoming: readonly EventRecord[]): EventRecord[] {
+  return [...incoming].sort((left, right) => (
+    Date.parse(right.time) - Date.parse(left.time) || right.id.localeCompare(left.id)
+  ))
+}
+
+function mergeRecords(previous: readonly EventRecord[], incoming: readonly EventRecord[]): EventRecord[] {
+  const byId = new Map(previous.map(record => [record.id, record]))
+  for (const record of incoming) byId.set(record.id, record)
+  return sortRecords([...byId.values()])
+}
+
+const jobLabel = (value: string): string =>
+  ({ running: '运行中', succeeded: '已完成', blocked: '无法完成', failed: '失败', cancelled: '已终止', queued: '等待中' })[value] ?? value
+const jobTone = (value: string): Tone =>
+  value === 'succeeded' ? 'ok' : value === 'failed' || value === 'blocked' ? 'bad' : value === 'running' ? 'warn' : 'neutral'
+const kindLabel = (value: string): string =>
+  ({ 'merge-base': '合并 base', 'fix-ci': '修 CI', 'resolve-comments': '解决评论', 'update-dshw': '更新 dshw', 'update-harness': '更新 Harness', 'reconfigure-harness': '从头配置 Harness', 'sync-check': '状态检查' })[value] ?? value
+
+function jobExecutor(job: JobRecord): string {
+  if (job.executor !== undefined) return job.executor
+  if (job.dshWorker === undefined) return '内置'
+  const type = job.dshWorker.handle.workerType
+  return type === 'codex' ? 'Codex' : type === 'claude-code' ? 'Claude Code' : 'dsh'
+}
+
+function relativeTimeLabel(value?: string, now = Date.now()): string {
+  if (value === undefined) return '—'
+  const time = Date.parse(value)
+  if (Number.isNaN(time)) return '—'
+  const seconds = Math.max(0, Math.floor((now - time) / 1000))
+  if (seconds < 10) return '刚刚'
+  if (seconds < 60) return `${seconds} 秒前`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`
+  return `${Math.floor(seconds / 3600)} 小时前`
+}
+
+function shortTimeLabel(value?: string): string {
+  if (value === undefined) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const today = new Date()
+  return date.toDateString() === today.toDateString() ? time : `${date.getMonth() + 1}/${date.getDate()} ${time}`
+}
+
+const levelTone = (level: EventRecord['level']): Tone => level === 'error' ? 'bad' : level === 'warning' ? 'warn' : 'neutral'
+const levelLabel = (level: EventRecord['level']): string => level === 'error' ? '错误' : level === 'warning' ? '警告' : '信息'
 
 /* ── one PR row ── */
 
@@ -1283,4 +1912,309 @@ const toastStyle: CSSProperties = {
   boxShadow: 'var(--dsw-shadow-lv2)',
   fontSize: 12.5,
   color: 'var(--dsw-alias-label-primary)',
+}
+
+/* ── tab bar + view area ── */
+
+const tabbarStyle: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'stretch',
+  height: 38,
+  overflowX: 'auto',
+  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  background: 'var(--dsw-alias-bg-base)',
+}
+
+const tabStyle = (active: boolean): CSSProperties => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '0 12px',
+  border: 'none',
+  borderBottom: active ? '2px solid var(--dsw-alias-state-business-primary)' : '2px solid transparent',
+  background: 'transparent',
+  color: active ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
+  fontFamily: 'inherit',
+  fontSize: 12.5,
+  whiteSpace: 'nowrap',
+  cursor: 'pointer',
+})
+
+const tabCountStyle: CSSProperties = {
+  flex: 'none',
+  minWidth: 16,
+  padding: '0 5px',
+  borderRadius: 8,
+  textAlign: 'center',
+  fontSize: 10.5,
+  lineHeight: '15px',
+  background: 'var(--dsw-alias-interactive-bg-hover)',
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+const viewAreaStyle: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  display: 'flex',
+  flexDirection: 'column',
+}
+
+/* ── reviews / jobs / logs shared cell styles ── */
+
+const authorStyle: CSSProperties = { fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)' }
+
+const timeStyle: CSSProperties = { fontFamily: 'var(--ds-font-family-code)', fontSize: 11, whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-tertiary)' }
+
+const tdCompactStyle: CSSProperties = {
+  height: 32,
+  padding: '0 12px',
+  verticalAlign: 'middle',
+  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+}
+
+const cellBlockStyle: CSSProperties = {
+  display: 'block',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontFamily: 'var(--ds-font-family-code)',
+  fontSize: 11.5,
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+const jobSummaryStyle: CSSProperties = {
+  minWidth: 0,
+  flex: 1,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontSize: 12.5,
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const logMessageStyle: CSSProperties = {
+  display: 'block',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontSize: 12.5,
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+const dangerButtonStyle: CSSProperties = {
+  flex: 'none',
+  marginLeft: 'auto',
+  height: 22,
+  padding: '0 8px',
+  border: '1px solid var(--dsw-alias-state-error-secondary)',
+  borderRadius: 6,
+  background: 'transparent',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  fontSize: 11.5,
+  color: 'var(--dsw-alias-state-error-primary)',
+}
+
+const jobsScrollStyle: CSSProperties = { flex: 1, minHeight: 0, overflow: 'auto' }
+
+const jobsFooterStyle: CSSProperties = {
+  height: 32,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 8,
+  fontSize: 11.5,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+/* ── job dialog ── */
+
+const jobDialogStyle: CSSProperties = {
+  position: 'relative',
+  display: 'flex',
+  flexDirection: 'column',
+  width: 'min(760px, calc(100vw - 48px))',
+  height: 'min(620px, calc(100vh - 48px))',
+  overflow: 'hidden',
+  border: '1px solid var(--dsw-alias-border-l1)',
+  borderRadius: 12,
+  background: 'var(--dsw-alias-bg-base)',
+  boxShadow: 'var(--dsw-shadow-lv2)',
+}
+
+const dialogHeaderStyle: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  minHeight: 46,
+  padding: '0 12px',
+  boxSizing: 'border-box',
+  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+}
+
+const jobDialogTitleStyle: CSSProperties = { fontSize: 13.5, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
+
+const jobDialogStatusStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, whiteSpace: 'nowrap' }
+
+const dialogCloseButtonStyle: CSSProperties = {
+  marginLeft: 'auto',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 28,
+  height: 28,
+  border: 'none',
+  borderRadius: 6,
+  background: 'transparent',
+  cursor: 'pointer',
+  color: 'var(--dsw-alias-label-secondary)',
+  fontFamily: 'inherit',
+  fontSize: 13,
+}
+
+const jobDialogMetaStyle: CSSProperties = {
+  flex: 'none',
+  minHeight: 34,
+  padding: '6px 14px',
+  boxSizing: 'border-box',
+  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  fontSize: 11.5,
+  color: 'var(--dsw-alias-label-secondary)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+}
+
+const jobOutputStyle: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  overflow: 'auto',
+  background: 'var(--dsw-alias-bg-base)',
+}
+
+const jobOutputPreStyle: CSSProperties = {
+  minHeight: '100%',
+  margin: 0,
+  padding: 14,
+  boxSizing: 'border-box',
+  fontFamily: 'var(--ds-font-family-code)',
+  fontSize: 12,
+  lineHeight: 1.6,
+  whiteSpace: 'pre-wrap',
+  overflowWrap: 'anywhere',
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const jobDialogFooterStyle: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  minHeight: 48,
+  padding: '0 12px',
+  boxSizing: 'border-box',
+  borderTop: '1px solid var(--dsw-alias-border-l2)',
+}
+
+const dialogActionButtonStyle: CSSProperties = {
+  height: 28,
+  padding: '0 12px',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 7,
+  background: 'transparent',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  fontSize: 12,
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+const steerInputStyle: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  height: 28,
+  padding: '0 10px',
+  boxSizing: 'border-box',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 7,
+  outline: 'none',
+  background: 'transparent',
+  fontFamily: 'inherit',
+  fontSize: 12,
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+/* ── log dialog ── */
+
+const logDialogStyle: CSSProperties = {
+  position: 'relative',
+  display: 'flex',
+  flexDirection: 'column',
+  width: 'min(760px, calc(100vw - 48px))',
+  height: 'min(620px, calc(100vh - 48px))',
+  overflow: 'hidden',
+  border: '1px solid var(--dsw-alias-border-l1)',
+  borderRadius: 12,
+  background: 'var(--dsw-alias-bg-base)',
+  boxShadow: 'var(--dsw-shadow-lv2)',
+}
+
+const logIdStyle: CSSProperties = {
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontFamily: 'var(--ds-font-family-code)',
+  fontSize: 10.5,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+const logMetaStyle: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  flexWrap: 'wrap',
+  gap: '5px 18px',
+  minHeight: 42,
+  padding: '8px 14px',
+  boxSizing: 'border-box',
+  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  fontSize: 11.5,
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+const logMetaItemStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }
+
+const logMetaKeyStyle: CSSProperties = { color: 'var(--dsw-alias-label-tertiary)' }
+
+const logBodyStyle: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  overflow: 'auto',
+  background: 'var(--dsw-alias-bg-base)',
+}
+
+const logBodyPreStyle: CSSProperties = {
+  minHeight: '100%',
+  margin: 0,
+  padding: 16,
+  boxSizing: 'border-box',
+  fontFamily: 'var(--ds-font-family-code)',
+  fontSize: 12.5,
+  lineHeight: 1.65,
+  whiteSpace: 'pre-wrap',
+  overflowWrap: 'anywhere',
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const dialogFooterStyle: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'flex-end',
+  minHeight: 48,
+  padding: '0 12px',
+  boxSizing: 'border-box',
+  borderTop: '1px solid var(--dsw-alias-border-l2)',
 }

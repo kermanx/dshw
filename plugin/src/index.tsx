@@ -20,7 +20,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { en, zh } from './locales.ts'
-import { PrDashboard } from './pr-dashboard.tsx'
+import { KanbanWorkspace } from './pr-dashboard.tsx'
 
 /** Locale namespace owned by this plugin. */
 const NS = 'kanban'
@@ -251,7 +251,7 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
         </header>
         {status === 'checking' && <div style={loadingStyle}>{t('panel.loading')}</div>}
         {status === 'ready' && (
-          <PrDashboard
+          <KanbanWorkspace
             baseUrl={baseUrl}
             refreshKey={refreshKey}
             t={t}
