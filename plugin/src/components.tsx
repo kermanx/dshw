@@ -7,12 +7,14 @@ import { popoverStyle, popoverTriggerStyle } from './styles.ts'
 /* ── tiny primitives ── */
 
 /** Hover popover anchored near the trigger (Teleport port of the Vue popovers). */
-export function HoverPopover({ label, width, children, render, maxHeight }: {
+export function HoverPopover({ label, width, children, render, maxHeight, hoverClass = 'dshw-trigger' }: {
   label: string
   width: number
   children: (open: boolean, setOpen: (v: boolean) => void) => ReactNode
   render: (close: () => void) => ReactNode
   maxHeight: number
+  /** Hover-state class applied to the trigger (default: underline + darken). */
+  hoverClass?: string
 }): ReactNode {
   const triggerRef = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState(false)
@@ -40,6 +42,7 @@ export function HoverPopover({ label, width, children, render, maxHeight }: {
       <button
         ref={triggerRef}
         type="button"
+        className={hoverClass}
         aria-expanded={open}
         aria-label={label}
         style={popoverTriggerStyle}

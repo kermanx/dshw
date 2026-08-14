@@ -149,7 +149,6 @@ export const gitChipStyle: CSSProperties = {
   fontWeight: 600,
   color: warn,
   cursor: 'pointer',
-  background: 'transparent',
   border: 'none',
   lineHeight: '18px',
 }
@@ -164,9 +163,7 @@ export const popoverTriggerStyle: CSSProperties = {
   minWidth: 0,
   padding: 0,
   border: 'none',
-  background: 'transparent',
   cursor: 'pointer',
-  color: C_SECONDARY,
   fontFamily: 'inherit',
   fontSize: 12.5,
   textAlign: 'left',

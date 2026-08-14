@@ -470,7 +470,7 @@ export function LocalGitChip({ status, pending, onAction }: {
     if (confirmed) onAction(action)
   }
   return (
-    <HoverPopover label="本地 Git 状态与操作" width={240} maxHeight={300} render={close => (
+    <HoverPopover label="本地 Git 状态与操作" width={240} maxHeight={300} hoverClass="dshw-chip" render={close => (
       <div>
         {status.unstaged && <PopoverAction label="撤销未暂存" badge="*" disabled={pending || status.merging} title={status.merging ? '请先终止 merge' : ''} onClick={() => run('discard-unstaged')} />}
         {status.staged && <PopoverAction label="撤销未提交" badge="+" disabled={pending || status.unstaged || status.merging} title={status.merging ? '请先终止 merge' : status.unstaged ? '请先撤销未暂存' : ''} onClick={() => run('discard-staged')} />}

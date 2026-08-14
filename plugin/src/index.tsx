@@ -77,6 +77,10 @@ const STYLE_TEXT = `
 [data-dshw-kanban="githash"]:hover { color: #006ab1; text-decoration: underline; }
 [data-dshw-kanban="gitpr"]:hover { color: #006ab1; text-decoration: underline; }
 .dshw-link:hover { text-decoration: underline; }
+[data-dshw-kanban="root"] .dshw-trigger { color: #616161; }
+[data-dshw-kanban="root"] .dshw-trigger:hover { color: #333333; text-decoration: underline; }
+[data-dshw-kanban="root"] .dshw-chip { background: transparent; }
+[data-dshw-kanban="root"] .dshw-chip:hover { background: rgba(191, 136, 3, .12); }
 .dshw-nav:hover { background: #f0f0f0; }
 .dshw-poprow:hover { background: #f0f0f0; }
 [data-dshw-kanban="loadmore"]:hover { background: #f0f0f0; }
