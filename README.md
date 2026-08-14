@@ -42,8 +42,9 @@ CLI 会逐步显示当前阶段、耗时，并在长时间操作中持续报告�
 # 1. daemon 已启动后，把本仓库安装进 dsh 的 web profile
 dsh plugin --profile web add "$PWD"
 
-# 2. 重启你的 dsh web 服务（停掉后重新运行 `dsh web` / `pnpm dsh web`），
-#    刷新页面即可在左侧栏底部看到"看板"入口
+# 2. 重启你的 dsh web 服务（停掉后重新运行 `dsh web` / `pnpm dsh web`）
+#    插件列表在启动时组装，新增插件必须重启才会生效；
+#    重启后刷新页面即可在左侧栏底部看到"看板"入口
 ```
 
 安装后，看板占据左侧栏右侧全部空间（侧栏保持可见），包含 Pull requests / Reviews /
