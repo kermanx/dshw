@@ -217,6 +217,7 @@ function HoverPopover({ label, width, children, render, maxHeight }: {
       </button>
       {open && createPortal(
         <div
+          data-dshw-kanban="root"
           style={{ ...popoverStyle, top: position.top, left: position.left, width: Math.min(width, window.innerWidth - 16), maxHeight }}
           onMouseEnter={show}
           onMouseLeave={hideSoon}
@@ -324,7 +325,7 @@ export function PrDashboard({ baseUrl, refreshKey, t, onRefresh }: {
   }
 
   return (
-    <div style={rootStyle}>
+    <div style={rootStyle} data-dshw-kanban="root">
       {status !== undefined && status.state === 'error' && (
         <div style={errorStripStyle}>
           <span style={errorStripTextStyle}>PR 状态刷新失败，正在显示上次可用数据</span>
@@ -797,7 +798,7 @@ function WorkerPicker({ workers, workerTypes, onClose, onPick }: {
     return () => { document.removeEventListener('keydown', onKeyDown) }
   }, [onClose])
   return createPortal(
-    <div style={dialogOverlayStyle} role="presentation">
+    <div style={dialogOverlayStyle} role="presentation" data-dshw-kanban="root">
       <div style={dialogMaskStyle} aria-hidden="true" onClick={onClose} />
       <div style={dialogStyle} role="dialog" aria-modal="true" aria-label="选择 Worker">
         <div style={dialogTitleStyle}>选择 Worker 执行任务</div>

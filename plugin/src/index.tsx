@@ -32,12 +32,26 @@ const URL_STORAGE_KEY = 'dshw.kanban.baseUrl'
 /** Unique style-tag id so repeated mounts (HMR) never duplicate rules. */
 const STYLE_ID = 'dshw-kanban-styles'
 
-/** Static rules for hover/selected states inline styles cannot express. The
- *  tokens mirror the sidebar list rows (Rows.module.css): the same interactive
- *  fill serves hover and selection. */
+/** Static rules for hover/selected states and the scoped isolation reset.
+ *  The harness page has no global box-sizing reset and its plugin sheets can
+ *  leak into this panel, so every dshw surface (dashboard root, hover
+ *  popovers, dialogs — all marked `data-dshw-kanban="root"`) re-establishes a
+ *  baseline: border-box sizing, zeroed margins, neutral table/link/button
+ *  defaults. Inline styles on the elements themselves still win where they
+ *  differ; the tokens (--dsw-*) are inherited, not reset. */
 const STYLE_TEXT = `
-[data-dshw-kanban="trigger"],
-[data-dshw-kanban="icon"] { background: transparent; }
+[data-dshw-kanban="root"] *,
+[data-dshw-kanban="root"] *::before,
+[data-dshw-kanban="root"] *::after { box-sizing: border-box; margin: 0; padding: 0; }
+[data-dshw-kanban="root"] { font-family: var(--dsw-font-family); font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); }
+[data-dshw-kanban="root"] table { border-collapse: collapse; border-spacing: 0; }
+[data-dshw-kanban="root"] td,
+[data-dshw-kanban="root"] th { text-align: left; vertical-align: middle; }
+[data-dshw-kanban="root"] a { color: inherit; text-decoration: none; }
+[data-dshw-kanban="root"] button { font-family: inherit; font-size: inherit; line-height: inherit; appearance: none; -webkit-appearance: none; background: none; border: none; color: inherit; cursor: pointer; }
+[data-dshw-kanban="root"] input { font-family: inherit; }
+[data-dshw-kanban="root"] p { margin: 0; }
+[data-dshw-kanban="root"] img { border: 0; }
 [data-dshw-kanban="trigger"]:hover,
 [data-dshw-kanban="trigger"][data-selected],
 [data-dshw-kanban="icon"]:hover { background: var(--dsw-alias-interactive-bg-hover); }
@@ -198,7 +212,7 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
 
   return createPortal(
     <div style={overlayStyle(left)} role="presentation">
-      <section style={panelStyle} role="dialog" aria-modal="true" aria-label={t('panel.title')}>
+      <section style={panelStyle} role="dialog" aria-modal="true" aria-label={t('panel.title')} data-dshw-kanban="root">
         <header style={headerStyle}>
           <span style={titleStyle}>{t('panel.title')}</span>
           <span style={actionsStyle}>
@@ -271,6 +285,7 @@ const layerStyle: CSSProperties = {
   flex: 'none',
   display: 'flex',
   alignItems: 'center',
+  width: '100%',
   height: 49,
   margin: '8px 0 0',
 }
@@ -278,10 +293,12 @@ const layerStyle: CSSProperties = {
 const triggerStyle = (wide: boolean): CSSProperties => ({
   display: 'inline-flex',
   alignItems: 'center',
-  justifyContent: 'center',
+  justifyContent: wide ? 'flex-start' : 'center',
   gap: 8,
+  width: wide ? '100%' : 36,
   height: 36,
-  padding: wide ? '0 12px 0 8px' : 0,
+  padding: wide ? '0 12px 0 6px' : 0,
+  boxSizing: 'border-box',
   border: 'none',
   borderRadius: wide ? 8 : '50%',
   color: 'var(--dsw-alias-label-primary)',
