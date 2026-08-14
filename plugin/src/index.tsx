@@ -85,6 +85,9 @@ const STYLE_TEXT = `
 .dshw-btn-default:hover { background: #f3f3f3; }
 .dshw-btn-ghost:hover { background: #f0f0f0; }
 [data-dshw-kanban="row"] { transition: background-color 100ms; }
+/* While the kanban board is open the sidebar session list shows no current
+   selection (visual only — the real session stays current). */
+body[data-dshw-kanban-open] [role="treeitem"][aria-selected="true"] { background: transparent; }
 `
 
 /** The framework-injected locale seat type (entry `locale` option). */
@@ -145,6 +148,15 @@ export function KanbanFooterAction({ wide, t }: KanbanFooterActionProps): ReactN
   // workspace group headers lack aria-selected). A document-level capture
   // listener fires for clicks anywhere, including the sidebar, and closes the
   // board — no core changes needed.
+  // While the board is open the current session's selected highlight in the
+  // sidebar is suppressed (visual only): a body marker + the scoped rule
+  // below. Removing the marker on close restores the normal selected state.
+  useEffect(() => {
+    if (open) document.body.setAttribute('data-dshw-kanban-open', '')
+    else document.body.removeAttribute('data-dshw-kanban-open')
+    return () => { document.body.removeAttribute('data-dshw-kanban-open') }
+  }, [open])
+
   useEffect(() => {
     if (!open) return
     const onDocumentClick = (event: MouseEvent): void => {
