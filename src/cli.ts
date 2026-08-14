@@ -2,7 +2,6 @@
 
 import { access } from 'node:fs/promises'
 import { formatClonePath, resolveClone } from './clone.ts'
-import { resolveCommandTarget } from './command-target.ts'
 import { CODE_WORKSPACE_FILE, DSHW_ROOT, HOST, PORT, SERVICE_LABEL, SERVICE_PLIST } from './config.ts'
 import { ensureHarnessRuntime } from './dsh-runtime.ts'
 import { ensureInstallation, ensureManagedHarness, readInstallation, type InstallationRecord } from './install.ts'
@@ -27,8 +26,7 @@ try {
       requireAtMostOne(args)
       const installation = await progressStep('初始化本地数据目录', ensureInstallation)
       await progressStep('准备托管仓库（首次运行需要 clone）', () => ensureManagedHarness(installation))
-      const target = resolveCommandTarget(args[0])
-      const clone = await progressStep('查找或创建当前分支的 worktree', () => resolveClone(target.cloneName, target.cwd))
+      const clone = await progressStep('查找或创建当前分支的 worktree', () => resolveClone(args[0], process.cwd()))
       await progressStep('打开 VS Code', () => runOrThrow('code', [clone.path]))
       console.log(formatClonePath(clone))
       break

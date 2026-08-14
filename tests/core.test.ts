@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { removeCloneRecord, validateCloneName } from '../src/clone.ts'
-import { resolveCommandTarget } from '../src/command-target.ts'
 import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, maintainClone, mergeConflictPaths, repoSlugFromRemote } from '../src/git.ts'
 import { assessCiAutoFix, ciLaneKey, rollupChecks, selectCiAutoFixChecks, summarizeChecks } from '../src/github.ts'
 import { AGENT_STEER_INTERVAL_MS, CLONES_ROOT, DSHW_ROOT } from '../src/config.ts'
@@ -241,24 +240,6 @@ test('requires an explicit cleanup decision for local worktree content', () => {
   assert.equal(worktreeNeedsCleanupDecision({ staged: true, unstaged: false, merging: false, ahead: 0, behind: 0 }), true)
   assert.equal(worktreeNeedsCleanupDecision({ staged: false, unstaged: true, merging: false, ahead: 0, behind: 0 }), true)
   assert.equal(worktreeNeedsCleanupDecision({ staged: false, unstaged: false, merging: false, ahead: 1, behind: 0 }), true)
-})
-
-test('treats a numeric command argument as a workspace repository id', () => {
-  const workspace = '/Users/example/workspace'
-  assert.deepEqual(resolveCommandTarget(undefined, '/current', workspace), { cloneName: undefined, cwd: '/current' })
-  assert.deepEqual(resolveCommandTarget('named', '/current', workspace), { cloneName: 'named', cwd: '/current' })
-  assert.deepEqual(resolveCommandTarget('0', '/anywhere', workspace), {
-    cloneName: undefined,
-    cwd: '/Users/example/workspace/deepseek-harness',
-  })
-  assert.deepEqual(resolveCommandTarget('3', '/anywhere', workspace), {
-    cloneName: undefined,
-    cwd: '/Users/example/workspace/deepseek-harness-3',
-  })
-  assert.deepEqual(resolveCommandTarget('003', '/anywhere', workspace), {
-    cloneName: undefined,
-    cwd: '/Users/example/workspace/deepseek-harness-3',
-  })
 })
 
 test('recognizes repositories inside the workflow clone directory', () => {

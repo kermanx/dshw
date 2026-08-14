@@ -29,7 +29,6 @@ export const SERVICE_PLIST = resolve(process.env.DSHW_SERVICE_PLIST ?? join(home
 export const PORT = parsePort(process.env.DSHW_PORT)
 export const HOST = '127.0.0.1'
 export const DEV_MODE = process.env.DSHW_DEV_MODE === '1'
-export const WORKSPACE_ROOT = resolve(homedir(), 'workspace')
 export const REF_WATCH_INTERVAL_MS = 60 * 1000
 export const PR_WATCH_INTERVAL_MS = 60 * 1000
 export const PR_DISCOVERY_INTERVAL_MS = 5 * 60 * 1000

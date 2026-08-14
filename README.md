@@ -78,7 +78,7 @@ DEEPSEEK_API_KEY=...
 一般不需要全局安装；从 clone 中运行 `pnpm dshw ...` 即可。如果希望直接使用 `dshw` 命令：
 
 ```sh
-cd ~/workspace/dshw
+cd <你的 dshw clone 目录>
 pnpm add --global "$(pwd)"
 dshw status
 ```
@@ -149,11 +149,9 @@ pnpm dshw start              # 初始化并启动后台服务（构建插件 bun
 pnpm dshw stop               # 停止后台服务
 pnpm dshw restart            # 构建插件 bundle 并安全重启
 pnpm dshw status             # 查看服务摘要
-pnpm dshw code [name|repo-id] # 打开当前分支对应的 worktree
+pnpm dshw code [name]        # 打开当前分支对应的 worktree
 pnpm dshw doctor             # 检查本机依赖和服务状态
 ```
-
-纯数字 `repo-id` 对应 `~/workspace/deepseek-harness-<id>`；`0` 对应 `~/workspace/deepseek-harness`。省略参数时使用当前 Git 仓库和分支。
 
 ## 开发
 
