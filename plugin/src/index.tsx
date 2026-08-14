@@ -16,8 +16,9 @@ import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  IconBranchOutline16, IconCloseOutline16, IconCodeOutline16, IconRefreshOutline16, Tooltip,
+  IconBranchOutline16, IconCloseOutline16, IconRefreshOutline16, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { GVsCode } from './icons.tsx'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { en, zh } from './locales.ts'
 import { KanbanWorkspace } from './workspace.tsx'
@@ -308,7 +309,7 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
               onClick={openCodeWorkspace}
               style={iconButtonStyle}
             >
-              <IconCodeOutline16 size={14} />
+              <GVsCode size={14} />
             </button>
             <button
               type="button"

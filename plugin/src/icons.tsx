@@ -157,3 +157,10 @@ export const GSettings = ({ size = 15 }: { size?: number }): ReactNode => (
     <circle cx="12" cy="12" r="3" />
   </Lucide>
 )
+
+/** VS Code logo (fill glyph; the official four-quadrant mark). */
+export const GVsCode = ({ size = 14 }: { size?: number }): ReactNode => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <path d="M17.7 1.3a1 1 0 0 0-.9-.2L4.8 6.3l-2.4-2a1 1 0 0 0-1.1 0L.2 5.2a1 1 0 0 0-.2 1.4L3.5 12 .1 17.4a1 1 0 0 0 .2 1.4l1.1.9a1 1 0 0 0 1.1 0l2.4-2 12 5.2a1 1 0 0 0 1.4-.9V2.2a1 1 0 0 0-.6-.9zM16.8 6.2 9.2 12l7.6 5.8z" />
+  </svg>
+)
