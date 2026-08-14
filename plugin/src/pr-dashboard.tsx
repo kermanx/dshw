@@ -414,8 +414,11 @@ function PrRow({ pr, jobs, busy, workingAgent, pending, onAction, onChooseWorker
   onGitAction: (cloneName: string, action: GitAction) => void
   onRefresh: () => void
 }): ReactNode {
-  const row = (): ReactNode => (
-    <tr style={trStyle}>
+  // One <tr> per row — no <tbody> wrapper per row: nested tbodys are invalid
+  // markup and the engine drops the row from the fixed column model, which
+  // drifts the header/body columns apart. Draft dimming rides the row itself.
+  return (
+    <tr style={pr.isDraft ? draftRowStyle : trStyle}>
       <td style={tdStyle}>
         <div style={cellMainStyle}>
           <a style={titleLinkStyle} href={pr.url} title={pr.title} target="_blank" rel="noreferrer">
@@ -471,7 +474,6 @@ function PrRow({ pr, jobs, busy, workingAgent, pending, onAction, onChooseWorker
       </td>
     </tr>
   )
-  return pr.isDraft ? <tbody style={draftRowStyle}>{row()}</tbody> : <tbody>{row()}</tbody>
 }
 
 /* ── column cells ── */
@@ -900,7 +902,11 @@ const tableScrollStyle: CSSProperties = {
 const tableStyle: CSSProperties = {
   width: '100%',
   minWidth: 900,
-  borderCollapse: 'collapse',
+  /* separate + spacing 0 (not collapse): with collapse, a sticky th breaks
+     the table-layout:fixed column model in Chromium and the body cells fall
+     back to content sizing — the header/body columns drift apart. */
+  borderCollapse: 'separate',
+  borderSpacing: 0,
   tableLayout: 'fixed',
 }
 
