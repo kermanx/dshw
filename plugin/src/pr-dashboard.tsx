@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  IconBranchOutline16, IconCodeOutline16, IconInspectOutline12,
+  IconBranchOutline16, IconInspectOutline12,
   IconListPenOutline16, IconSettingsOutline16, IconUserOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { CommitGraph } from '@dreamcatcher-tech/commit-graph'
@@ -232,6 +232,22 @@ const GClose = ({ size = 15 }: { size?: number }): ReactNode => (
     <path d="m6 6 12 12" />
   </Lucide>
 )
+const GGitGraph = ({ size = 15 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <circle cx="5" cy="6" r="3" />
+    <path d="M5 9v6" />
+    <circle cx="5" cy="18" r="3" />
+    <path d="M12 3v18" />
+    <circle cx="19" cy="6" r="3" />
+    <path d="M16 15.7A9 9 0 0 0 19 9" />
+  </Lucide>
+)
+const GSettings = ({ size = 15 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+    <circle cx="12" cy="12" r="3" />
+  </Lucide>
+)
 
 const ciTone = (value: string): Tone => value === 'passed' ? 'ok' : value === 'failed' ? 'bad' : value === 'pending' ? 'warn' : 'neutral'
 const reviewTone = (value: string): Tone => value === 'APPROVED' ? 'ok' : value === 'CHANGES_REQUESTED' ? 'bad' : 'neutral'
@@ -411,7 +427,7 @@ type ViewId = 'prs' | 'reviews' | 'git' | 'jobs' | 'logs' | 'settings'
 const VIEW_TABS: ReadonlyArray<{ id: ViewId; icon: (p: { size?: number }) => ReactNode; label: string; count: (s: KanbanSnapshot) => number }> = [
   { id: 'prs', icon: IconBranchOutline16, label: 'Pull requests', count: s => s.prs.length },
   { id: 'reviews', icon: IconUserOutline16, label: 'Reviews', count: s => s.reviewRequests.length },
-  { id: 'git', icon: IconCodeOutline16, label: 'Git', count: () => 0 },
+  { id: 'git', icon: GGitGraph, label: 'Git', count: () => 0 },
   { id: 'jobs', icon: IconListPenOutline16, label: 'Jobs', count: s => s.service.activeJobs },
   { id: 'logs', icon: IconInspectOutline12, label: 'Logs', count: () => 0 },
   { id: 'settings', icon: IconSettingsOutline16, label: 'Settings', count: () => 0 },
@@ -1652,7 +1668,7 @@ const errorStripStyle: CSSProperties = {
   gap: 7,
   minHeight: 32,
   padding: '0 12px',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
   fontSize: 12,
   color: C_SECONDARY,
   background: C_WARN_SOFT,
@@ -1667,7 +1683,7 @@ const loadingStripStyle: CSSProperties = {
   gap: 7,
   minHeight: 32,
   padding: '0 12px',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
   fontSize: 12,
   color: C_SECONDARY,
   background: C_HOVER,
@@ -1696,7 +1712,7 @@ const tableStyle: CSSProperties = {
 const thStyle: CSSProperties = {
   height: 30,
   padding: '0 12px',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
   textAlign: 'left',
   whiteSpace: 'nowrap',
   fontSize: 11,
@@ -1716,7 +1732,7 @@ const tdStyle: CSSProperties = {
   height: 54,
   padding: '5px 12px',
   verticalAlign: 'middle',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
 }
 
 const draftRowStyle: CSSProperties = { opacity: 0.7, filter: 'saturate(0.5)' }
@@ -1906,7 +1922,7 @@ const popoverStyle: CSSProperties = {
   zIndex: 120,
   overflow: 'auto',
   padding: 4,
-  border: '1px solid C_BORDER',
+  border: `1px solid ${C_BORDER}`,
   borderRadius: 8,
   background: C_SURFACE,
   boxShadow: C_SHADOW_POP,
@@ -1933,7 +1949,7 @@ const popoverRowBadgeStyle: CSSProperties = { display: 'inline-flex', alignItems
 
 const popoverSectionStyle: CSSProperties = { paddingBottom: 4 }
 
-const popoverSectionSpacedStyle: CSSProperties = { marginTop: 3, paddingTop: 4, borderTop: '1px solid C_BORDER' }
+const popoverSectionSpacedStyle: CSSProperties = { marginTop: 3, paddingTop: 4, borderTop: `1px solid ${C_BORDER}` }
 
 const popoverSectionTitleStyle: CSSProperties = { padding: '4px 7px', fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: C_MUTED }
 
@@ -1943,7 +1959,7 @@ const avatarStyle: CSSProperties = { width: 20, height: 20, borderRadius: '50%',
 
 const avatarStackStyle: CSSProperties = { display: 'inline-flex', flex: 'none', alignItems: 'center', paddingLeft: 3 }
 
-const stackAvatarStyle: CSSProperties = { width: 16, height: 16, marginLeft: -3, borderRadius: '50%', flex: 'none', objectFit: 'cover', border: '1px solid C_SURFACE' }
+const stackAvatarStyle: CSSProperties = { width: 16, height: 16, marginLeft: -3, borderRadius: '50%', flex: 'none', objectFit: 'cover', border: `1px solid ${C_SURFACE}` }
 
 const stackMoreStyle: CSSProperties = { marginLeft: 3, fontSize: 10.5, color: C_MUTED }
 
@@ -1985,7 +2001,7 @@ const dialogStyle: CSSProperties = {
   maxWidth: 'calc(100vw - 32px)',
   padding: 16,
   boxSizing: 'border-box',
-  border: '1px solid C_BORDER',
+  border: `1px solid ${C_BORDER}`,
   borderRadius: 12,
   background: C_SURFACE,
   boxShadow: C_SHADOW_POP,
@@ -2019,7 +2035,7 @@ const dialogInputStyle: CSSProperties = {
   height: 34,
   padding: '0 10px',
   boxSizing: 'border-box',
-  border: '1px solid C_BORDER',
+  border: `1px solid ${C_BORDER}`,
   borderRadius: 8,
   outline: 'none',
   background: 'transparent',
@@ -2067,7 +2083,7 @@ const toastStyle: CSSProperties = {
   zIndex: 140,
   maxWidth: 420,
   padding: '8px 14px',
-  border: '1px solid C_BORDER',
+  border: `1px solid ${C_BORDER}`,
   borderRadius: 8,
   background: C_SURFACE,
   boxShadow: C_SHADOW_POP,
@@ -2083,7 +2099,7 @@ const tabbarStyle: CSSProperties = {
   alignItems: 'stretch',
   height: 35,
   overflowX: 'auto',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
   background: C_WIDGET,
 }
 
@@ -2132,7 +2148,7 @@ const tdCompactStyle: CSSProperties = {
   height: 32,
   padding: '0 12px',
   verticalAlign: 'middle',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
 }
 
 const cellBlockStyle: CSSProperties = {
@@ -2170,7 +2186,7 @@ const dangerButtonStyle: CSSProperties = {
   marginLeft: 'auto',
   height: 22,
   padding: '0 8px',
-  border: '1px solid C_DANGER',
+  border: `1px solid ${C_DANGER}`,
   borderRadius: 6,
   background: 'transparent',
   cursor: 'pointer',
@@ -2200,7 +2216,7 @@ const jobDialogStyle: CSSProperties = {
   width: 'min(760px, calc(100vw - 48px))',
   height: 'min(620px, calc(100vh - 48px))',
   overflow: 'hidden',
-  border: '1px solid C_BORDER',
+  border: `1px solid ${C_BORDER}`,
   borderRadius: 12,
   background: C_SURFACE,
   boxShadow: C_SHADOW_POP,
@@ -2214,7 +2230,7 @@ const dialogHeaderStyle: CSSProperties = {
   minHeight: 46,
   padding: '0 12px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
 }
 
 const jobDialogTitleStyle: CSSProperties = { fontSize: 13.5, fontWeight: 600, color: C_TEXT }
@@ -2242,7 +2258,7 @@ const jobDialogMetaStyle: CSSProperties = {
   minHeight: 34,
   padding: '6px 14px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
   fontSize: 11.5,
   color: C_SECONDARY,
   overflow: 'hidden',
@@ -2278,7 +2294,7 @@ const jobDialogFooterStyle: CSSProperties = {
   minHeight: 48,
   padding: '0 12px',
   boxSizing: 'border-box',
-  borderTop: '1px solid C_BORDER',
+  borderTop: `1px solid ${C_BORDER}`,
 }
 
 const dialogActionButtonStyle: CSSProperties = {
@@ -2299,7 +2315,7 @@ const steerInputStyle: CSSProperties = {
   height: 28,
   padding: '0 10px',
   boxSizing: 'border-box',
-  border: '1px solid C_BORDER',
+  border: `1px solid ${C_BORDER}`,
   borderRadius: 7,
   outline: 'none',
   background: 'transparent',
@@ -2317,7 +2333,7 @@ const logDialogStyle: CSSProperties = {
   width: 'min(760px, calc(100vw - 48px))',
   height: 'min(620px, calc(100vh - 48px))',
   overflow: 'hidden',
-  border: '1px solid C_BORDER',
+  border: `1px solid ${C_BORDER}`,
   borderRadius: 12,
   background: C_SURFACE,
   boxShadow: C_SHADOW_POP,
@@ -2341,7 +2357,7 @@ const logMetaStyle: CSSProperties = {
   minHeight: 42,
   padding: '8px 14px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
   fontSize: 11.5,
   color: C_SECONDARY,
 }
@@ -2378,7 +2394,7 @@ const dialogFooterStyle: CSSProperties = {
   minHeight: 48,
   padding: '0 12px',
   boxSizing: 'border-box',
-  borderTop: '1px solid C_BORDER',
+  borderTop: `1px solid ${C_BORDER}`,
 }
 
 /* ── Git view (GitTree.vue port, reusing @dreamcatcher-tech/commit-graph) ── */
@@ -2567,7 +2583,7 @@ function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: number 
       <aside style={gitSidebarStyle}>
         <div style={gitSidebarHeaderStyle}>
           <div style={gitSidebarTitleStyle}>
-            <IconCodeOutline16 size={14} />
+            <span style={{ display: 'inline-flex', flex: 'none', color: C_ACCENT }}><GGitGraph size={14} /></span>
             <span style={gitSidebarTitleTextStyle}>{graph?.repoSlug ?? 'Git tree'}</span>
           </div>
           <div style={gitSidebarSubStyle}>
@@ -2720,13 +2736,13 @@ const gitLayoutStyle: CSSProperties = {
 const gitSidebarStyle: CSSProperties = {
   minHeight: 0,
   overflowY: 'auto',
-  borderRight: '1px solid C_BORDER',
+  borderRight: `1px solid ${C_BORDER}`,
   background: C_SURFACE,
 }
 
 const gitSidebarHeaderStyle: CSSProperties = {
   padding: '10px 12px',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
 }
 
 const gitSidebarTitleStyle: CSSProperties = {
@@ -2816,7 +2832,7 @@ const gitToolbarStyle: CSSProperties = {
   height: 36,
   padding: '0 12px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
   fontSize: 11.5,
   color: C_MUTED,
 }
@@ -3193,7 +3209,7 @@ function SettingsView(props: ViewProps): ReactNode {
             <GRepository size={12} />仓库管理
           </button>
           <button type="button" className="dshw-nav" style={section === 'workers' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('workers') }}>
-            Workers
+            <GSettings size={12} />Workers
           </button>
         </aside>
 
@@ -3477,7 +3493,7 @@ function WorktreeCleanupDialog({ preview, decisions, loading, deleteCount, clean
             {cleanCount > 0 ? ` ${cleanCount} 个无本地内容的 Worktree 将直接删除。` : ''}
           </p>
           <div style={{ marginTop: 12, marginBottom: 5, fontSize: 10.5, fontWeight: 600, color: C_SECONDARY }}>需要确认的本地内容</div>
-          <div style={{ border: '1px solid C_BORDER', borderRadius: 8, overflow: 'auto', maxHeight: 320 }}>
+          <div style={{ border: `1px solid ${C_BORDER}`, borderRadius: 8, overflow: 'auto', maxHeight: 320 }}>
             {risky.map(candidate => (
               <div key={candidate.name} style={cleanupRowStyle}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -3664,7 +3680,7 @@ const settingsHeaderStyle: CSSProperties = {
   height: 40,
   padding: '0 14px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
   fontSize: 13,
   fontWeight: 600,
   color: C_TEXT,
@@ -3680,7 +3696,7 @@ const settingsLayoutStyle: CSSProperties = {
 const settingsNavStyle: CSSProperties = {
   minHeight: 0,
   padding: 6,
-  borderRight: '1px solid C_BORDER',
+  borderRight: `1px solid ${C_BORDER}`,
 }
 
 const settingsNavItemStyle: CSSProperties = {
@@ -3718,7 +3734,7 @@ const settingsSectionHeaderStyle: CSSProperties = {
   height: 40,
   padding: '0 12px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
 }
 
 const settingsSectionTitleStyle: CSSProperties = { fontSize: 12.5, fontWeight: 600, color: C_TEXT }
@@ -3737,7 +3753,7 @@ const settingsCardStyle: CSSProperties = {
 
 const repoCardStyle: CSSProperties = {
   overflow: 'hidden',
-  border: '1px solid C_BORDER',
+  border: `1px solid ${C_BORDER}`,
   borderRadius: 4,
 }
 
@@ -3748,7 +3764,7 @@ const repoRowStyle: CSSProperties = {
   minHeight: 64,
   padding: '0 14px',
   boxSizing: 'border-box',
-  borderTop: '1px solid C_BORDER',
+  borderTop: `1px solid ${C_BORDER}`,
 }
 
 const repoIconStyle: CSSProperties = {
@@ -3842,7 +3858,7 @@ const cleanupRowStyle: CSSProperties = {
   minHeight: 52,
   padding: '0 10px',
   boxSizing: 'border-box',
-  borderBottom: '1px solid C_BORDER',
+  borderBottom: `1px solid ${C_BORDER}`,
 }
 
 const cleanupNameStyle: CSSProperties = { fontFamily: FONT_MONO, fontSize: 11.5, fontWeight: 500, color: C_TEXT }
@@ -3855,7 +3871,7 @@ const cleanupSelectStyle: CSSProperties = {
   height: 28,
   padding: '0 7px',
   boxSizing: 'border-box',
-  border: '1px solid C_BORDER',
+  border: `1px solid ${C_BORDER}`,
   borderRadius: 6,
   background: C_SURFACE,
   outline: 'none',
@@ -3885,7 +3901,7 @@ const formInputStyle: CSSProperties = {
   height: 28,
   padding: '0 8px',
   boxSizing: 'border-box',
-  border: '1px solid C_BORDER',
+  border: `1px solid ${C_BORDER}`,
   borderRadius: 6,
   outline: 'none',
   background: C_SURFACE,
