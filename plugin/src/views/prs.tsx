@@ -237,7 +237,6 @@ export function CiCell({ pr, busy, workingAgent, pending, onAction, onChooseWork
             <span style={statusGlyphStyle}><StatusIcon tone={ciTone(pr.ciStatus)} /></span>
             <span style={statusTextStyle}>{ciLabel(pr.ciStatus)}</span>
             {pr.checks.length > 0 && <span style={countStyle}>{passed}/{pr.checks.length}</span>}
-            <span style={{ marginLeft: 'auto' }} onClick={(e) => { e.stopPropagation(); setOpen(true) }} />
           </>
         )}
       </HoverPopover>
@@ -335,7 +334,6 @@ export function ReviewCell({ pr, busy, workingAgent, pending, onAction, onChoose
                 {people.length > 3 && <span style={stackMoreStyle}>+{people.length - 3}</span>}
               </span>
             )}
-            <span style={{ marginLeft: 'auto' }} onClick={(e) => { e.stopPropagation(); setOpen(true) }} />
           </>
         )}
       </HoverPopover>
@@ -392,8 +390,7 @@ export function MergeCell({ pr, busy, workingAgent, pending, jobs, onAction, onC
               <>
                 <span style={statusGlyphStyle}><StatusIcon tone="bad" /></span>
                 <span style={statusTextStyle}>冲突</span>
-                <span style={{ marginLeft: 'auto' }} onClick={(e) => { e.stopPropagation(); setOpen(true) }} />
-              </>
+                  </>
             )}
           </HoverPopover>
         )

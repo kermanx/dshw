@@ -160,7 +160,7 @@ export const popoverTriggerStyle: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
   gap: 6,
-  width: '100%',
+  width: 'fit-content',
   minWidth: 0,
   padding: 0,
   border: 'none',
