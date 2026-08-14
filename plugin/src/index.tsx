@@ -58,6 +58,13 @@ const STYLE_TEXT = `
 [data-dshw-kanban="trigger"][data-selected],
 [data-dshw-kanban="icon"]:hover { background: var(--dsw-alias-interactive-bg-hover); }
 [data-dshw-kanban="input"]:focus { border-color: var(--dsw-alias-state-business-primary); }
+/* CommitGraph internals (Git view): keep only the graph surface, sized
+   absolute at the host's origin. */
+[data-dshw-kanban="gitgraph"] > div { position: relative; }
+[data-dshw-kanban="gitgraph"] > div > div:first-child { overflow: visible; }
+[data-dshw-kanban="gitgraph"] > div > div:nth-child(n + 2) { display: none !important; }
+[data-dshw-kanban="gitgraph"] svg { position: absolute; inset: 0 auto auto 0; }
+[data-dshw-kanban="gitgraph"] g[filter*="_curved_path_"] { filter: none; }
 `
 
 /** The framework-injected locale seat type (entry `locale` option). */

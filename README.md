@@ -69,10 +69,11 @@ dshw 本身就是一个可安装的 Harness 插件组合包（bundle）：`packa
 `dsh.bundle`（patch 层 `cordis.patch.yml`）和 `dsh.client`（浏览器端 bundle，导出
 `./client`）。安装后，Harness Web 左侧栏底部会出现一个 **看板** 入口（展开态为图标 +
 文字，收起态为图标；悬停与选中样式与侧栏其他条目一致）。点击后看板占据左侧栏右侧的
-全部空间（侧栏保持可见），**所有视图原生渲染**（无 iframe）：直接通过 daemon 的
-HTTP API（已启用 CORS）拉取快照并经 SSE 实时更新。六个 tab 中 Pull requests /
-Reviews / Jobs / Logs 已完成原生移植，Git 与 Settings 仍在移植中（暂显示占位提示，
-可通过面板右上角"在浏览器中打开"使用完整 dshw UI）。
+全部空间（侧栏保持可见），**六个视图全部原生渲染**（无 iframe）：直接通过 daemon 的
+HTTP API（已启用 CORS）拉取快照并经 SSE 实时更新。Pull requests（修 CI / 解决评论 /
+合并 / sync 开关）、Reviews、Git（提交图 + 分支聚焦）、Jobs（任务详情 / 终止 / 暂停 /
+Steer）、Logs（日志详情）与 Settings（仓库管理 / Worker 配置与排序 / Worktree 清理）
+均已移植；完整的 dshw 独立 UI 仍可通过面板右上角"在浏览器中打开"使用。
 
 ```sh
 # 先构建插件 bundle（daemon 的 start/restart 流程会自动构建，手动安装前需要一次）

@@ -59,10 +59,13 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
   export const IconRightUpOutline16: (props: IconProps) => ReactElement
   /** Kanban tab-bar icons. */
   export const IconUserOutline16: (props: IconProps) => ReactElement
-  export const IconTreeCorner8x10: (props: IconProps) => ReactElement
+  export const IconCodeOutline16: (props: IconProps) => ReactElement
   export const IconListPenOutline16: (props: IconProps) => ReactElement
   export const IconInspectOutline12: (props: IconProps) => ReactElement
   export const IconSettingsOutline16: (props: IconProps) => ReactElement
+  export const IconEditOutline16: (props: IconProps) => ReactElement
+  export const IconRefreshOutline16: (props: IconProps) => ReactElement
+  export const IconTrashOutline16: (props: IconProps) => ReactElement
 
   /** Tooltip primitive wrapping a trigger element. */
   export interface TooltipProps {

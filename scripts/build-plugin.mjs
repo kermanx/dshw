@@ -37,6 +37,15 @@ await build({
   configFile: false,
   root: pluginDir,
   logLevel: 'warn',
+  define: {
+    // The bundled commit-graph library probes Node's `process.env.NODE_ENV`
+    // (dev-mode checks) and guards bare `process` reads. The browser module
+    // table has no `process`, so pin both to inert values: NODE_ENV to
+    // production and `process` to an empty env object (the guard patterns
+    // then take the safe branch instead of throwing ReferenceError).
+    'process.env.NODE_ENV': JSON.stringify('production'),
+    process: '({ env: {} })',
+  },
   build: {
     lib: {
       entry: resolve(pluginDir, 'src/index.tsx'),

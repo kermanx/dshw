@@ -10,13 +10,17 @@ import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  IconBranchOutline16, IconInspectOutline12, IconListPenOutline16, IconSettingsOutline16,
-  IconTreeCorner8x10, IconUserOutline16,
+  IconBranchOutline16, IconCodeOutline16, IconEditOutline16, IconInspectOutline12,
+  IconListPenOutline16, IconRefreshOutline16, IconSettingsOutline16, IconTrashOutline16,
+  IconUserOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { CommitGraph } from '@dreamcatcher-tech/commit-graph'
 import type {
-  CiCheck, CloneGitStatus, CloneRecord, DshWorkerProgress, EventRecord, HarnessRepositoryStatus,
-  DshwRepositoryStatus, JobPage, JobRecord, LogPage, PrDashboardRecord, PrDashboardStatus,
-  PullRequestReview, ReviewRequestRecord, ServiceState, WorkerConfig, WorkerTypeAvailability,
+  CiCheck, CloneGitStatus, CloneRecord, DshWorkerProgress, EventRecord, GitGraphBranch,
+  GitGraphSnapshot, HarnessRepositoryStatus, DshwRepositoryStatus, JobPage, JobRecord, LogPage,
+  PrDashboardRecord, PrDashboardStatus, PullRequestReview, ReviewRequestRecord, ServiceState,
+  WorkerConfig, WorkerConfigInput, WorkerModelCatalog, WorkerReasoningEffort,
+  WorkerTypeAvailability, WorktreeCleanupCandidate, WorktreeCleanupPreview,
 } from '../../src/types.ts'
 
 /** Status accent (ui/src/types.ts Tone). */
@@ -254,7 +258,7 @@ type ViewId = 'prs' | 'reviews' | 'git' | 'jobs' | 'logs' | 'settings'
 const VIEW_TABS: ReadonlyArray<{ id: ViewId; icon: (p: { size?: number }) => ReactNode; label: string; count: (s: KanbanSnapshot) => number }> = [
   { id: 'prs', icon: IconBranchOutline16, label: 'Pull requests', count: s => s.prs.length },
   { id: 'reviews', icon: IconUserOutline16, label: 'Reviews', count: s => s.reviewRequests.length },
-  { id: 'git', icon: IconTreeCorner8x10, label: 'Git', count: () => 0 },
+  { id: 'git', icon: IconCodeOutline16, label: 'Git', count: () => 0 },
   { id: 'jobs', icon: IconListPenOutline16, label: 'Jobs', count: s => s.service.activeJobs },
   { id: 'logs', icon: IconInspectOutline12, label: 'Logs', count: () => 0 },
   { id: 'settings', icon: IconSettingsOutline16, label: 'Settings', count: () => 0 },
@@ -372,7 +376,8 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
         {view === 'reviews' && <ReviewsView {...viewProps} />}
         {view === 'jobs' && <JobsView {...viewProps} />}
         {view === 'logs' && <LogsView {...viewProps} />}
-        {(view === 'git' || view === 'settings') && <PlaceholderView />}
+        {view === 'git' && <GitView baseUrl={baseUrl} refreshKey={refreshKey} />}
+        {view === 'settings' && <SettingsView {...viewProps} />}
       </div>
       {workerPick !== null && snapshot !== undefined && (
         <WorkerPicker
@@ -950,17 +955,6 @@ function LogDialog({ record, onClose }: { record: EventRecord; onClose: () => vo
       </section>
     </div>,
     document.body,
-  )
-}
-
-/* ── not-yet-ported views ── */
-
-function PlaceholderView(): ReactNode {
-  return (
-    <div style={emptyStateStyle}>
-      <p style={emptyStateTitleStyle}>该视图的原生移植正在进行中</p>
-      <p style={emptyStateSubStyle}>可点击面板右上角「在浏览器中打开」使用完整 dshw UI。</p>
-    </div>
   )
 }
 
@@ -2217,4 +2211,1505 @@ const dialogFooterStyle: CSSProperties = {
   padding: '0 12px',
   boxSizing: 'border-box',
   borderTop: '1px solid var(--dsw-alias-border-l2)',
+}
+
+/* ── Git view (GitTree.vue port, reusing @dreamcatcher-tech/commit-graph) ── */
+
+const ROW_HEIGHT = 32
+const PAGE_SIZE = 100
+const GRAPH_NODE_RADIUS = 2
+const GRAPH_TOP = ROW_HEIGHT / 2 - GRAPH_NODE_RADIUS * 4
+const GRAPH_LEFT_PADDING = 12
+const GRAPH_TEXT_GAP = 12
+const GRAPH_PALETTE = ['#007acc', '#388a34', '#bf8803', '#a1260d', '#7b61a8', '#00838f', '#ad4e00', '#5b7c19', '#6c5ce7', '#c44569']
+
+function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: number }): ReactNode {
+  const [graph, setGraph] = useState<GitGraphSnapshot>()
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [focusedBranchOid, setFocusedBranchOid] = useState<string>()
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const [graphWidth, setGraphWidth] = useState(72)
+  const [graphCanvasWidth, setGraphCanvasWidth] = useState(72)
+  const [colors, setColors] = useState<Record<string, string>>({})
+  const graphHostRef = useRef<HTMLDivElement>(null)
+  const graphScrollRef = useRef<HTMLDivElement>(null)
+  const controllerRef = useRef<AbortController | undefined>(undefined)
+
+  const commits = graph?.commits ?? []
+  const byHash = new Map(commits.map(commit => [commit.hash, commit]))
+  const children = new Map<string, string[]>()
+  for (const commit of commits) {
+    for (const parent of commit.parents) {
+      children.set(parent, [...(children.get(parent) ?? []), commit.hash])
+    }
+  }
+
+  const ancestorsOf = (tip: string): Set<string> => {
+    const ancestors = new Set<string>()
+    const pending = [tip]
+    while (pending.length > 0) {
+      const hash = pending.pop()!
+      if (ancestors.has(hash)) continue
+      ancestors.add(hash)
+      const commit = byHash.get(hash)
+      if (commit !== undefined) pending.push(...commit.parents)
+    }
+    return ancestors
+  }
+
+  const masterOid = graph?.branches.find(branch => branch.kind === 'master')?.oid
+  const visibleBranches = graph?.branches.filter(branch => (
+    focusedBranchOid === undefined || branch.oid === focusedBranchOid || branch.kind === 'master'
+  )) ?? []
+  const focusedCommits = commits.filter(commit => {
+    if (focusedBranchOid === undefined || masterOid === undefined) return true
+    const branchAncestors = ancestorsOf(focusedBranchOid)
+    const masterAncestors = ancestorsOf(masterOid)
+    return branchAncestors.has(commit.hash) || masterAncestors.has(commit.hash)
+  })
+  const allOrderedCommits = ((): typeof commits => {
+    const readyOrder = [...focusedCommits].sort((left, right) => {
+      if (left.hash === masterOid) return -1
+      if (right.hash === masterOid) return 1
+      return right.author.timestamp - left.author.timestamp || left.hash.localeCompare(right.hash)
+    })
+    const seen = new Set<string>()
+    const result: typeof commits = []
+    const visit = (hash: string): void => {
+      if (seen.has(hash)) return
+      const commit = byHash.get(hash)
+      if (commit === undefined) return
+      seen.add(hash)
+      for (const child of children.get(hash) ?? []) visit(child)
+      result.push(commit)
+    }
+    for (const commit of readyOrder) visit(commit.hash)
+    return result
+  })()
+  const orderedCommits = allOrderedCommits.slice(0, visibleCount)
+  const hasMore = orderedCommits.length < allOrderedCommits.length
+  const graphHeight = orderedCommits.length * ROW_HEIGHT
+  const graphContentHeight = graphHeight + (hasMore ? ROW_HEIGHT : 0)
+  const branchesByOid = new Map<string, GitGraphBranch[]>()
+  for (const branch of visibleBranches) {
+    branchesByOid.set(branch.oid, [...(branchesByOid.get(branch.oid) ?? []), branch])
+  }
+
+  const load = async (): Promise<void> => {
+    controllerRef.current?.abort()
+    const controller = new AbortController()
+    controllerRef.current = controller
+    setLoading(true)
+    setError('')
+    try {
+      const response = await fetch(`${baseUrl}/api/git-graph`, { cache: 'no-store', signal: controller.signal })
+      const value = await response.json() as GitGraphSnapshot & { error?: string }
+      if (!response.ok) throw new Error(value.error ?? 'Git tree 加载失败')
+      setColors({})
+      setVisibleCount(PAGE_SIZE)
+      setGraph(value)
+      if (focusedBranchOid !== undefined && !value.branches.some(branch => branch.oid === focusedBranchOid)) {
+        setFocusedBranchOid(undefined)
+      }
+    } catch (cause) {
+      if (controller.signal.aborted) return
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      if (!controller.signal.aborted) setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void load()
+    return () => { controllerRef.current?.abort() }
+  }, [baseUrl, refreshKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Measure the rendered CommitGraph: canvas width + per-branch colors.
+  useEffect(() => {
+    const host = graphHostRef.current
+    if (host === null) return
+    const frame = requestAnimationFrame(() => {
+      const inner = requestAnimationFrame(() => {
+        const svg = host.querySelector('svg')
+        const width = svg?.width.baseVal.value
+        if (width !== undefined && Number.isFinite(width)) setGraphCanvasWidth(Math.max(44, Math.min(220, width)))
+        const nodes = [...host.querySelectorAll<SVGGElement>('svg g[filter^="url(#filter_"]')]
+        const next: Record<string, string> = {}
+        let rightmostNode = 0
+        for (const node of nodes) {
+          const match = node.getAttribute('filter')?.match(/^url\(#filter_(.+)_node\)$/u)
+          if (match?.[1] === undefined) continue
+          const circle = node.querySelector('circle')
+          const color = node.getAttribute('fill') ?? circle?.getAttribute('fill')
+          if (color !== null && color !== undefined) next[match[1]] = color
+          const x = Number(circle?.getAttribute('cx'))
+          if (Number.isFinite(x)) rightmostNode = Math.max(rightmostNode, x)
+        }
+        setColors(next)
+        setGraphWidth(Math.max(44, Math.min(220, GRAPH_LEFT_PADDING + rightmostNode + GRAPH_NODE_RADIUS + GRAPH_TEXT_GAP)))
+      })
+      return () => { cancelAnimationFrame(inner) }
+    })
+    return () => { cancelAnimationFrame(frame) }
+  }, [orderedCommits, graph])
+
+  const focusBranch = (branch: GitGraphBranch): void => {
+    setColors({})
+    setVisibleCount(PAGE_SIZE)
+    setFocusedBranchOid(current => current === branch.oid ? undefined : branch.oid)
+  }
+
+  const loadMore = (): void => {
+    if (!hasMore) return
+    setVisibleCount(Math.min(visibleCount + PAGE_SIZE, allOrderedCommits.length))
+  }
+
+  const onGraphScroll = (): void => {
+    const element = graphScrollRef.current
+    if (element === null || !hasMore) return
+    if (element.scrollHeight - element.scrollTop - element.clientHeight <= ROW_HEIGHT * 12) loadMore()
+  }
+
+  const branchColor = (oid: string, fallbackIndex: number): string => colors[oid] ?? GRAPH_PALETTE[fallbackIndex % GRAPH_PALETTE.length]!
+  const commitUrl = (hash: string): string => `https://github.com/${graph?.repoSlug ?? 'deepseek-harness/deepseek-harness'}/commit/${hash}`
+  const commitTime = (timestamp: number): string => shortTimeLabel(new Date(timestamp).toISOString())
+
+  const visible = new Set(orderedCommits.map(commit => commit.hash))
+  const graphCommits = orderedCommits.map(commit => ({
+    sha: commit.hash,
+    commit: {
+      author: {
+        name: commit.author.name,
+        email: commit.author.email,
+        date: commit.hash === masterOid
+          ? new Date(8_639_999_999_999_999)
+          : new Date(commit.author.timestamp),
+      },
+      message: commit.subject,
+    },
+    parents: commit.parents.filter(parent => visible.has(parent)).map(sha => ({ sha })),
+  }))
+  const branchHeads = visibleBranches
+    .filter(branch => visible.has(branch.oid))
+    .map(branch => ({ name: branch.label, commit: { sha: branch.oid }, link: branch.url }))
+
+  return (
+    <div style={gitLayoutStyle}>
+      <aside style={gitSidebarStyle}>
+        <div style={gitSidebarHeaderStyle}>
+          <div style={gitSidebarTitleStyle}>
+            <IconCodeOutline16 size={14} />
+            <span style={gitSidebarTitleTextStyle}>{graph?.repoSlug ?? 'Git tree'}</span>
+          </div>
+          <div style={gitSidebarSubStyle}>
+            {graph !== undefined
+              ? `${graph.commits.length} 个提交 · ${graph.branches.length} 个分支`
+              : '正在读取 Git 历史…'}
+          </div>
+        </div>
+        {graph !== undefined && (
+          <div style={gitSidebarListStyle}>
+            {graph.branches.map((branch, index) => {
+              const active = focusedBranchOid === branch.oid
+              return (
+                <div
+                  key={`${branch.kind}:${branch.name}:${branch.number ?? ''}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={active}
+                  onClick={() => { focusBranch(branch) }}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); focusBranch(branch) }
+                  }}
+                  style={active ? gitBranchItemActiveStyle : gitBranchItemStyle}
+                >
+                  <span style={{ ...gitBranchDotStyle, background: branchColor(branch.oid, index) }} />
+                  <span style={gitBranchTextStyle}>
+                    <span style={gitBranchLineStyle}>
+                      {branch.kind === 'pr' && branch.url !== undefined ? (
+                        <>
+                          <a style={gitPrLinkStyle} href={branch.url} target="_blank" rel="noreferrer" onClick={event => { event.stopPropagation() }}>
+                            PR #{branch.number}
+                          </a>
+                          <span style={gitBranchSeparatorStyle}>·</span>
+                          <span style={gitBranchNameStyle}>{branch.name}</span>
+                        </>
+                      ) : (
+                        <span style={gitBranchNameStyle}>{branch.name}</span>
+                      )}
+                      {branch.isDraft === true && <span style={draftBadgeStyle}>draft</span>}
+                    </span>
+                    {branch.title !== undefined && <span style={gitBranchTitleStyle} title={branch.title}>{branch.title}</span>}
+                    <span style={gitBranchOidStyle}>{branch.oid.slice(0, 8)}</span>
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </aside>
+
+      <section style={gitMainStyle}>
+        <div style={gitToolbarStyle}>
+          <span style={gitToolbarTitleStyle}>Commit history</span>
+          {graph !== undefined && (
+            <>
+              <span style={{ marginLeft: 'auto' }}>{shortTimeLabel(graph.generatedAt)} 更新</span>
+              {graph.truncated === true && <span style={{ color: warn }}>仅显示相关历史</span>}
+              {loading && (
+                <span style={gitRefreshRowStyle}><StatusDot tone="accent" pulse />刷新中</span>
+              )}
+            </>
+          )}
+        </div>
+
+        {loading && graph === undefined && (
+          <div style={emptyStateStyle}>
+            <span style={emptyStateLineStyle}><StatusDot tone="accent" pulse />正在读取 Git 历史…</span>
+          </div>
+        )}
+        {error !== '' && (
+          <div style={emptyStateStyle}>
+            <span style={{ ...emptyStateTitleStyle, color: bad }}>Git tree 加载失败</span>
+            <span style={emptyStateSubStyle}>{error}</span>
+            <button type="button" style={actionLinkStyle} onClick={load}>重试</button>
+          </div>
+        )}
+        {graph !== undefined && (
+          <div ref={graphScrollRef} style={gitScrollStyle} onScroll={onGraphScroll}>
+            <div style={{ position: 'relative', minWidth: 760, height: graphContentHeight }}>
+              <div
+                ref={graphHostRef}
+                data-dshw-kanban="gitgraph"
+                aria-hidden="true"
+                style={{ position: 'absolute', zIndex: 2, pointerEvents: 'none', overflow: 'hidden', left: GRAPH_LEFT_PADDING, top: GRAPH_TOP, width: graphCanvasWidth, height: Math.max(0, graphHeight - GRAPH_TOP) }}
+              >
+                <CommitGraph
+                  commits={graphCommits}
+                  branchHeads={branchHeads}
+                  graphStyle={{ commitSpacing: ROW_HEIGHT, branchSpacing: 13, branchColors: GRAPH_PALETTE, nodeRadius: GRAPH_NODE_RADIUS }}
+                  currentBranch="master"
+                />
+              </div>
+              {orderedCommits.map(commit => (
+                <div
+                  key={commit.hash}
+                  style={{ ...gitCommitRowStyle, paddingLeft: graphWidth }}
+                  title={`${commit.hash}\n${commit.subject}\n${commit.author.name} <${commit.author.email}>`}
+                >
+                  <a
+                    style={gitHashStyle}
+                    href={commitUrl(commit.hash)}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={`在 GitHub 查看 ${commit.hash}`}
+                  >{commit.hash.slice(0, 7)}</a>
+                  {(branchesByOid.get(commit.hash) ?? []).map(branch => {
+                    const color = branchColor(commit.hash, 0)
+                    const chip = { ...refChipStyle(color), maxWidth: 240 }
+                    return branch.url !== undefined ? (
+                      <a key={`${branch.kind}:${branch.name}`} style={chip} href={branch.url} target="_blank" rel="noreferrer" title={branch.title}>
+                        <span style={{ fontWeight: 600 }}>#{branch.number}</span>
+                        <span style={gitChipTextStyle}>{branch.name}</span>
+                        {branch.isDraft === true && <span style={{ opacity: 0.7 }}>draft</span>}
+                      </a>
+                    ) : (
+                      <span key={`${branch.kind}:${branch.name}`} style={chip}>{branch.name}</span>
+                    )
+                  })}
+                  <span style={gitSubjectStyle}>{commit.subject}</span>
+                  <span style={gitAuthorStyle}>{commit.author.name}</span>
+                  <time style={gitTimeStyle}>{commitTime(commit.author.timestamp)}</time>
+                </div>
+              ))}
+              {hasMore && (
+                <button type="button" style={{ ...gitLoadMoreStyle, top: graphHeight }} onClick={loadMore}>
+                  加载更多（剩余 {allOrderedCommits.length - orderedCommits.length} 条）
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+/* ── git view styles ── */
+
+const gitLayoutStyle: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  display: 'grid',
+  gridTemplateColumns: '270px minmax(0, 1fr)',
+  background: 'var(--dsw-alias-bg-base)',
+}
+
+const gitSidebarStyle: CSSProperties = {
+  minHeight: 0,
+  overflowY: 'auto',
+  borderRight: '1px solid var(--dsw-alias-border-l2)',
+  background: 'var(--dsw-alias-bg-base)',
+}
+
+const gitSidebarHeaderStyle: CSSProperties = {
+  padding: '10px 12px',
+  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+}
+
+const gitSidebarTitleStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  fontSize: 12.5,
+  fontWeight: 600,
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const gitSidebarTitleTextStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+
+const gitSidebarSubStyle: CSSProperties = { marginTop: 3, fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary)' }
+
+const gitSidebarListStyle: CSSProperties = { padding: '5px 0' }
+
+const gitBranchItemStyle: CSSProperties = {
+  display: 'flex',
+  gap: 8,
+  padding: '7px 12px',
+  cursor: 'pointer',
+}
+
+const gitBranchItemActiveStyle: CSSProperties = {
+  ...gitBranchItemStyle,
+  background: 'color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent)',
+}
+
+const gitBranchDotStyle: CSSProperties = {
+  flex: 'none',
+  width: 7,
+  height: 7,
+  marginTop: 6,
+  borderRadius: '50%',
+}
+
+const gitBranchTextStyle: CSSProperties = { minWidth: 0, flex: 1 }
+
+const gitBranchLineStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 5,
+  minWidth: 0,
+  fontSize: 12,
+  fontWeight: 500,
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const gitPrLinkStyle: CSSProperties = { flex: 'none', color: 'inherit', textDecoration: 'none' }
+
+const gitBranchSeparatorStyle: CSSProperties = { color: 'var(--dsw-alias-label-tertiary)' }
+
+const gitBranchNameStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+
+const gitBranchTitleStyle: CSSProperties = {
+  display: 'block',
+  marginTop: 1,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontSize: 11,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+const gitBranchOidStyle: CSSProperties = {
+  display: 'block',
+  marginTop: 1,
+  fontFamily: 'var(--ds-font-family-code)',
+  fontSize: 10.5,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+const gitMainStyle: CSSProperties = {
+  position: 'relative',
+  minHeight: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  background: 'var(--dsw-alias-bg-base)',
+}
+
+const gitToolbarStyle: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  height: 36,
+  padding: '0 12px',
+  boxSizing: 'border-box',
+  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  fontSize: 11.5,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+const gitToolbarTitleStyle: CSSProperties = { fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
+
+const gitRefreshRowStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5 }
+
+const gitScrollStyle: CSSProperties = { flex: 1, minHeight: 0, overflow: 'auto' }
+
+const gitCommitRowStyle: CSSProperties = {
+  position: 'relative',
+  zIndex: 1,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  height: ROW_HEIGHT,
+  paddingRight: 12,
+  boxSizing: 'border-box',
+  borderBottom: '1px solid color-mix(in srgb, var(--dsw-alias-border-l2) 55%, transparent)',
+}
+
+const gitHashStyle: CSSProperties = {
+  flex: 'none',
+  width: 58,
+  fontFamily: 'var(--ds-font-family-code)',
+  fontSize: 10.5,
+  color: 'var(--dsw-alias-label-tertiary)',
+  textDecoration: 'none',
+}
+
+const gitChipTextStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+
+const gitSubjectStyle: CSSProperties = {
+  minWidth: 0,
+  flex: 1,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontSize: 12,
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const gitAuthorStyle: CSSProperties = {
+  flex: 'none',
+  maxWidth: 130,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontSize: 11,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+const gitTimeStyle: CSSProperties = {
+  flex: 'none',
+  width: 70,
+  textAlign: 'right',
+  fontFamily: 'var(--ds-font-family-code)',
+  fontSize: 10.5,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+const gitLoadMoreStyle: CSSProperties = {
+  position: 'absolute',
+  left: 0,
+  right: 0,
+  height: ROW_HEIGHT,
+  border: 'none',
+  background: 'transparent',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  fontSize: 11.5,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+const refChipStyle = (color: string): CSSProperties => ({
+  display: 'inline-flex',
+  flex: 'none',
+  alignItems: 'center',
+  gap: 3,
+  height: 20,
+  border: `1px solid color-mix(in srgb, ${color} 38%, white)`,
+  borderRadius: 3,
+  padding: '0 4px',
+  boxSizing: 'border-box',
+  fontSize: 10.5,
+  lineHeight: '18px',
+  textDecoration: 'none',
+  background: `color-mix(in srgb, ${color} 10%, white)`,
+  color: `color-mix(in srgb, ${color} 82%, black)`,
+})
+
+/* ── Settings view (WorkerSettings.vue port) ── */
+
+type WorkerForm = WorkerConfigInput
+
+function emptyWorkerForm(): WorkerForm {
+  return {
+    name: '', type: 'dsh', enabled: true,
+    provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: '',
+    baseUrl: '', searchBaseUrl: '', apiKeyMode: 'value', apiKeyEnv: 'DEEPSEEK_API_KEY', apiKey: '',
+  }
+}
+
+function SettingsView(props: ViewProps): ReactNode {
+  const { baseUrl, snapshot, showToast, post } = props
+  const [section, setSection] = useState<'repository' | 'workers'>('repository')
+  const [editing, setEditing] = useState<WorkerConfig>()
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [form, setForm] = useState<WorkerForm>(emptyWorkerForm)
+  const [modelCatalog, setModelCatalog] = useState<WorkerModelCatalog>()
+  const [modelLoading, setModelLoading] = useState(false)
+  const [modelError, setModelError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [removing, setRemoving] = useState<string>()
+  const [reordering, setReordering] = useState(false)
+  const [draggedId, setDraggedId] = useState<string>()
+  const [dragOverId, setDragOverId] = useState<string>()
+  const [displayedWorkers, setDisplayedWorkers] = useState<WorkerConfig[]>(snapshot?.workers ?? [])
+  const [cleanupDialogOpen, setCleanupDialogOpen] = useState(false)
+  const [cleanupLoading, setCleanupLoading] = useState(false)
+  const [cleanupPreview, setCleanupPreview] = useState<WorktreeCleanupPreview>()
+  const [cleanupDecisions, setCleanupDecisions] = useState<Record<string, 'keep' | 'delete'>>({})
+  const [repositoryRefreshing, setRepositoryRefreshing] = useState(false)
+
+  const workers = snapshot?.workers ?? []
+  const workerTypes = snapshot?.workerTypes ?? []
+  const repository = snapshot?.harnessRepository
+  const dshwRepository = snapshot?.dshwRepository
+  const devMode = snapshot?.service.devMode === true
+  const worktreeCount = snapshot?.clones.length ?? 0
+  const worktreeCleanupCount = snapshot?.worktreeCleanupCount
+
+  useEffect(() => {
+    if (snapshot === undefined) return
+    if (draggedId === undefined) setDisplayedWorkers(snapshot.workers)
+  }, [snapshot, draggedId])
+
+  const typeLabel = (type: WorkerConfig['type']): string =>
+    type === 'dsh' ? 'dsh' : type === 'codex' ? 'Codex' : 'Claude Code'
+  const credentialLabel = (worker: WorkerConfig): string =>
+    worker.type === 'codex' ? '本机配置'
+      : worker.credentialSource === 'saved' ? '已保存'
+        : worker.credentialSource === 'environment' ? '环境变量' : '未配置'
+  const workerAvailable = (worker: WorkerConfig): boolean =>
+    worker.enabled && workerTypes.find(status => status.type === worker.type)?.available === true
+  const workerStatus = (worker: WorkerConfig): string =>
+    !worker.enabled ? '未启用' : workerAvailable(worker) ? '可用' : '不可用'
+
+  const repositoryLag = (): string => {
+    if (repository?.state === 'error') return '暂时无法确认与上游的差异'
+    const behind = repository?.behind ?? 0
+    const lag = behind === 0 ? '当前已与上游一致' : `当前落后上游 ${behind} 个提交`
+    return repository?.dirty === true ? `${lag} · 有本地内容待收起` : lag
+  }
+  const dshwRepositoryLag = (): string => {
+    if (dshwRepository?.state === 'error') return '暂时无法确认与上游的差异'
+    const behind = dshwRepository?.behind ?? 0
+    const lag = behind === 0 ? '当前已与上游一致' : `当前落后上游 ${behind} 个提交`
+    return dshwRepository?.dirty === true ? `${lag} · 有本地修改` : lag
+  }
+  const worktreeSummary = (): string => worktreeCleanupCount === undefined
+    ? `当前 ${worktreeCount} 个，可清理数量待确认`
+    : `当前 ${worktreeCount} 个，其中 ${worktreeCleanupCount} 个可清理`
+  const dshwUpdateNoop = dshwRepository?.state === 'ready' && (dshwRepository.behind ?? 0) === 0
+  const harnessSyncNoop = repository?.state === 'ready' && (repository.behind ?? 0) === 0 && repository.dirty === false
+  const worktreeCleanupNoop = worktreeCleanupCount === 0
+  const busy = repositoryRefreshing || cleanupLoading
+
+  /* ── repository section ── */
+
+  const refreshRepositoryState = async (): Promise<void> => {
+    if (repositoryRefreshing) return
+    setRepositoryRefreshing(true)
+    try {
+      const response = await fetch(`${baseUrl}/api/repository/refresh`, { method: 'POST' })
+      const value = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`)
+      showToast('仓库状态已刷新')
+    } catch (error) {
+      showToast(`刷新失败：${error instanceof Error ? error.message : String(error)}`, true)
+    } finally {
+      setRepositoryRefreshing(false)
+    }
+  }
+
+  const confirmReconfigure = (): void => {
+    const confirmed = window.confirm([
+      '从头配置当前 dsh 主仓库？',
+      '',
+      '这会执行两次 git clean -fdx，删除所有未跟踪和 ignored 文件（包括 .env、node_modules 和构建产物），然后拉取 origin/master、重新安装依赖并运行 typecheck。',
+      '',
+      '若存在 tracked 或 staged 修改，后台会拒绝执行。',
+    ].join('\n'))
+    if (confirmed) void post('/api/reconfigure', {}, 'reconfigure-harness')
+  }
+
+  const inspectWorktreeCleanup = async (): Promise<void> => {
+    if (cleanupLoading) return
+    setCleanupLoading(true)
+    try {
+      const response = await fetch(`${baseUrl}/api/worktrees/cleanup/preview`, { method: 'POST' })
+      const value = await response.json() as WorktreeCleanupPreview & { error?: string }
+      if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`)
+      setCleanupPreview(value)
+      if (value.candidates.length === 0) {
+        showToast(value.busy > 0 ? '没有可清理的 Worktree；有任务正在使用候选项' : '没有非 active PR 的 Worktree')
+        return
+      }
+      const risky = value.candidates.filter(candidate => candidate.needsDecision)
+      if (risky.length === 0) {
+        if (window.confirm(`清理 ${value.candidates.length} 个不再对应 active PR 的 Worktree？\n\n这些 Worktree 没有本地改动或未推送提交，将被直接删除。`)) {
+          await executeWorktreeCleanup([])
+        }
+        return
+      }
+      setCleanupDecisions(Object.fromEntries(risky.map(candidate => [candidate.name, 'keep' as const])))
+      setCleanupDialogOpen(true)
+    } catch (error) {
+      showToast(`检查失败：${error instanceof Error ? error.message : String(error)}`, true)
+    } finally {
+      setCleanupLoading(false)
+    }
+  }
+
+  const executeWorktreeCleanup = async (deleteDirty: string[]): Promise<void> => {
+    if (cleanupLoading) return
+    setCleanupLoading(true)
+    try {
+      const response = await fetch(`${baseUrl}/api/worktrees/cleanup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deleteDirty }),
+      })
+      const value = await response.json() as { deleted?: string[]; failed?: Array<{ name: string; error: string }>; error?: string }
+      if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`)
+      setCleanupDialogOpen(false)
+      setCleanupPreview(undefined)
+      const deleted = value.deleted?.length ?? 0
+      const failed = value.failed?.length ?? 0
+      showToast(failed > 0 ? `已清理 ${deleted} 个，${failed} 个删除失败` : `已清理 ${deleted} 个 Worktree`, failed > 0)
+    } catch (error) {
+      showToast(`清理失败：${error instanceof Error ? error.message : String(error)}`, true)
+    } finally {
+      setCleanupLoading(false)
+    }
+  }
+
+  /* ── workers section ── */
+
+  const loadModelCatalog = async (): Promise<void> => {
+    setModelLoading(true)
+    setModelError('')
+    try {
+      const query = new URLSearchParams({ type: form.type })
+      if (form.provider?.trim() !== undefined && form.provider.trim() !== '') query.set('provider', form.provider.trim())
+      const response = await fetch(`${baseUrl}/api/worker-models?${query}`)
+      const value = await response.json() as { catalog?: WorkerModelCatalog; error?: string }
+      if (!response.ok || value.catalog === undefined) throw new Error(value.error ?? `HTTP ${response.status}`)
+      setModelCatalog(value.catalog)
+    } catch (error) {
+      setModelCatalog(undefined)
+      setModelError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setModelLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (dialogOpen) void loadModelCatalog()
+  }, [dialogOpen]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openCreate = (): void => {
+    setEditing(undefined)
+    setForm(emptyWorkerForm())
+    setDialogOpen(true)
+  }
+
+  const openEdit = (worker: WorkerConfig): void => {
+    setEditing(worker)
+    setForm({
+      name: worker.name, type: worker.type, enabled: worker.enabled,
+      provider: worker.provider, model: worker.model, reasoningEffort: worker.reasoningEffort ?? '',
+      baseUrl: worker.baseUrl, searchBaseUrl: worker.searchBaseUrl, apiKeyMode: worker.apiKeyMode,
+      apiKeyEnv: worker.apiKeyEnv, apiKey: '',
+    })
+    setDialogOpen(true)
+  }
+
+  const selectedType = workerTypes.find(status => status.type === form.type)
+  const typeAvailable = selectedType?.available === true
+  const codexStatus = workerTypes.find(status => status.type === 'codex')
+  const hasSavedApiKey = editing?.apiKeyMode === 'value' && editing.credentialSource === 'saved'
+  const formValid = form.name.trim() !== '' && typeAvailable === true
+    && (form.type === 'codex'
+      || (form.apiKeyMode === 'environment'
+        ? (form.apiKeyEnv?.trim() ?? '') !== ''
+        : (form.apiKey?.trim() ?? '') !== '' || hasSavedApiKey === true))
+
+  const save = async (): Promise<void> => {
+    if (saving || !formValid) return
+    setSaving(true)
+    try {
+      const path = editing === undefined ? `${baseUrl}/api/workers` : `${baseUrl}/api/workers/${encodeURIComponent(editing.id)}`
+      const response = await fetch(path, {
+        method: editing === undefined ? 'POST' : 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(form),
+      })
+      const value = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`)
+      setDialogOpen(false)
+      showToast(editing === undefined ? 'Worker 已添加' : 'Worker 已更新')
+    } catch (error) {
+      showToast(`保存失败：${error instanceof Error ? error.message : String(error)}`, true)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const saveOrder = async (ids: string[]): Promise<void> => {
+    if (reordering || ids.every((id, index) => workers[index]?.id === id)) return
+    setReordering(true)
+    try {
+      const response = await fetch(`${baseUrl}/api/workers/order`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      })
+      const value = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`)
+      showToast('Worker 顺序已保存')
+    } catch (error) {
+      setDisplayedWorkers([...workers])
+      showToast(`排序失败：${error instanceof Error ? error.message : String(error)}`, true)
+    } finally {
+      setReordering(false)
+    }
+  }
+
+  const remove = async (worker: WorkerConfig): Promise<void> => {
+    if (removing !== undefined || !window.confirm(`删除 Worker「${worker.name}」？`)) return
+    setRemoving(worker.id)
+    try {
+      const response = await fetch(`${baseUrl}/api/workers/${encodeURIComponent(worker.id)}`, { method: 'DELETE' })
+      const value = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`)
+      showToast('Worker 已删除')
+    } catch (error) {
+      showToast(`删除失败：${error instanceof Error ? error.message : String(error)}`, true)
+    } finally {
+      setRemoving(undefined)
+    }
+  }
+
+  const selectedModel = modelCatalog?.models.find(model => model.id === (form.model || modelCatalog.defaultModel))
+  const reasoningEfforts = selectedModel?.reasoningEfforts ?? (form.type === 'dsh' ? modelCatalog?.models[0]?.reasoningEfforts ?? [] : [])
+  const effectiveDefaultEffort = modelCatalog?.defaultReasoningEffort ?? selectedModel?.defaultReasoningEffort
+  const modelPlaceholder = form.type === 'codex'
+    ? (modelCatalog?.defaultModel === undefined ? '使用本机默认模型' : `本机默认：${modelCatalog.defaultModel}`)
+    : (modelCatalog?.defaultModel ?? '模型名称')
+
+  const riskyWorktrees = cleanupPreview?.candidates.filter(candidate => candidate.needsDecision) ?? []
+  const cleanWorktreeCount = cleanupPreview?.candidates.filter(candidate => !candidate.needsDecision).length ?? 0
+  const cleanupDeleteCount = cleanWorktreeCount + riskyWorktrees.filter(candidate => cleanupDecisions[candidate.name] === 'delete').length
+
+  /* ── render ── */
+
+  return (
+    <>
+      <div style={settingsHeaderStyle}>设置</div>
+      <div style={settingsLayoutStyle}>
+        <aside style={settingsNavStyle}>
+          <button type="button" style={section === 'repository' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('repository') }}>
+            仓库管理
+          </button>
+          <button type="button" style={section === 'workers' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('workers') }}>
+            Workers
+          </button>
+        </aside>
+
+        {section === 'repository' && (
+          <section style={settingsSectionStyle}>
+            <div style={settingsSectionHeaderStyle}>
+              <span style={settingsSectionTitleStyle}>仓库管理</span>
+              <span style={settingsSectionSubStyle}>dshw、主仓库与 Worktree</span>
+              <button
+                type="button"
+                style={{ ...smallIconButtonStyle, marginLeft: 'auto' }}
+                title="刷新仓库状态"
+                aria-label="刷新仓库状态"
+                disabled={busy}
+                onClick={refreshRepositoryState}
+              >
+                <IconRefreshOutline16 size={13} />
+              </button>
+            </div>
+            <div style={settingsBodyStyle}>
+              <div style={settingsCardStyle}>
+                <RepoRow
+                  icon="更新"
+                  title="更新 dshw"
+                  detail="拉取最新代码、安装依赖并重新构建，然后安全重启服务"
+                  note={dshwRepositoryLag()}
+                  warn={(dshwRepository?.behind ?? 0) > 0 || dshwRepository?.dirty === true}
+                  buttonLabel="更新并重启"
+                  disabled={devMode || dshwRepository?.state !== 'ready' || dshwRepository?.dirty === true || dshwUpdateNoop}
+                  onClick={() => { void post('/api/dshw/update', {}, 'update-dshw') }}
+                />
+                <RepoRow
+                  icon="同步"
+                  title="同步主仓库"
+                  detail="更新 deepseek-harness 仓库到最新上游"
+                  note={repositoryLag()}
+                  warn={(repository?.behind ?? 0) > 0 || repository?.dirty === true}
+                  buttonLabel="立即同步"
+                  disabled={harnessSyncNoop}
+                  onClick={() => { void post('/api/update', {}, 'update-harness') }}
+                />
+                <RepoRow
+                  icon="清理"
+                  title="清理 Worktree"
+                  detail="删除不再对应 active PR 的 Worktree；本地内容会逐项确认"
+                  note={worktreeSummary()}
+                  warn={false}
+                  buttonLabel={cleanupLoading ? '检查中' : '检查并清理'}
+                  disabled={worktreeCleanupNoop}
+                  onClick={() => { void inspectWorktreeCleanup() }}
+                />
+                <RepoRow
+                  icon="重置"
+                  title="重新初始化工作环境"
+                  detail="清理生成文件，更新 master，重新安装依赖并运行 typecheck"
+                  note=""
+                  warn={false}
+                  buttonLabel="从头配置"
+                  disabled={false}
+                  onClick={confirmReconfigure}
+                />
+              </div>
+            </div>
+          </section>
+        )}
+
+        {section === 'workers' && (
+          <section style={settingsSectionStyle}>
+            <div style={settingsSectionHeaderStyle}>
+              <span style={settingsSectionTitleStyle}>Workers</span>
+              <span style={settingsSectionSubStyle}>拖动排序 · 第一项为默认</span>
+              <button type="button" style={addButtonStyle} onClick={openCreate}>＋ 添加</button>
+            </div>
+            {workers.length === 0 ? (
+              <div style={emptyStateStyle}>
+                <span>暂无 Worker</span>
+                <button type="button" style={actionLinkStyle} onClick={openCreate}>添加配置</button>
+              </div>
+            ) : (
+              <div style={jobsScrollStyle}>
+                <table style={{ ...tableStyle, minWidth: 900 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...thStyle, width: 34 }} />
+                      <th style={{ ...thStyle, width: 110 }}>状态</th>
+                      <th style={{ ...thStyle, width: 220 }}>名称</th>
+                      <th style={{ ...thStyle, width: 140 }}>类型</th>
+                      <th style={thStyle}>模型</th>
+                      <th style={{ ...thStyle, width: 110 }}>推理</th>
+                      <th style={thStyle}>Base URL</th>
+                      <th style={{ ...thStyle, width: 130 }}>凭据</th>
+                      <th style={{ ...thStyle, width: 90 }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {displayedWorkers.map((worker, index) => (
+                      <tr
+                        key={worker.id}
+                        draggable={worker.enabled && !reordering}
+                        style={{ opacity: draggedId === worker.id ? 0.45 : 1 }}
+                        onDragStart={(event) => {
+                          if (!worker.enabled || reordering) return
+                          setDraggedId(worker.id)
+                          setDragOverId(worker.id)
+                          event.dataTransfer.setData('text/plain', worker.id)
+                          event.dataTransfer.effectAllowed = 'move'
+                        }}
+                        onDragOver={(event) => {
+                          if (draggedId === undefined || !worker.enabled) return
+                          event.preventDefault()
+                          if (worker.id === dragOverId) return
+                          const from = displayedWorkers.findIndex(candidate => candidate.id === draggedId)
+                          const to = displayedWorkers.findIndex(candidate => candidate.id === worker.id)
+                          if (from < 0 || to < 0) return
+                          const reordered = [...displayedWorkers]
+                          const [dragged] = reordered.splice(from, 1)
+                          if (dragged !== undefined) reordered.splice(to, 0, dragged)
+                          setDisplayedWorkers(reordered)
+                          setDragOverId(worker.id)
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault()
+                          setDraggedId(undefined)
+                          setDragOverId(undefined)
+                          void saveOrder(displayedWorkers.map(candidate => candidate.id))
+                        }}
+                        onDragEnd={() => {
+                          setDraggedId(undefined)
+                          setDragOverId(undefined)
+                          setDisplayedWorkers([...workers])
+                        }}
+                      >
+                        <td style={tdCompactStyle}><span style={{ color: worker.enabled ? 'var(--dsw-alias-label-tertiary)' : faint, cursor: worker.enabled ? 'grab' : 'default' }}>⠿</span></td>
+                        <td style={tdCompactStyle}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: workerAvailable(worker) ? ok : faint }}>
+                            <StatusDot tone={workerAvailable(worker) ? 'ok' : 'neutral'} />{workerStatus(worker)}
+                          </span>
+                        </td>
+                        <td style={tdCompactStyle}>
+                          <span style={workerNameStyle}>{worker.name}</span>
+                          {index === 0 && worker.enabled && <span style={defaultBadgeStyle}>默认</span>}
+                        </td>
+                        <td style={tdCompactStyle}>
+                          <span style={{ fontSize: 12, color: 'var(--dsw-alias-label-secondary)' }}>{typeLabel(worker.type)}</span>
+                          {worker.type === 'claude-code' && <span style={{ fontSize: 10.5, color: 'var(--dsw-alias-label-tertiary)' }}>未支持</span>}
+                        </td>
+                        <td style={tdCompactStyle}><span style={cellBlockStyle} title={worker.model}>{worker.model || '—'}</span></td>
+                        <td style={tdCompactStyle}><span style={{ fontFamily: 'var(--ds-font-family-code)', fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)' }}>{worker.reasoningEffort || '默认'}</span></td>
+                        <td style={tdCompactStyle}><span style={cellBlockStyle} title={worker.baseUrl}>{worker.type === 'dsh' ? worker.baseUrl || '默认' : '—'}</span></td>
+                        <td style={tdCompactStyle}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: worker.hasApiKey ? 'var(--dsw-alias-label-secondary)' : warn }}>
+                            {credentialLabel(worker)}
+                          </span>
+                        </td>
+                        <td style={tdCompactStyle}>
+                          <span style={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+                            <button type="button" style={smallIconButtonStyle} aria-label="编辑" onClick={() => { openEdit(worker) }}><IconEditOutline16 size={12} /></button>
+                            <button type="button" style={{ ...smallIconButtonStyle, color: 'var(--dsw-alias-state-error-primary)' }} aria-label="删除" disabled={removing === worker.id} onClick={() => { void remove(worker) }}><IconTrashOutline16 size={12} /></button>
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+      </div>
+
+      {cleanupDialogOpen && cleanupPreview !== undefined && (
+        <WorktreeCleanupDialog
+          preview={cleanupPreview}
+          decisions={cleanupDecisions}
+          loading={cleanupLoading}
+          deleteCount={cleanupDeleteCount}
+          cleanCount={cleanWorktreeCount}
+          onDecision={(name, decision) => { setCleanupDecisions(current => ({ ...current, [name]: decision })) }}
+          onClose={() => { setCleanupDialogOpen(false) }}
+          onExecute={() => {
+            void executeWorktreeCleanup(riskyWorktrees
+              .filter(candidate => cleanupDecisions[candidate.name] === 'delete')
+              .map(candidate => candidate.name))
+          }}
+        />
+      )}
+
+      {dialogOpen && (
+        <WorkerFormDialog
+          form={form}
+          editing={editing}
+          typeAvailable={typeAvailable === true}
+          codexReason={codexStatus?.reason}
+          modelCatalog={modelCatalog}
+          modelLoading={modelLoading}
+          modelError={modelError}
+          modelPlaceholder={modelPlaceholder}
+          reasoningEfforts={reasoningEfforts}
+          effectiveDefaultEffort={effectiveDefaultEffort}
+          hasSavedApiKey={hasSavedApiKey === true}
+          formValid={formValid}
+          saving={saving}
+          onForm={(next) => { setForm(next) }}
+          onClose={() => { setDialogOpen(false) }}
+          onSave={() => { void save() }}
+        />
+      )}
+    </>
+  )
+}
+
+/** One repository-management row. */
+function RepoRow({ icon, title, detail, note, warn, buttonLabel, disabled, onClick }: {
+  icon: string
+  title: string
+  detail: string
+  note: string
+  warn: boolean
+  buttonLabel: string
+  disabled: boolean
+  onClick: () => void
+}): ReactNode {
+  return (
+    <div style={repoRowStyle}>
+      <span style={repoIconStyle}>{icon}</span>
+      <div style={repoTextStyle}>
+        <div style={repoTitleStyle}>
+          <span>{title}</span>
+          {note !== '' && <span style={{ fontSize: 10.5, fontWeight: 400, color: warn ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-tertiary)' }}>{note}</span>}
+        </div>
+        <div style={repoDetailStyle}>{detail}</div>
+      </div>
+      <button type="button" style={repoButtonStyle} disabled={disabled} onClick={onClick}>{buttonLabel}</button>
+    </div>
+  )
+}
+
+/** Worktree cleanup confirmation dialog. */
+function WorktreeCleanupDialog({ preview, decisions, loading, deleteCount, cleanCount, onDecision, onClose, onExecute }: {
+  preview: WorktreeCleanupPreview
+  decisions: Record<string, 'keep' | 'delete'>
+  loading: boolean
+  deleteCount: number
+  cleanCount: number
+  onDecision: (name: string, decision: 'keep' | 'delete') => void
+  onClose: () => void
+  onExecute: () => void
+}): ReactNode {
+  const risky = preview.candidates.filter(candidate => candidate.needsDecision)
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKeyDown)
+    return () => { document.removeEventListener('keydown', onKeyDown) }
+  }, [onClose])
+  const detail = (candidate: WorktreeCleanupCandidate): string => {
+    const parts = [
+      candidate.staged ? '有暂存改动' : '',
+      candidate.unstaged ? '有未提交改动' : '',
+      candidate.merging ? '正在合并' : '',
+      candidate.ahead > 0 ? `领先上游 ${candidate.ahead} 个提交` : '',
+      candidate.inspectionError ? '状态检查失败' : '',
+    ].filter(Boolean)
+    return parts.join(' · ') || '需要人工确认'
+  }
+  return createPortal(
+    <div style={dialogOverlayStyle} role="presentation" data-dshw-kanban="root">
+      <div style={dialogMaskStyle} aria-hidden="true" onClick={onClose} />
+      <section style={{ ...dialogStyle, width: 620, maxHeight: '80vh' }} role="dialog" aria-modal="true" aria-label="清理 Worktree">
+        <header style={dialogHeaderStyle}>
+          <span style={jobDialogTitleStyle}>清理 Worktree</span>
+          <button type="button" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}>✕</button>
+        </header>
+        <div style={{ padding: 14, overflow: 'auto' }}>
+          <p style={{ margin: 0, fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary)' }}>
+            只处理不再对应 active PR、且没有运行中任务占用的 Worktree。
+            {cleanCount > 0 ? ` ${cleanCount} 个无本地内容的 Worktree 将直接删除。` : ''}
+          </p>
+          <div style={{ marginTop: 12, marginBottom: 5, fontSize: 10.5, fontWeight: 600, color: 'var(--dsw-alias-label-secondary)' }}>需要确认的本地内容</div>
+          <div style={{ border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, overflow: 'auto', maxHeight: 320 }}>
+            {risky.map(candidate => (
+              <div key={candidate.name} style={cleanupRowStyle}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <span style={cleanupNameStyle}>{candidate.name}</span>
+                    <span style={cleanupBranchStyle}>{candidate.branch}</span>
+                  </div>
+                  <div style={{ marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10.5, color: warn }} title={candidate.inspectionError}>
+                    {detail(candidate)}
+                  </div>
+                </div>
+                <select
+                  style={cleanupSelectStyle}
+                  value={decisions[candidate.name] ?? 'keep'}
+                  onChange={event => { onDecision(candidate.name, event.target.value as 'keep' | 'delete') }}
+                >
+                  <option value="keep">保留</option>
+                  <option value="delete">删除并丢弃</option>
+                </select>
+              </div>
+            ))}
+          </div>
+        </div>
+        <footer style={dialogFooterStyle}>
+          <span style={{ fontSize: 10.5, color: 'var(--dsw-alias-label-tertiary)' }}>选择删除后不会保留 stash 或本地分支</span>
+          <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            <button type="button" style={dialogActionButtonStyle} disabled={loading} onClick={onClose}>取消</button>
+            <button type="button" style={primaryButtonStyle} disabled={loading || deleteCount === 0} onClick={onExecute}>
+              {loading ? '清理中' : `清理 ${deleteCount} 个`}
+            </button>
+          </span>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  )
+}
+
+/** Worker add/edit dialog. */
+function WorkerFormDialog({ form, editing, typeAvailable, codexReason, modelCatalog, modelLoading, modelError, modelPlaceholder, reasoningEfforts, effectiveDefaultEffort, hasSavedApiKey, formValid, saving, onForm, onClose, onSave }: {
+  form: WorkerForm
+  editing?: WorkerConfig
+  typeAvailable: boolean
+  codexReason?: string
+  modelCatalog?: WorkerModelCatalog
+  modelLoading: boolean
+  modelError: string
+  modelPlaceholder: string
+  reasoningEfforts: readonly WorkerReasoningEffort[]
+  effectiveDefaultEffort?: string
+  hasSavedApiKey: boolean
+  formValid: boolean
+  saving: boolean
+  onForm: (next: WorkerForm) => void
+  onClose: () => void
+  onSave: () => void
+}): ReactNode {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKeyDown)
+    return () => { document.removeEventListener('keydown', onKeyDown) }
+  }, [onClose])
+  const set = (patch: Partial<WorkerForm>): void => { onForm({ ...form, ...patch }) }
+  const effortOptions = [...reasoningEfforts]
+  const current = form.reasoningEffort?.trim()
+  if (current !== undefined && current !== '' && !effortOptions.some(option => option.id === current)) effortOptions.push({ id: current, name: current })
+  return createPortal(
+    <div style={dialogOverlayStyle} role="presentation" data-dshw-kanban="root">
+      <div style={dialogMaskStyle} aria-hidden="true" onClick={onClose} />
+      <section style={{ ...dialogStyle, width: 560, maxHeight: '85vh', overflow: 'auto' }} role="dialog" aria-modal="true" aria-label={editing === undefined ? '添加 Worker' : '编辑 Worker'}>
+        <header style={dialogHeaderStyle}>
+          <span style={jobDialogTitleStyle}>{editing === undefined ? '添加 Worker' : '编辑 Worker'}</span>
+          <button type="button" style={dialogCloseButtonStyle} aria-label="关闭" onClick={onClose}>✕</button>
+        </header>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '11px 12px', padding: 14 }}>
+          <div style={{ gridColumn: '1 / -1', fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--dsw-alias-label-tertiary)' }}>基本</div>
+          <label style={formFieldStyle}>
+            <span style={formLabelStyle}>名称</span>
+            <input autoFocus style={formInputStyle} placeholder="例如：日常 dsh" value={form.name}
+              onChange={event => { set({ name: event.target.value }) }} />
+          </label>
+          <label style={formFieldStyle}>
+            <span style={formLabelStyle}>类型</span>
+            <select style={formInputStyle} value={form.type}
+              onChange={event => { set({ type: event.target.value as WorkerForm['type'] }) }}>
+              <option value="dsh">dsh</option>
+              <option value="codex" disabled={!typeAvailable}>Codex{typeAvailable ? '' : '（不可用）'}</option>
+              <option value="claude-code" disabled>Claude Code（未支持）</option>
+            </select>
+          </label>
+          <label style={{ ...formFieldStyle, display: 'flex', alignItems: 'flex-end', gap: 6, paddingBottom: 6 }}>
+            <input type="checkbox" disabled={!typeAvailable} checked={form.enabled === true}
+              onChange={event => { set({ enabled: event.target.checked }) }} />
+            启用
+          </label>
+          {!typeAvailable && codexReason !== undefined && (
+            <div style={{ gridColumn: '1 / -1', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }}>{codexReason}</div>
+          )}
+          <div style={{ gridColumn: '1 / -1', marginTop: 2, fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--dsw-alias-label-tertiary)' }}>模型</div>
+          {form.type === 'dsh' && (
+            <label style={formFieldStyle}>
+              <span style={formLabelStyle}>Provider</span>
+              <input style={formInputStyle} placeholder="deepseek-official" value={form.provider ?? ''}
+                onChange={event => { set({ provider: event.target.value }) }} />
+            </label>
+          )}
+          <label style={{ ...formFieldStyle, ...(form.type === 'codex' ? { gridColumn: '1 / -1' } : {}) }}>
+            <span style={formLabelStyle}>模型{form.type === 'codex' ? '（可选）' : ''}</span>
+            <input style={formInputStyle} list="dshw-worker-model-options" placeholder={modelPlaceholder} value={form.model ?? ''}
+              onChange={event => { set({ model: event.target.value }) }} />
+            <datalist id="dshw-worker-model-options">
+              {modelCatalog?.models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
+            </datalist>
+          </label>
+          <label style={{ ...formFieldStyle, gridColumn: '1 / -1' }}>
+            <span style={formLabelStyle}>推理强度</span>
+            <select style={formInputStyle} value={form.reasoningEffort ?? ''}
+              onChange={event => { set({ reasoningEffort: event.target.value }) }}>
+              <option value="">{effectiveDefaultEffort === undefined ? '使用默认值' : `默认（${effectiveDefaultEffort}）`}</option>
+              {effortOptions.map(effort => <option key={effort.id} value={effort.id}>{effort.name}</option>)}
+            </select>
+          </label>
+          {modelLoading && <div style={{ gridColumn: '1 / -1', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }}>正在读取可用模型…</div>}
+          {modelError !== '' && <div style={{ gridColumn: '1 / -1', fontSize: 11, color: warn }}>模型列表读取失败：{modelError}</div>}
+          {form.type === 'dsh' && (
+            <>
+              <div style={{ gridColumn: '1 / -1', marginTop: 2, fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--dsw-alias-label-tertiary)' }}>连接</div>
+              <label style={{ ...formFieldStyle, gridColumn: '1 / -1' }}>
+                <span style={formLabelStyle}>Base URL</span>
+                <input style={formInputStyle} type="url" placeholder="留空则使用 DEEPSEEK_BASE_URL" value={form.baseUrl ?? ''}
+                  onChange={event => { set({ baseUrl: event.target.value }) }} />
+              </label>
+              <label style={{ ...formFieldStyle, gridColumn: '1 / -1' }}>
+                <span style={formLabelStyle}>Search Base URL</span>
+                <input style={formInputStyle} type="url" placeholder="留空则使用 DEEPSEEK_SEARCH_BASE_URL" value={form.searchBaseUrl ?? ''}
+                  onChange={event => { set({ searchBaseUrl: event.target.value }) }} />
+              </label>
+              <label style={formFieldStyle}>
+                <span style={formLabelStyle}>API Key 来源</span>
+                <select style={formInputStyle} value={form.apiKeyMode}
+                  onChange={event => { set({ apiKeyMode: event.target.value as WorkerForm['apiKeyMode'] }) }}>
+                  <option value="value">直接输入</option>
+                  <option value="environment">环境变量</option>
+                </select>
+              </label>
+              {form.apiKeyMode === 'value' ? (
+                <label style={formFieldStyle}>
+                  <span style={formLabelStyle}>API Key</span>
+                  <input style={formInputStyle} type="password" autoComplete="new-password"
+                    placeholder={hasSavedApiKey ? '已保存；留空不变' : '输入 API Key'}
+                    value={form.apiKey ?? ''}
+                    onChange={event => { set({ apiKey: event.target.value }) }} />
+                </label>
+              ) : (
+                <label style={formFieldStyle}>
+                  <span style={formLabelStyle}>环境变量</span>
+                  <input style={formInputStyle} placeholder="DEEPSEEK_API_KEY" value={form.apiKeyEnv ?? ''}
+                    onChange={event => { set({ apiKeyEnv: event.target.value }) }} />
+                </label>
+              )}
+            </>
+          )}
+        </div>
+        <footer style={dialogFooterStyle}>
+          <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            <button type="button" style={dialogActionButtonStyle} onClick={onClose}>取消</button>
+            <button type="button" style={primaryButtonStyle} disabled={saving || !formValid} onClick={onSave}>
+              {saving ? '保存中' : '保存'}
+            </button>
+          </span>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  )
+}
+
+/* ── settings styles ── */
+
+const settingsHeaderStyle: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  height: 40,
+  padding: '0 14px',
+  boxSizing: 'border-box',
+  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+  fontSize: 13,
+  fontWeight: 600,
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const settingsLayoutStyle: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  display: 'grid',
+  gridTemplateColumns: '144px minmax(0, 1fr)',
+}
+
+const settingsNavStyle: CSSProperties = {
+  minHeight: 0,
+  padding: 6,
+  borderRight: '1px solid var(--dsw-alias-border-l2)',
+}
+
+const settingsNavItemStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 7,
+  width: '100%',
+  height: 30,
+  padding: '0 8px',
+  boxSizing: 'border-box',
+  border: 'none',
+  borderRadius: 8,
+  background: 'transparent',
+  cursor: 'pointer',
+  textAlign: 'left',
+  fontFamily: 'inherit',
+  fontSize: 12,
+  fontWeight: 500,
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+const settingsNavActiveStyle: CSSProperties = {
+  ...settingsNavItemStyle,
+  background: 'var(--dsw-alias-interactive-bg-hover)',
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const settingsSectionStyle: CSSProperties = { minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }
+
+const settingsSectionHeaderStyle: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  height: 40,
+  padding: '0 12px',
+  boxSizing: 'border-box',
+  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+}
+
+const settingsSectionTitleStyle: CSSProperties = { fontSize: 12.5, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
+
+const settingsSectionSubStyle: CSSProperties = { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }
+
+const settingsBodyStyle: CSSProperties = { flex: 1, minHeight: 0, overflow: 'auto' }
+
+const settingsCardStyle: CSSProperties = {
+  margin: '0 auto',
+  width: '100%',
+  maxWidth: 760,
+  padding: 20,
+  boxSizing: 'border-box',
+}
+
+const repoRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 12,
+  minHeight: 64,
+  padding: '0 14px',
+  boxSizing: 'border-box',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 8,
+}
+
+const repoIconStyle: CSSProperties = {
+  flex: 'none',
+  display: 'grid',
+  placeItems: 'center',
+  width: 28,
+  height: 28,
+  borderRadius: 8,
+  fontSize: 11,
+  background: 'var(--dsw-alias-interactive-bg-hover)',
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+const repoTextStyle: CSSProperties = { flex: 1, minWidth: 0 }
+
+const repoTitleStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 7,
+  fontSize: 12.5,
+  fontWeight: 500,
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const repoDetailStyle: CSSProperties = { marginTop: 1, fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }
+
+const repoButtonStyle: CSSProperties = {
+  flex: 'none',
+  height: 30,
+  padding: '0 14px',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 8,
+  background: 'transparent',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  fontSize: 12,
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+const addButtonStyle: CSSProperties = {
+  marginLeft: 'auto',
+  height: 28,
+  padding: '0 12px',
+  border: 'none',
+  borderRadius: 8,
+  background: 'var(--dsw-alias-state-business-primary)',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  fontSize: 12,
+  color: '#fff',
+}
+
+const workerNameStyle: CSSProperties = {
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontSize: 12.5,
+  fontWeight: 500,
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const defaultBadgeStyle: CSSProperties = {
+  flex: 'none',
+  marginLeft: 6,
+  padding: '1px 6px',
+  borderRadius: 6,
+  fontSize: 10,
+  background: 'var(--dsw-alias-interactive-bg-hover)',
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+const cleanupRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  minHeight: 52,
+  padding: '0 10px',
+  boxSizing: 'border-box',
+  borderBottom: '1px solid var(--dsw-alias-border-l2)',
+}
+
+const cleanupNameStyle: CSSProperties = { fontFamily: 'var(--ds-font-family-code)', fontSize: 11.5, fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }
+
+const cleanupBranchStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10.5, color: 'var(--dsw-alias-label-tertiary)' }
+
+const cleanupSelectStyle: CSSProperties = {
+  flex: 'none',
+  width: 148,
+  height: 28,
+  padding: '0 7px',
+  boxSizing: 'border-box',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 6,
+  background: 'var(--dsw-alias-bg-base)',
+  outline: 'none',
+  fontFamily: 'inherit',
+  fontSize: 11.5,
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const primaryButtonStyle: CSSProperties = {
+  height: 28,
+  padding: '0 14px',
+  border: 'none',
+  borderRadius: 8,
+  background: 'var(--dsw-alias-state-business-primary)',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  fontSize: 12,
+  color: '#fff',
+}
+
+const formFieldStyle: CSSProperties = { display: 'block', fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)' }
+
+const formLabelStyle: CSSProperties = { display: 'block', marginBottom: 4 }
+
+const formInputStyle: CSSProperties = {
+  width: '100%',
+  height: 28,
+  padding: '0 8px',
+  boxSizing: 'border-box',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 6,
+  outline: 'none',
+  background: 'var(--dsw-alias-bg-base)',
+  fontFamily: 'inherit',
+  fontSize: 12.5,
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+const smallIconButtonStyle: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 24,
+  height: 24,
+  border: 'none',
+  borderRadius: 6,
+  padding: 0,
+  background: 'transparent',
+  cursor: 'pointer',
+  color: 'var(--dsw-alias-label-secondary)',
 }
