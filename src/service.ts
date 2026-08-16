@@ -25,14 +25,15 @@ import {
 } from './config.ts'
 import { createPrClone, listClones, removeClone } from './clone.ts'
 import { readDshwRepositoryStatus } from './dshw-repository.ts'
-import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, maintainClone, mergeConflictPaths, originUrl, remoteBranchOid, repoSlugFromRemote } from './git.ts'
+import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, maintainClone, mergeConflictPaths, remoteBranchOid } from './git.ts'
 import type { CloneMaintenanceAction } from './git.ts'
-import { assessCiAutoFix, ciChecks, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
+import { assessCiAutoFix, ciChecks, listUserRepos, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
 import { readHarnessRepositoryStatus } from './harness-repository.ts'
 import { mergePrDashboardSyncState } from './pr-dashboard.ts'
 import { readGitGraph } from './git-graph.ts'
 import { StateStore } from './state.ts'
-import type { CiCheck, CloneGitStatus, CloneRecord, DshwRepositoryStatus, DshWorkerProgress, HarnessRepositoryStatus, JobRecord, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord, WorkerConfigInput, WorkerExecutionConfig, WorktreeCleanupCandidate, WorktreeCleanupPreview } from './types.ts'
+import { ensureManagedRoot } from './repos.ts'
+import type { CiCheck, CloneGitStatus, CloneRecord, DshwRepositoryStatus, DshWorkerProgress, HarnessRepositoryStatus, JobRecord, MonitoredRepo, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord, WorkerConfigInput, WorkerExecutionConfig, WorktreeCleanupCandidate, WorktreeCleanupPreview } from './types.ts'
 import { after, id, isTaskCancelled, messageOf, now, run, runOrThrow, TaskCancelledError } from './util.ts'
 import { refreshCodeWorkspace } from './workspace.ts'
 import { assertManagedHarnessOwned, ensureInstallation, ensureManagedHarness, requireDaemonInstallation, type InstallationRecord } from './install.ts'
@@ -183,12 +184,16 @@ class WorkflowService {
   #rateLimitResetAt: string | undefined
   #lastDiscoveryAt = 0
   #discoveryPromise: Promise<void> | undefined
+  #monitoredRepos: MonitoredRepo[]
+  /** 用户有权限的仓库列表缓存（gh 分页拉取较慢，避免每次进入设置面板都等十几秒）。 */
+  #userReposCache: { repos: string[]; fetchedAt: number } | undefined
 
   constructor(store: StateStore, installation: InstallationRecord, workers: WorkerConfigStore, workerRegistry: WorkerRegistry) {
     this.#store = store
     this.#installation = installation
     this.#workers = workers
     this.#workerRegistry = workerRegistry
+    this.#monitoredRepos = store.state.repos
     const cached = store.state.prDashboardCache
     this.#prDashboard = cached?.records ?? []
     this.#prDashboardStatus = {
@@ -228,6 +233,8 @@ class WorkflowService {
     this.#resumeDshJobs()
     await this.#tick()
     await this.#refreshHarnessRepository()
+    // 预热用户仓库列表缓存（gh 分页较慢），避免首次打开设置面板等待
+    void this.#userRepos().catch(() => {})
     this.#broadcast()
   }
 
@@ -266,8 +273,24 @@ class WorkflowService {
       this.#json(response, 200, await this.#snapshot())
       return
     }
-    if (method === 'GET' && url === '/api/git-graph') {
-      this.#json(response, 200, await readGitGraph(HARNESS_ROOT, this.#prDashboard))
+    if (method === 'GET' && new URL(url, `http://${HOST}:${PORT}`).pathname === '/api/git-graph') {
+      const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
+      const requested = requestUrl.searchParams.get('repo') ?? undefined
+      const enabled = this.#monitoredRepos.filter(repo => repo.enabled)
+      const repo = requested === undefined
+        ? enabled[0]
+        : enabled.find(candidate => candidate.repoSlug === requested)
+      if (requested !== undefined && repo === undefined) {
+        this.#json(response, 404, { error: `未监控的仓库：${requested}` })
+        return
+      }
+      if (repo === undefined) {
+        this.#json(response, 200, await readGitGraph(HARNESS_ROOT, []))
+        return
+      }
+      const root = await ensureManagedRoot(repo.repoSlug, this.#installation)
+      const prs = this.#prDashboard.filter(pr => pr.repoSlug === repo.repoSlug)
+      this.#json(response, 200, await readGitGraph(root, prs))
       return
     }
     if (method === 'GET' && url === '/api/events') {
@@ -368,6 +391,49 @@ class WorkflowService {
       const enabled = body.enabled === true
       const sync = await this.#setSyncEnabled(clone, enabled)
       this.#json(response, 200, { syncId: sync.id, enabled: sync.enabled === true })
+      return
+    }
+    if (method === 'GET' && url === '/api/repos') {
+      this.#json(response, 200, { repos: this.#monitoredRepos })
+      return
+    }
+    if (method === 'GET' && url === '/api/repos/available') {
+      const available = await this.#userRepos()
+      this.#json(response, 200, { repos: available })
+      return
+    }
+    if (method === 'PUT' && url === '/api/repos') {
+      const body = await readBody(request)
+      const incoming = body.repos
+      if (!Array.isArray(incoming) || incoming.some(value => (
+        typeof value !== 'object' || value === null
+        || typeof (value as { repoSlug?: unknown }).repoSlug !== 'string'
+        || typeof (value as { enabled?: unknown }).enabled !== 'boolean'
+      ))) {
+        throw new Error('repos must be an array of { repoSlug, enabled }')
+      }
+      const seen = new Set<string>()
+      const next: MonitoredRepo[] = (incoming as Array<{ repoSlug: string; enabled: boolean }>).map(value => {
+        const repoSlug = value.repoSlug.trim()
+        if (!/^[^/]+\/[^/]+$/u.test(repoSlug)) throw new Error(`无效的 GitHub 仓库：${JSON.stringify(repoSlug)}`)
+        if (seen.has(repoSlug)) throw new Error(`重复的仓库：${repoSlug}`)
+        seen.add(repoSlug)
+        return { repoSlug, enabled: value.enabled }
+      })
+      const previouslyEnabled = new Set(this.#monitoredRepos.filter(repo => repo.enabled).map(repo => repo.repoSlug))
+      const newlyEnabled = next.filter(repo => repo.enabled && !previouslyEnabled.has(repo.repoSlug))
+      this.#monitoredRepos = next
+      this.#store.state.repos = next
+      const summary = next.filter(repo => repo.enabled).map(repo => repo.repoSlug).join('、') || '无'
+      this.#store.event('info', 'settings', `监控仓库已更新：${summary}`)
+      await this.#store.changed()
+      if (newlyEnabled.length > 0) {
+        this.#lastDiscoveryAt = 0
+        void this.#discoverMyPrs()
+      }
+      this.#lastPrDashboardRefreshAt = 0
+      void this.#refreshPrDashboard()
+      this.#json(response, 200, { repos: next })
       return
     }
     if (method === 'POST' && url === '/api/prs/refresh') {
@@ -530,7 +596,7 @@ class WorkflowService {
   }
 
   async #snapshot(): Promise<object> {
-    const { prDashboardCache: _prDashboardCache, reviewRequestsCache: _reviewRequestsCache, jobs, ...state } = this.#store.state
+    const { prDashboardCache: _prDashboardCache, reviewRequestsCache: _reviewRequestsCache, repos: _repos, jobs, ...state } = this.#store.state
     const recentJobs = jobs.filter((job, index) => job.status === 'running' || index >= jobs.length - HISTORY_PAGE_SIZE)
     const clones = await listClones()
     const worktreeCleanupCount = this.#prDashboardStatus.state === 'ready' && !this.#prDashboardStatus.stale
@@ -548,6 +614,7 @@ class WorkflowService {
         rateLimited: this.#rateLimited,
         ...(this.#rateLimitResetAt === undefined ? {} : { rateLimitResetAt: this.#rateLimitResetAt }),
       },
+      repos: this.#monitoredRepos,
       clones,
       ...(worktreeCleanupCount === undefined ? {} : { worktreeCleanupCount }),
       prs: mergePrDashboardSyncState(this.#prDashboard, this.#store.state.syncs),
@@ -696,66 +763,89 @@ class WorkflowService {
     return sync
   }
 
-  /** 自动发现我在托管仓库上的所有 open PR：克隆并纳入追踪（sync 默认关闭），并清理已关闭 PR 的 sync。 */
+  /** 自动发现在所有被监控仓库上我的 open PR：克隆并纳入追踪（sync 默认关闭），并清理已关闭 PR 的 sync。 */
   async #discoverMyPrs(): Promise<void> {
     if (this.#discoveryPromise !== undefined) return await this.#discoveryPromise
     this.#lastDiscoveryAt = Date.now()
     this.#discoveryPromise = (async () => {
       try {
-        const repoSlug = repoSlugFromRemote(await originUrl(HARNESS_ROOT))
-        const reviewRefresh = this.#refreshReviewRequests(repoSlug)
-        const prs = await myOpenPullRequests(HARNESS_ROOT, repoSlug)
-        await reviewRefresh
+        const reviewRefresh = this.#refreshReviewRequests()
         const clones = await listClones()
         let tracked = 0
         let cloned = 0
-        for (const pr of prs) {
-          const existing = this.#store.state.syncs.find(
-            sync => sync.repoSlug === repoSlug && sync.prNumber === pr.number,
-          )
-          if (existing !== undefined) continue
-          let clone = clones.find(candidate => candidate.repoSlug === repoSlug && candidate.branch === pr.headRefName)
-          if (clone === undefined) {
-            clone = await createPrClone(pr, repoSlug)
-            clones.push(clone)
-            cloned += 1
+        let staleTotal = 0
+        let firstError = ''
+        for (const repo of this.#monitoredRepos) {
+          if (!repo.enabled) continue
+          const repoSlug = repo.repoSlug
+          try {
+            const root = await ensureManagedRoot(repoSlug, this.#installation)
+            const prs = await myOpenPullRequests(root, repoSlug)
+            for (const pr of prs) {
+              const existing = this.#store.state.syncs.find(
+                sync => sync.repoSlug === repoSlug && sync.prNumber === pr.number,
+              )
+              if (existing !== undefined) continue
+              let clone = clones.find(candidate => candidate.repoSlug === repoSlug && candidate.branch === pr.headRefName)
+              if (clone === undefined) {
+                clone = await createPrClone(pr, repoSlug)
+                clones.push(clone)
+                cloned += 1
+              }
+              const sync: SyncRecord = {
+                id: id('sync'),
+                cloneName: clone.name,
+                clonePath: clone.path,
+                remoteUrl: `https://github.com/${repoSlug}.git`,
+                repoSlug,
+                prNumber: pr.number,
+                prUrl: pr.url,
+                branch: pr.headRefName,
+                baseRefName: pr.baseRefName,
+                baseOid: pr.baseRefOid,
+                headOid: pr.headRefOid,
+                status: pr.isDraft ? 'draft' : 'active',
+                enabled: false,
+                pausedReason: pr.isDraft ? 'PR 是 draft，冲突同步和 CI 修复均已暂停' : undefined,
+                createdAt: now(),
+                updatedAt: now(),
+                nextPrRefreshAt: now(),
+              }
+              this.#store.state.syncs.push(sync)
+              this.#store.event('info', 'track', `发现我的 PR #${pr.number}「${pr.title}」（${repoSlug}），已克隆并纳入追踪（sync 默认关闭，可在 UI 打开）`)
+              tracked += 1
+            }
+            const openNumbers = new Set(prs.map(pr => pr.number))
+            const stale = this.#store.state.syncs.filter(sync => (
+              sync.repoSlug === repoSlug && !openNumbers.has(sync.prNumber) && !this.#syncLocks.has(sync.id)
+            ))
+            if (stale.length > 0) {
+              const staleIds = new Set(stale.map(sync => sync.id))
+              this.#store.state.syncs = this.#store.state.syncs.filter(sync => !staleIds.has(sync.id))
+              for (const sync of stale) {
+                this.#store.event('info', 'sync', `PR #${sync.prNumber}（${repoSlug}）已不再 open，停止追踪`)
+              }
+              staleTotal += stale.length
+            }
+          } catch (error) {
+            this.#noteGhFailure(error)
+            firstError = messageOf(error)
+            this.#store.event('warning', 'track', `${repoSlug} 自动发现 PR 失败：${messageOf(error)}`)
           }
-          const sync: SyncRecord = {
-            id: id('sync'),
-            cloneName: clone.name,
-            clonePath: clone.path,
-            remoteUrl: clone.remoteUrl,
-            repoSlug,
-            prNumber: pr.number,
-            prUrl: pr.url,
-            branch: pr.headRefName,
-            baseRefName: pr.baseRefName,
-            baseOid: pr.baseRefOid,
-            headOid: pr.headRefOid,
-            status: pr.isDraft ? 'draft' : 'active',
-            enabled: false,
-            pausedReason: pr.isDraft ? 'PR 是 draft，冲突同步和 CI 修复均已暂停' : undefined,
-            createdAt: now(),
-            updatedAt: now(),
-            nextPrRefreshAt: now(),
-          }
-          this.#store.state.syncs.push(sync)
-          this.#store.event('info', 'track', `发现我的 PR #${pr.number}「${pr.title}」，已克隆并纳入追踪（sync 默认关闭，可在 UI 打开）`)
-          tracked += 1
         }
-        const openNumbers = new Set(prs.map(pr => pr.number))
-        const stale = this.#store.state.syncs.filter(sync => (
-          sync.repoSlug === repoSlug && !openNumbers.has(sync.prNumber) && !this.#syncLocks.has(sync.id)
-        ))
-        if (stale.length > 0) {
-          const staleIds = new Set(stale.map(sync => sync.id))
-          this.#store.state.syncs = this.#store.state.syncs.filter(sync => !staleIds.has(sync.id))
-          for (const sync of stale) this.#store.event('info', 'sync', `PR #${sync.prNumber} 已不再 open，停止追踪`)
-        }
-        if (tracked > 0 || stale.length > 0) await this.#store.changed()
+        await reviewRefresh
+        if (tracked > 0 || staleTotal > 0 || firstError !== '') await this.#store.changed()
         if (cloned > 0) {
           this.#lastWorkspaceRefreshAt = 0
           void this.#refreshWorkspace()
+        }
+        if (firstError !== '' && this.#reviewRequestsStatus.state === 'loading') {
+          this.#reviewRequestsStatus = {
+            state: 'error',
+            refreshing: false,
+            stale: this.#reviewRequests.length > 0,
+            error: firstError,
+          }
         }
       } catch (error) {
         this.#noteGhFailure(error)
@@ -778,7 +868,7 @@ class WorkflowService {
     }
   }
 
-  async #refreshReviewRequests(repoSlug: string): Promise<void> {
+  async #refreshReviewRequests(): Promise<void> {
     const attemptAt = now()
     this.#reviewRequestsStatus = {
       ...this.#reviewRequestsStatus,
@@ -787,9 +877,21 @@ class WorkflowService {
     }
     this.#broadcast()
     try {
-      const records = await reviewRequestedPullRequests(HARNESS_ROOT, repoSlug)
+      const enabled = this.#monitoredRepos.filter(repo => repo.enabled)
+      const collected: ReviewRequestRecord[] = []
+      const failures: string[] = []
+      for (const repo of enabled) {
+        try {
+          const root = await ensureManagedRoot(repo.repoSlug, this.#installation)
+          const records = await reviewRequestedPullRequests(root, repo.repoSlug)
+          collected.push(...records)
+        } catch (error) {
+          this.#noteGhFailure(error)
+          failures.push(`${repo.repoSlug}: ${messageOf(error)}`)
+        }
+      }
       const completedAt = now()
-      this.#reviewRequests = records
+      this.#reviewRequests = collected
       this.#reviewRequestsStatus = {
         state: 'ready',
         refreshing: false,
@@ -797,7 +899,10 @@ class WorkflowService {
         lastAttemptAt: attemptAt,
         lastSuccessAt: completedAt,
       }
-      this.#store.state.reviewRequestsCache = { records, lastSuccessAt: completedAt }
+      this.#store.state.reviewRequestsCache = { records: collected, lastSuccessAt: completedAt }
+      if (failures.length > 0) {
+        this.#store.event('warning', 'reviews', `待 review PR 刷新部分失败：${failures.join('；')}`)
+      }
     } catch (error) {
       this.#noteGhFailure(error)
       const detail = messageOf(error)
@@ -929,11 +1034,9 @@ class WorkflowService {
     }
     this.#broadcast()
     this.#prDashboardRefreshPromise = (async () => {
-      // 一次 list 查询拿到所有 open PR，避免每个 clone 一次 gh pr view 烧 GraphQL 额度
+      // 每个被监控仓库一次 list 查询拿到所有 open PR，避免每个 clone 一次 gh pr view 烧 GraphQL 额度
       const clones = await listClones()
-      const repoSlug = clones[0]?.repoSlug ?? 'deepseek-harness/deepseek-harness'
-      const openPrs = await openPullRequests(HARNESS_ROOT, repoSlug)
-      const byBranch = new Map(openPrs.map(pr => [pr.headRefName, pr]))
+      const enabled = this.#monitoredRepos.filter(repo => repo.enabled)
       const previousByClone = new Map(this.#prDashboard.map(record => [record.cloneName, record]))
       const refreshErrors: string[] = []
       let firstErrorEventId: string | undefined
@@ -942,9 +1045,6 @@ class WorkflowService {
         const event = this.#store.event('warning', kind, detail)
         firstErrorEventId ??= event.id
       }
-      const clonedBranches = new Set(clones.map(clone => `${clone.repoSlug}\n${clone.branch}`))
-      const pendingClones = openPrs.filter(pr => !clonedBranches.has(`${repoSlug}\n${pr.headRefName}`))
-      if (pendingClones.length > 0) recordRefreshError(`${pendingClones.length} 个 open PR 的本地 clone 尚未准备完成`)
       const commitFetches = new Map<string, Promise<void>>()
       const targetTipFetches = new Map<string, Promise<string>>()
       const commonDirs = new Map<string, Promise<string>>()
@@ -957,8 +1057,8 @@ class WorkflowService {
       }
       const ensureCommitAvailable = async (clone: CloneRecord, branch: string, oid: string): Promise<void> => {
         // Old clone metadata can point sourcePath at the user's original checkout,
-        // while the clone is actually a worktree of HARNESS_ROOT. Ask Git for the
-        // true object database so shared worktrees never fetch the same ref at once.
+        // while the clone is actually a worktree of the managed root. Ask Git for
+        // the true object database so shared worktrees never fetch the same ref at once.
         const key = `${await commonDirFor(clone)}\n${branch}\n${oid}`
         const existing = commitFetches.get(key)
         if (existing !== undefined) return await existing
@@ -983,88 +1083,106 @@ class WorkflowService {
         targetTipFetches.set(key, promise)
         return await promise
       }
-      const records = await Promise.all(clones.map(async clone => {
+      const matched: PrDashboardRecord[] = []
+      for (const repo of enabled) {
+        const repoSlug = repo.repoSlug
+        let openPrs: PullRequestInfo[]
         try {
-          const pr = byBranch.get(clone.branch)
-          if (pr === undefined) return undefined
-          const previous = previousByClone.get(clone.name)
-          const checks = rollupChecks(pr.statusCheckRollup)
-          const ci = summarizeChecks(checks)
-          const conflicting = pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY'
-          await ensureCommitAvailable(clone, pr.headRefName, pr.headRefOid)
-          const targetOid = pr.mergeable === 'MERGEABLE' || conflicting
-            ? await latestTargetOid(clone, pr.baseRefName)
-            : undefined
-          const localGitStatus = await cloneGitStatus(clone.path, pr.headRefOid)
-          // GitHub 对落后的 PR 也报 BLOCKED 而非 BEHIND，用本地 git 判断是否落后 base
-          const baseBehind = pr.mergeable === 'MERGEABLE'
-            && targetOid !== undefined
-            && !(await isAncestor(clone.path, targetOid, pr.headRefOid))
-          let conflictPaths = conflicting ? previous?.conflictPaths : undefined
-          if (conflicting && targetOid !== undefined) {
-            try {
-              // GitHub computes mergeability against the current target tip. baseRefOid is
-              // only the PR's base snapshot and can remain an ancestor after target moves.
-              conflictPaths = await this.#cachedConflictPaths(clone.repoSlug, clone.path, pr.headRefOid, targetOid)
-            } catch (error) {
-              const detail = `${clone.name} 冲突文件：${messageOf(error)}`
-              recordRefreshError(detail, 'conflict-paths')
-              this.#noteGhFailure(error)
-            }
-          }
-          const sync = this.#store.state.syncs.find(candidate => (
-            candidate.repoSlug === clone.repoSlug && candidate.prNumber === pr.number
-          ))
-          const record: PrDashboardRecord = {
-            cloneName: clone.name,
-            clonePath: clone.path,
-            repoSlug: clone.repoSlug,
-            number: pr.number,
-            title: pr.title,
-            url: pr.url,
-            state: pr.state,
-            isDraft: pr.isDraft,
-            branch: pr.headRefName,
-            baseRefName: pr.baseRefName,
-            headOid: pr.headRefOid,
-            baseOid: pr.baseRefOid,
-            mergeable: pr.mergeable,
-            mergeStateStatus: pr.mergeStateStatus,
-            ...(conflictPaths === undefined ? {} : { conflictPaths }),
-            ...(conflictPaths !== undefined
-              && conflictPaths.length > 0
-              && conflictPaths.every(isDocumentationConflictPath)
-              ? { autoMergeSkippedReason: '仅文档冲突' }
-              : {}),
-            ...(baseBehind ? { baseBehind: true } : {}),
-            reviewDecision: pr.reviewDecision,
-            reviewRequests: pr.reviewRequests
-              .filter(request => request.__typename === 'User' && request.login !== undefined)
-              .map(request => request.login!),
-            reviews: pr.latestReviews,
-            reviewerComments: previous?.reviewerComments ?? {},
-            ciStatus: ci.status,
-            ciSummary: ci.summary,
-            checks,
-            localGitStatus,
-            ...(sync === undefined ? {} : {
-              syncId: sync.id,
-              syncEnabled: sync.enabled !== false,
-              ...(sync.pendingBaseCheckAt === undefined ? {} : { pendingBaseCheckAt: sync.pendingBaseCheckAt }),
-              ...(sync.agentPausedReason === undefined ? {} : { agentPausedReason: sync.agentPausedReason }),
-            }),
-            ...(previous?.unresolvedComments === undefined ? {} : { unresolvedComments: previous.unresolvedComments }),
-            updatedAt: now(),
-          }
-          return record
+          const root = await ensureManagedRoot(repoSlug, this.#installation)
+          openPrs = await openPullRequests(root, repoSlug)
         } catch (error) {
-          const detail = `${clone.name}: ${messageOf(error)}`
-          recordRefreshError(detail)
           this.#noteGhFailure(error)
-          return previousByClone.get(clone.name)
+          recordRefreshError(`${repoSlug}: ${messageOf(error)}`)
+          continue
         }
-      }))
-      const matched = records.filter((record): record is PrDashboardRecord => record !== undefined)
+        const byBranch = new Map(openPrs.map(pr => [pr.headRefName, pr]))
+        const repoClones = clones.filter(clone => clone.repoSlug === repoSlug)
+        const clonedBranches = new Set(repoClones.map(clone => `${clone.repoSlug}\n${clone.branch}`))
+        const pendingClones = openPrs.filter(pr => !clonedBranches.has(`${repoSlug}\n${pr.headRefName}`))
+        if (pendingClones.length > 0) recordRefreshError(`${repoSlug}: ${pendingClones.length} 个 open PR 的本地 clone 尚未准备完成`)
+        const records = await Promise.all(repoClones.map(async clone => {
+          try {
+            const pr = byBranch.get(clone.branch)
+            if (pr === undefined) return undefined
+            const previous = previousByClone.get(clone.name)
+            const checks = rollupChecks(pr.statusCheckRollup)
+            const ci = summarizeChecks(checks)
+            const conflicting = pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY'
+            await ensureCommitAvailable(clone, pr.headRefName, pr.headRefOid)
+            const targetOid = pr.mergeable === 'MERGEABLE' || conflicting
+              ? await latestTargetOid(clone, pr.baseRefName)
+              : undefined
+            const localGitStatus = await cloneGitStatus(clone.path, pr.headRefOid)
+            // GitHub 对落后的 PR 也报 BLOCKED 而非 BEHIND，用本地 git 判断是否落后 base
+            const baseBehind = pr.mergeable === 'MERGEABLE'
+              && targetOid !== undefined
+              && !(await isAncestor(clone.path, targetOid, pr.headRefOid))
+            let conflictPaths = conflicting ? previous?.conflictPaths : undefined
+            if (conflicting && targetOid !== undefined) {
+              try {
+                // GitHub computes mergeability against the current target tip. baseRefOid is
+                // only the PR's base snapshot and can remain an ancestor after target moves.
+                conflictPaths = await this.#cachedConflictPaths(clone.repoSlug, clone.path, pr.headRefOid, targetOid)
+              } catch (error) {
+                const detail = `${clone.name} 冲突文件：${messageOf(error)}`
+                recordRefreshError(detail, 'conflict-paths')
+                this.#noteGhFailure(error)
+              }
+            }
+            const sync = this.#store.state.syncs.find(candidate => (
+              candidate.repoSlug === clone.repoSlug && candidate.prNumber === pr.number
+            ))
+            const record: PrDashboardRecord = {
+              cloneName: clone.name,
+              clonePath: clone.path,
+              repoSlug: clone.repoSlug,
+              number: pr.number,
+              title: pr.title,
+              url: pr.url,
+              state: pr.state,
+              isDraft: pr.isDraft,
+              branch: pr.headRefName,
+              baseRefName: pr.baseRefName,
+              headOid: pr.headRefOid,
+              baseOid: pr.baseRefOid,
+              mergeable: pr.mergeable,
+              mergeStateStatus: pr.mergeStateStatus,
+              ...(conflictPaths === undefined ? {} : { conflictPaths }),
+              ...(conflictPaths !== undefined
+                && conflictPaths.length > 0
+                && conflictPaths.every(isDocumentationConflictPath)
+                ? { autoMergeSkippedReason: '仅文档冲突' }
+                : {}),
+              ...(baseBehind ? { baseBehind: true } : {}),
+              reviewDecision: pr.reviewDecision,
+              reviewRequests: pr.reviewRequests
+                .filter(request => request.__typename === 'User' && request.login !== undefined)
+                .map(request => request.login!),
+              reviews: pr.latestReviews,
+              reviewerComments: previous?.reviewerComments ?? {},
+              ciStatus: ci.status,
+              ciSummary: ci.summary,
+              checks,
+              localGitStatus,
+              ...(sync === undefined ? {} : {
+                syncId: sync.id,
+                syncEnabled: sync.enabled !== false,
+                ...(sync.pendingBaseCheckAt === undefined ? {} : { pendingBaseCheckAt: sync.pendingBaseCheckAt }),
+                ...(sync.agentPausedReason === undefined ? {} : { agentPausedReason: sync.agentPausedReason }),
+              }),
+              ...(previous?.unresolvedComments === undefined ? {} : { unresolvedComments: previous.unresolvedComments }),
+              updatedAt: now(),
+            }
+            return record
+          } catch (error) {
+            const detail = `${clone.name}: ${messageOf(error)}`
+            recordRefreshError(detail)
+            this.#noteGhFailure(error)
+            return previousByClone.get(clone.name)
+          }
+        }))
+        matched.push(...records.filter((record): record is PrDashboardRecord => record !== undefined))
+      }
       this.#prDashboard = matched
         .sort((left, right) => Number(left.isDraft) - Number(right.isDraft) || left.number - right.number || left.cloneName.localeCompare(right.cloneName))
       // Do not hold the first visible PR rows behind the more expensive review-thread query.
@@ -1072,13 +1190,22 @@ class WorkflowService {
       if (Date.now() - this.#lastReviewProgressRefreshAt >= PR_REVIEW_INTERVAL_MS) {
         this.#lastReviewProgressRefreshAt = Date.now()
         try {
-          const progress = await reviewerCommentProgress(HARNESS_ROOT, repoSlug, matched.map(record => record.number))
+          const byRepo = new Map<string, PrDashboardRecord[]>()
           for (const record of matched) {
-            record.reviewerComments = progress.get(record.number) ?? {}
-            const unresolved = Object.values(record.reviewerComments)
-              .reduce((count, reviewer) => count + reviewer.total - reviewer.resolved, 0)
-            delete record.unresolvedComments
-            if (unresolved > 0) record.unresolvedComments = unresolved
+            const group = byRepo.get(record.repoSlug) ?? []
+            group.push(record)
+            byRepo.set(record.repoSlug, group)
+          }
+          for (const [repoSlug, records] of byRepo) {
+            const root = await ensureManagedRoot(repoSlug, this.#installation)
+            const progress = await reviewerCommentProgress(root, repoSlug, records.map(record => record.number))
+            for (const record of records) {
+              record.reviewerComments = progress.get(record.number) ?? {}
+              const unresolved = Object.values(record.reviewerComments)
+                .reduce((count, reviewer) => count + reviewer.total - reviewer.resolved, 0)
+              delete record.unresolvedComments
+              if (unresolved > 0) record.unresolvedComments = unresolved
+            }
           }
         } catch (error) {
           const detail = `review 评论计数失败：${messageOf(error)}`
@@ -1087,7 +1214,7 @@ class WorkflowService {
         }
       }
       const completedAt = now()
-      const complete = refreshErrors.length === 0 && (openPrs.length === 0 || matched.length > 0)
+      const complete = refreshErrors.length === 0
       const lastSuccessAt = complete ? completedAt : this.#prDashboardStatus.lastSuccessAt
       this.#prDashboardStatus = complete ? {
         state: 'ready',
@@ -1173,6 +1300,15 @@ class WorkflowService {
       if (result.code === 0 && Number.isFinite(epoch)) this.#rateLimitResetAt = new Date(epoch * 1_000).toISOString()
       await this.#store.changed()
     })()
+  }
+
+  /** 用户有权限的仓库列表（10 分钟缓存；gh 分页拉取较慢）。 */
+  async #userRepos(): Promise<string[]> {
+    const cached = this.#userReposCache
+    if (cached !== undefined && Date.now() - cached.fetchedAt < 10 * 60 * 1000) return cached.repos
+    const repos = await listUserRepos(HARNESS_ROOT)
+    this.#userReposCache = { repos, fetchedAt: Date.now() }
+    return repos
   }
 
   #clearRateLimited(): void {
@@ -1396,7 +1532,7 @@ class WorkflowService {
   }
 
   async #autoFixCi(sync: SyncRecord, checks: readonly CiCheck[], signal?: AbortSignal): Promise<void> {
-    const assessment = await assessCiAutoFix(sync.clonePath, sync.repoSlug, checks, 'master', signal)
+    const assessment = await assessCiAutoFix(sync.clonePath, sync.repoSlug, checks, sync.baseRefName, signal)
     if (assessment.failingBaseChecks.length > 0) {
       this.#store.event(
         'warning',
@@ -1545,7 +1681,7 @@ class WorkflowService {
       id: `manual:${clone.path}`,
       cloneName: clone.name,
       clonePath: clone.path,
-      remoteUrl: clone.remoteUrl,
+      remoteUrl: `https://github.com/${clone.repoSlug}.git`,
       repoSlug: clone.repoSlug,
       prNumber: pr.number,
       prUrl: pr.url,

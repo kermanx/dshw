@@ -66,8 +66,22 @@ export async function reviewRequestedPullRequests(cwd: string, repoSlug: string,
     ],
     { cwd, timeoutMs: 30_000, signal },
   )
-  const parsed = JSON.parse(result.stdout) as Array<Omit<ReviewRequestRecord, 'author'> & { author?: { login?: string } }>
-  return parsed.map(pr => ({ ...pr, author: pr.author?.login ?? 'unknown' }))
+  const parsed = JSON.parse(result.stdout) as Array<Omit<ReviewRequestRecord, 'repoSlug' | 'author'> & { author?: { login?: string } }>
+  return parsed.map(pr => ({ ...pr, repoSlug, author: pr.author?.login ?? 'unknown' }))
+}
+
+/** 列出当前用户有权限（owner / collaborator / organization member）的所有 GitHub 仓库。 */
+export async function listUserRepos(cwd: string, signal?: AbortSignal): Promise<string[]> {
+  const result = await runOrThrow(
+    'gh',
+    [
+      'api', '--paginate',
+      'user/repos?affiliation=owner,collaborator,organization_member&per_page=100&sort=full_name',
+      '--jq', '.[].full_name',
+    ],
+    { cwd, timeoutMs: 60_000, signal },
+  )
+  return [...new Set(result.stdout.split('\n').map(line => line.trim()).filter(Boolean))]
 }
 
 /** 一次 GraphQL 调用批量取多个 PR 的 review thread，并按发起 thread 的 reviewer 汇总解决进度。 */

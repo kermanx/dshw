@@ -16,11 +16,12 @@ export interface WorkspaceRefreshResult {
 }
 
 export function codeWorkspaceFolders(
-  clones: readonly { name: string; path: string; prNumber: number }[],
+  clones: readonly { name: string; path: string; prNumber: number; repoSlug: string }[],
   workspaceRoot = dirname(CODE_WORKSPACE_FILE),
 ): CodeWorkspaceFolder[] {
   const folders = clones.map(clone => ({
-    name: `PR_${clone.prNumber}`,
+    // 多 repo 下 PR 号会跨仓库冲突，文件夹名带上仓库名以便区分
+    name: `#${clone.prNumber} · ${clone.repoSlug}`,
     path: `./${relative(workspaceRoot, clone.path).split(sep).join('/')}`,
   }))
   folders.push({ name: 'dshw', path: `./${relative(workspaceRoot, DSHW_ROOT).split(sep).join('/')}` })
@@ -34,6 +35,7 @@ export async function refreshCodeWorkspace(dashboard?: readonly PrDashboardRecor
       name: pr.cloneName,
       path: pr.clonePath,
       prNumber: pr.number,
+      repoSlug: pr.repoSlug,
     })))
     await writeJsonAtomic(CODE_WORKSPACE_FILE, { folders })
     return { folders, warnings: [] }
@@ -42,7 +44,7 @@ export async function refreshCodeWorkspace(dashboard?: readonly PrDashboardRecor
   // Before the daemon starts, use the same persisted dashboard snapshot the
   // UI will render. This avoids a second source of truth during startup.
   const state = await readJson<ServiceState>(STATE_FILE)
-  const cached = state?.version === 2 ? state.prDashboardCache?.records : undefined
+  const cached = state?.version === 3 ? state.prDashboardCache?.records : undefined
   if (cached !== undefined) return await refreshCodeWorkspace(cached)
 
   // First-ever startup has no dashboard snapshot yet. Resolve open PRs once,
@@ -53,7 +55,7 @@ export async function refreshCodeWorkspace(dashboard?: readonly PrDashboardRecor
     try {
       const pr = await pullRequest(clone.path, clone.repoSlug, undefined, clone.branch)
       return pr.state === 'OPEN'
-        ? { name: clone.name, path: clone.path, prNumber: pr.number, isDraft: pr.isDraft }
+        ? { name: clone.name, path: clone.path, prNumber: pr.number, repoSlug: clone.repoSlug, isDraft: pr.isDraft }
         : undefined
     } catch (error) {
       warnings.push(`${clone.name}: ${messageOf(error)}`)

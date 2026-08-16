@@ -3,7 +3,6 @@ import { Socket } from 'node:net'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  CLONE_METADATA_ROOT,
   CLONES_ROOT,
   CODE_WORKSPACE_FILE,
   DATA_ROOT,
@@ -66,7 +65,6 @@ export function renderServicePlist(installation: InstallationRecord): string {
     DSHW_DATA_ROOT: DATA_ROOT,
     DSHW_HARNESS_ROOT: HARNESS_ROOT,
     DSHW_CLONES_ROOT: CLONES_ROOT,
-    DSHW_CLONE_METADATA_ROOT: CLONE_METADATA_ROOT,
     DSHW_CODE_WORKSPACE_FILE: CODE_WORKSPACE_FILE,
     DSHW_HARNESS_REMOTE_URL: HARNESS_REMOTE_URL,
     DSHW_SERVICE_LABEL: SERVICE_LABEL,

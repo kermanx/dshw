@@ -938,12 +938,12 @@ test('reconstructs live dsh progress from the durable session event tail after r
 
 test('keeps code workspace PR folders in dashboard order without an all-worktrees folder', () => {
   const folders = codeWorkspaceFolders([
-    { name: 'dsh-9', path: `${CLONES_ROOT}/dsh-9`, prNumber: 120 },
-    { name: 'dsh-2', path: `${CLONES_ROOT}/dsh-2`, prNumber: 7 },
+    { name: 'dsh-9', path: `${CLONES_ROOT}/dsh-9`, prNumber: 120, repoSlug: 'deepseek-harness/deepseek-harness' },
+    { name: 'dsh-2', path: `${CLONES_ROOT}/dsh-2`, prNumber: 7, repoSlug: 'deepseek-harness/deepseek-harness' },
   ])
   assert.deepEqual(folders, [
-    { name: 'PR_120', path: './worktrees/dsh-9' },
-    { name: 'PR_7', path: './worktrees/dsh-2' },
+    { name: '#120 · deepseek-harness/deepseek-harness', path: './worktrees/dsh-9' },
+    { name: '#7 · deepseek-harness/deepseek-harness', path: './worktrees/dsh-2' },
     { name: 'dshw', path: './..' },
   ])
 })
@@ -998,13 +998,11 @@ test('creates worktrees with a unique local branch tracking the PR branch', asyn
     assert.equal(await gitCommonDir(worktree), await gitCommonDir(managed))
 
     const clone = {
-      name: 'dsh-1', path: worktree, sourcePath: managed, remoteUrl: remote,
-      repoSlug: 'deepseek-harness/deepseek-harness', branch: 'feature/test', worktreeBranch: branch, createdAt: new Date().toISOString(),
+      name: 'dsh-1', path: worktree,
+      repoSlug: 'deepseek-harness/deepseek-harness', branch: 'feature/test', worktreeBranch: branch,
     }
-    await writeFile(join(metadataRoot, 'dsh-1.json'), JSON.stringify(clone))
-    await removeCloneRecord(clone, { managedRoot: managed, clonesRoot, metadataRoot })
+    await removeCloneRecord(clone, { managedRoot: managed, clonesRoot })
     await assert.rejects(readFile(join(worktree, '.git'), 'utf8'))
-    await assert.rejects(readFile(join(metadataRoot, 'dsh-1.json'), 'utf8'))
     assert.notEqual((await run('git', ['show-ref', '--verify', '--quiet', 'refs/heads/dshw/dsh-1'], { cwd: managed })).code, 0)
   } finally {
     await rm(root, { recursive: true, force: true })

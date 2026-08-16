@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto'
 import { access, lstat, mkdir, realpath, rename, rm } from 'node:fs/promises'
 import { dirname, relative, resolve, sep } from 'node:path'
 import {
-  CLONE_METADATA_ROOT,
   CLONES_ROOT,
   CODE_WORKSPACE_FILE,
   DATA_ROOT,
@@ -73,7 +72,6 @@ export async function ensureRuntimeDirectories(): Promise<void> {
     mkdir(dirname(HARNESS_ROOT), { recursive: true }),
     mkdir(dirname(HARNESS_RUNTIME_ROOT), { recursive: true }),
     mkdir(CLONES_ROOT, { recursive: true }),
-    mkdir(CLONE_METADATA_ROOT, { recursive: true }),
     mkdir(LOG_ROOT, { recursive: true }),
     mkdir(WORKER_ROOT, { recursive: true }),
   ])
@@ -83,7 +81,6 @@ function assertRuntimeLayout(): void {
   assertInside(HARNESS_ROOT, DATA_ROOT, '托管仓库')
   assertInside(HARNESS_RUNTIME_ROOT, DATA_ROOT, '固定 Harness runtime')
   assertInside(CLONES_ROOT, DATA_ROOT, 'worktree 目录')
-  assertInside(CLONE_METADATA_ROOT, DATA_ROOT, 'worktree 元数据目录')
   assertInside(LOG_ROOT, DATA_ROOT, '日志目录')
   assertInside(WORKER_ROOT, DATA_ROOT, 'worker 目录')
   assertInside(CODE_WORKSPACE_FILE, DATA_ROOT, 'VS Code workspace')

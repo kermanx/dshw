@@ -113,15 +113,15 @@ export interface WorkerExecutionConfig {
   apiKey?: string
 }
 
+/** 一个被追踪 PR 的 worktree（git 是唯一真相源：运行时从
+ *  `git worktree list` 枚举并推导，不落独立元数据文件）。 */
 export interface CloneRecord {
   name: string
   path: string
-  sourcePath: string
-  remoteUrl: string
   repoSlug: string
+  /** PR head 分支（从 worktree 分支的 upstream 配置推导）。 */
   branch: string
   worktreeBranch: string
-  createdAt: string
 }
 
 export interface SyncRecord {
@@ -252,8 +252,14 @@ export interface JobPage {
   hasMore: boolean
 }
 
+/** 一个由 dshw 监控的 GitHub 仓库；数组顺序即各面板的展示顺序。 */
+export interface MonitoredRepo {
+  repoSlug: string
+  enabled: boolean
+}
+
 export interface ServiceState {
-  version: 2
+  version: 3
   serviceStartedAt?: string
   update: {
     nextAt?: string
@@ -261,6 +267,8 @@ export interface ServiceState {
     lastStatus?: 'succeeded' | 'failed'
     lastMessage?: string
   }
+  /** 监控的 GitHub 仓库（顺序即展示顺序）；v2 迁移时以现有 sync 推断。 */
+  repos: MonitoredRepo[]
   syncs: SyncRecord[]
   jobs: JobRecord[]
   dshRuns: DshRunRecord[]
@@ -313,6 +321,7 @@ export interface MyPullRequestSummary {
 }
 
 export interface ReviewRequestRecord {
+  repoSlug: string
   number: number
   title: string
   url: string

@@ -6,6 +6,10 @@ export const DSHW_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const DEFAULT_DATA_ROOT = join(DSHW_ROOT, '.dshw')
 export const DATA_ROOT = resolve(process.env.DSHW_DATA_ROOT ?? DEFAULT_DATA_ROOT)
 export const HARNESS_ROOT = resolve(process.env.DSHW_HARNESS_ROOT ?? join(DATA_ROOT, 'managed', 'deepseek-harness'))
+/** 主仓库 slug；也是多 repo 模式下默认监控的第一个仓库。 */
+export const HARNESS_REPO_SLUG = 'deepseek-harness/deepseek-harness'
+/** 每个被监控 repo 的托管 clone 根目录（<slug> 展开为 managed/<owner>/<name>）。 */
+export const MANAGED_ROOT = resolve(process.env.DSHW_MANAGED_ROOT ?? join(DATA_ROOT, 'managed'))
 /** dshw's tested Harness control-plane ABI. Upgrading it is an explicit source change. */
 export const HARNESS_RUNTIME_COMMIT = process.env.DSHW_HARNESS_RUNTIME_COMMIT ?? '694dd8d08725f10d31db56486f7f7477a7bd8b6a'
 export const HARNESS_RUNTIME_ROOT = resolve(
@@ -13,7 +17,6 @@ export const HARNESS_RUNTIME_ROOT = resolve(
 )
 export const HARNESS_RUNTIME_FILE = join(DATA_ROOT, 'runtime', `${HARNESS_RUNTIME_COMMIT}.json`)
 export const CLONES_ROOT = resolve(process.env.DSHW_CLONES_ROOT ?? join(DATA_ROOT, 'worktrees'))
-export const CLONE_METADATA_ROOT = resolve(process.env.DSHW_CLONE_METADATA_ROOT ?? join(DATA_ROOT, 'clones'))
 export const CODE_WORKSPACE_FILE = resolve(process.env.DSHW_CODE_WORKSPACE_FILE ?? join(DATA_ROOT, 'dshw.code-workspace'))
 export const STATE_FILE = join(DATA_ROOT, 'state.json')
 export const LOG_ROOT = join(DATA_ROOT, 'logs')

@@ -1,6 +1,6 @@
 import { appendFile, mkdir, open, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { EVENT_LOG_FILE, STATE_FILE } from './config.ts'
+import { EVENT_LOG_FILE, HARNESS_REPO_SLUG, STATE_FILE } from './config.ts'
 import type { EventRecord, JobPage, JobRecord, LogPage, ServiceState } from './types.ts'
 import { id, now, readJson, writeJsonAtomic } from './util.ts'
 
@@ -8,6 +8,9 @@ const MAX_JOBS = 300
 const MAX_DSH_RUNS = 100
 const MAX_EVENTS = 100
 const LOG_READ_CHUNK_SIZE = 64 * 1024
+
+/** v2 状态（无 repos 字段）；迁移后补齐。 */
+type ServiceStateV2 = Omit<ServiceState, 'version' | 'repos'> & { version: 2 }
 
 export class StateStore {
   state: ServiceState
@@ -21,14 +24,15 @@ export class StateStore {
 
   static async open(): Promise<StateStore> {
     const stored = await readJson<ServiceState>(STATE_FILE)
-    const state: ServiceState = stored?.version === 2 ? stored : {
-      version: 2,
+    const state: ServiceState = stored === undefined ? {
+      version: 3,
+      repos: [{ repoSlug: HARNESS_REPO_SLUG, enabled: true }],
       update: {},
       syncs: [],
       jobs: [],
       dshRuns: [],
       events: [],
-    }
+    } : stored.version === 3 ? stored : migrateV2ToV3(stored as unknown as ServiceStateV2)
     await mkdir(dirname(EVENT_LOG_FILE), { recursive: true })
     let logSize = 0
     try {
@@ -99,6 +103,12 @@ export class StateStore {
     this.state.jobs.push(job)
     return job
   }
+}
+
+/** v2 → v3：引入多 repo 监控列表，以现有 sync 推断默认监控仓库。 */
+function migrateV2ToV3(stored: ServiceStateV2): ServiceState {
+  const repoSlug = stored.syncs[0]?.repoSlug ?? HARNESS_REPO_SLUG
+  return { ...stored, version: 3, repos: [{ repoSlug, enabled: true }] }
 }
 
 export function pageJobs(jobs: readonly JobRecord[], before: string | undefined, limit: number): JobPage {

@@ -1,5 +1,5 @@
 import type { GitGraphBranch, GitGraphCommit, GitGraphSnapshot, PrDashboardRecord } from './types.ts'
-import { commitOid } from './git.ts'
+import { commitOid, originUrl, repoSlugFromRemote } from './git.ts'
 import { now, runOrThrow } from './util.ts'
 
 export const GIT_GRAPH_COMMIT_LIMIT = 2_000
@@ -43,12 +43,21 @@ export function parseGitGraphLog(output: string, refs: readonly GitGraphRef[]): 
   })
 }
 
-async function masterOid(root: string): Promise<string> {
-  try {
-    return await commitOid(root, 'refs/remotes/origin/master')
-  } catch {
-    return await commitOid(root, 'master')
+/** 解析默认分支（主线）tip：master 或 main。 */
+async function defaultBranchOid(root: string): Promise<string> {
+  for (const ref of ['refs/remotes/origin/master', 'refs/remotes/origin/main', 'master', 'main']) {
+    try {
+      return await commitOid(root, ref)
+    } catch {
+      // try next candidate
+    }
   }
+  throw new Error('无法解析仓库默认分支（master/main）')
+}
+
+async function gitBranchName(root: string): Promise<string> {
+  const result = await runOrThrow('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: root, timeoutMs: 10_000 })
+  return result.stdout.trim()
 }
 
 async function revList(root: string, limit: number, ...revisions: string[]): Promise<string[]> {
@@ -64,11 +73,18 @@ export async function readGitGraph(
   prs: readonly PrDashboardRecord[],
   limit = GIT_GRAPH_COMMIT_LIMIT,
 ): Promise<GitGraphSnapshot> {
-  const master = await masterOid(root)
-  const repoSlug = prs[0]?.repoSlug ?? 'deepseek-harness/deepseek-harness'
+  const mainline = await defaultBranchOid(root)
+  let repoSlug: string
+  try {
+    repoSlug = repoSlugFromRemote(await originUrl(root))
+  } catch {
+    // 无 origin 的本地仓库（如单元测试）回退到 PR 记录推断
+    repoSlug = prs[0]?.repoSlug ?? 'deepseek-harness/deepseek-harness'
+  }
   const matchingPrs = prs.filter(pr => pr.repoSlug === repoSlug && pr.headOid !== undefined)
+  const mainlineName = (await gitBranchName(root)).toLowerCase() === 'main' ? 'main' : 'master'
   const branches: GitGraphBranch[] = [
-    { name: 'master', label: 'master', oid: master, kind: 'master' },
+    { name: mainlineName, label: mainlineName, oid: mainline, kind: 'master' },
     ...matchingPrs.map(pr => ({
       name: pr.branch,
       label: `PR #${pr.number} · ${pr.branch}`,
@@ -87,11 +103,11 @@ export async function readGitGraph(
   // fabricate a second root. Read a continuous first-parent mainline back to
   // the oldest open-PR base, plus each PR's complete unique history.
   const prBases = await Promise.all(matchingPrs.map(async pr => {
-    const mergeBaseResult = await runOrThrow('git', ['merge-base', master, pr.headOid!], { cwd: root, timeoutMs: 30_000 })
+    const mergeBaseResult = await runOrThrow('git', ['merge-base', mainline, pr.headOid!], { cwd: root, timeoutMs: 30_000 })
     const mergeBase = mergeBaseResult.stdout.trim()
     if (!/^[0-9a-f]{40,64}$/u.test(mergeBase)) throw new Error(`PR #${pr.number} merge-base 无效`)
     const distanceResult = await runOrThrow('git', [
-      'rev-list', '--first-parent', '--count', `${mergeBase}..${master}`,
+      'rev-list', '--first-parent', '--count', `${mergeBase}..${mainline}`,
     ], { cwd: root, timeoutMs: 30_000 })
     const masterDistance = Number(distanceResult.stdout.trim())
     if (!Number.isSafeInteger(masterDistance) || masterDistance < 0) throw new Error(`PR #${pr.number} master 距离无效`)
@@ -104,9 +120,9 @@ export async function readGitGraph(
     // The dashboard compares open PR branches with the master mainline. Walking
     // every merge parent also pulls in already-merged PR histories and turns
     // the graph into unrelated branch noise.
-    revList(root, masterLimit, '--first-parent', master),
+    revList(root, masterLimit, '--first-parent', mainline),
     ...prBases.map(async ({ pr, mergeBase }) => ({
-      history: await revList(root, limit, pr.headOid!, '--not', master),
+      history: await revList(root, limit, pr.headOid!, '--not', mainline),
       mergeBase,
     })),
   ])
