@@ -1,8 +1,9 @@
 # dshw
 
-`dshw` 是 DeepSeek Harness 的本机 PR 工作流工具。它会追踪你创建的 open PR，管理独立
-worktree，并提供 PR、review、CI 和后台任务状态页。它以 **dsh 插件**的形式嵌入 Harness
-Web。
+`dshw` 是 DeepSeek Harness 的本机 PR 工作流工具。它会追踪你在**所有被监控仓库**上创建的
+open PR，管理独立 worktree，并提供 PR、review、CI 和后台任务状态页。它以 **dsh 插件**的
+形式嵌入 Harness Web；在 Settings 的 **Repos** 面板中勾选、排序任意你有权限的 GitHub
+仓库即可纳入监控。
 
 ![](./assets/screenshot.png)
 
@@ -27,8 +28,8 @@ pnpm install
 pnpm dshw start              # 初始化并后台启动 daemon（自动构建插件 bundle 与 VS Code workspace）
 ```
 
-首次启动会在当前 clone 内创建 `.dshw/`，克隆托管的 DeepSeek Harness 仓库，准备
-dshw 固定版本的 dsh runtime，构建插件 bundle 与 VS Code workspace，注册当前用户的
+首次启动会在当前 clone 内创建 `.dshw/`，准备被监控仓库的托管 clone 与 dshw 固定版本
+的 dsh runtime，构建插件 bundle 与 VS Code workspace，注册当前用户的
 macOS LaunchAgent，然后在后台启动服务。固定 runtime 首次安装和构建可能需要几分钟；
 CLI 会逐步显示当前阶段、耗时，并在长时间操作中持续报告等待时间。以后在仓库目录中
 直接用 `pnpm dshw status` / `pnpm dshw restart` / `pnpm dshw stop` 管理服务。
@@ -47,7 +48,12 @@ dsh plugin --profile web add "$PWD"
 ```
 
 安装后，看板占据左侧栏右侧全部空间（侧栏保持可见），包含 Pull requests / Reviews /
-Git / Jobs / Logs / Settings 六个视图，数据实时更新。
+Git / Jobs / Logs / Settings 六个视图，数据实时更新。多仓库模式下：
+
+- **Pull requests / Reviews** 按仓库分组展示（`[gh 图标] user/repo` 分组头 + 该仓库的
+  PR 列表），顺序即 Settings 里 Repos 面板的监控顺序；
+- **Git** 页顶部用下拉框选择要查看的仓库；
+- **Jobs / Logs** 保持全仓库混合。
 
 - **卸载**：`dsh plugin --profile web remove dshw`，再重启 dsh web。
 - **更新**：`git pull` 后运行 `pnpm dshw restart`，再重启 dsh web。
@@ -91,23 +97,28 @@ dshw status
 ```text
 dshw/
   .dshw/
-    managed/deepseek-harness/  托管主仓库
+    managed/<owner>/<name>/ 每个被监控仓库的托管 clone（worktree 的共享对象库）
     runtime/deepseek-harness/  dshw 固定版本的 Harness runtime
-    worktrees/                 PR worktree
-    clones/                    worktree 元数据
+    worktrees/                 PR worktree（目录名即 PR 标识，无独立元数据文件）
     logs/                      服务和任务日志
     workers/                   独立后台任务数据
     workers.json               worker 配置（不含密钥）
     worker-secrets.env         设置页保存的 worker 密钥（权限 0600）
-    state.json                 持久化状态
+    state.json                 持久化状态（v3 起含 repos 监控列表与 syncs）
     dshw.code-workspace        VS Code workspace
 ```
 
 `.dshw/` 已被 Git 忽略。
 
+## 监控仓库（Repos）
+
+Settings 的 **Repos** 面板列出你所有有权限（owner / collaborator / organization member）
+的 GitHub 仓库：勾选即纳入 dshw 监控（该仓库的 PR / review 会自动发现并展示），拖动
+排序决定各面板的展示顺序。新仓库首次启用时会自动克隆到 `.dshw/managed/` 并开始追踪。
+
 ## Worker 配置
 
-Settings 的 **仓库管理** 页面会显示 dshw 与主仓库当前落后上游的提交数，以及 Worktree 总数和可清理数量。dshw 可以一键 fast-forward 更新、安装依赖、完成检查与构建，然后安全重启服务；存在本地修改时会拒绝自动更新。主仓库维护集中提供同步、从头配置与过期 Worktree 清理。清理只处理不再对应 active PR 且没有运行中任务占用的 Worktree；包含未提交改动或未推送提交时必须逐项确认是否丢弃。
+Settings 的 **System** 页面会显示 dshw 与主仓库当前落后上游的提交数，以及 Worktree 总数和可清理数量。dshw 可以一键 fast-forward 更新、安装依赖、完成检查与构建，然后安全重启服务；存在本地修改时会拒绝自动更新。主仓库维护集中提供同步、从头配置与过期 Worktree 清理。清理只处理不再对应 active PR 且没有运行中任务占用的 Worktree；包含未提交改动或未推送提交时必须逐项确认是否丢弃。
 
 看板的 **Settings** 页可以维护多个 worker 配置并查看运行状态。Worker 可以直接拖拽排序，排在第一项的配置就是默认 Worker；任务选择面板也使用相同顺序。初始只创建 dsh 配置；Codex 需要用户手动添加，不会自动成为默认 worker。
 
