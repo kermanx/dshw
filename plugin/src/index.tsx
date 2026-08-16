@@ -313,7 +313,7 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
               onClick={openCodeWorkspace}
               style={iconButtonStyle}
             >
-              <GVsCode size={14} />
+              <GVsCode size={17.5} />
             </button>
             <button
               type="button"
