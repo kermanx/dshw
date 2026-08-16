@@ -2,7 +2,47 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { popoverStyle, popoverTriggerStyle } from './styles.ts'
+import { GCaretDown, GCaretRight, GGithub } from './icons.tsx'
+import { popoverStyle, popoverTriggerStyle, repoGroupCellStyle, repoGroupRowStyle, repoGroupTitleStyle, repoGroupTitleTextStyle } from './styles.ts'
+import { C_MUTED, C_SECONDARY } from './theme.ts'
+
+/* ── tiny primitives ── */
+
+/** Repo group header row inside a shared table: click to collapse/expand.
+ *  The GitHub mark links to the repo (target=_blank) without toggling. */
+export function RepoGroupRow({ repoSlug, collapsed, onToggle, colSpan, children }: {
+  repoSlug: string
+  collapsed: boolean
+  onToggle: (repoSlug: string) => void
+  colSpan: number
+  children: ReactNode
+}): ReactNode {
+  return (
+    <>
+      <tr data-dshw-kanban="repogroup" style={repoGroupRowStyle} onClick={() => { onToggle(repoSlug) }}>
+        <td colSpan={colSpan} style={repoGroupCellStyle}>
+          <span style={repoGroupTitleStyle}>
+            <a
+              href={`https://github.com/${repoSlug}`}
+              target="_blank"
+              rel="noreferrer"
+              title={`在 GitHub 打开 ${repoSlug}`}
+              style={{ display: 'inline-flex', flex: 'none', color: C_SECONDARY, textDecoration: 'none' }}
+              onClick={event => { event.stopPropagation() }}
+            >
+              <GGithub size={12} />
+            </a>
+            <span style={repoGroupTitleTextStyle}>{repoSlug}</span>
+            <span style={{ display: 'inline-flex', flex: 'none', color: C_MUTED }}>
+              {collapsed ? <GCaretRight size={14} /> : <GCaretDown size={14} />}
+            </span>
+          </span>
+        </td>
+      </tr>
+      {!collapsed && children}
+    </>
+  )
+}
 
 /* ── tiny primitives ── */
 

@@ -8,7 +8,7 @@ import {
   IconUserOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { JobRecord, WorkerConfig, WorkerTypeAvailability } from '../../src/types.ts'
-import { useKanbanData, type KanbanSnapshot, type PrAction } from './data.ts'
+import { useKanbanData, enabledRepos, type KanbanSnapshot, type PrAction } from './data.ts'
 import { GGitGraph } from './icons.tsx'
 import {
   dialogCancelStyle, dialogCloseRowStyle, dialogInputStyle, dialogListStyle,
@@ -27,7 +27,6 @@ import { JobDialog } from './views/job-dialog.tsx'
 /* ── shared view props + the tabbed workspace ── */
 
 /** Props shared by every kanban view (data + verbs owned by the workspace). */
-/** Props shared by every kanban view (data + verbs owned by the workspace). */
 export interface ViewProps {
   baseUrl: string
   snapshot?: KanbanSnapshot
@@ -40,9 +39,12 @@ export interface ViewProps {
   openWorkerPicker: (cloneName: string, action: PrAction) => void
   /** Open the job detail dialog (busy PR rows / jobs list). */
   openJob: (job: JobRecord) => void
+  /** Jump to Settings → Repos (empty-state hint when no repo is monitored). */
+  openReposSettings: () => void
 }
 
 export type ViewId = 'prs' | 'reviews' | 'git' | 'jobs' | 'logs' | 'settings'
+export type SettingsSection = 'repository' | 'workers' | 'repos'
 
 export const VIEW_TABS: ReadonlyArray<{ id: ViewId; icon: (p: { size?: number }) => ReactNode; label: string; count: (s: KanbanSnapshot) => number }> = [
   { id: 'prs', icon: IconBranchOutline16, label: 'Pull requests', count: s => s.prs.length },
@@ -67,6 +69,7 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
   const [workerPick, setWorkerPick] = useState<{ cloneName: string; action: PrAction } | null>(null)
   const [view, setView] = useState<ViewId>('prs')
   const [activeJob, setActiveJob] = useState<JobRecord>()
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('repos')
   const toastTimer = useRef<number | undefined>(undefined)
 
   const showToast = (message: string, bad = false): void => {
@@ -136,6 +139,7 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
     refresh,
     openWorkerPicker,
     openJob: setActiveJob,
+    openReposSettings: () => { setSettingsSection('repos'); setView('settings') },
   }
 
   return (
@@ -152,7 +156,12 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
               role="tab"
               aria-selected={active}
               data-selected={active || undefined}
-              onClick={() => { setView(tab.id) }}
+              onClick={() => {
+                // Opening Settings from the tab bar always lands on its first page (Repos);
+                // only the "去设置 Repos" empty-state link jumps to a specific section.
+                if (tab.id === 'settings') setSettingsSection('repos')
+                setView(tab.id)
+              }}
               style={tabStyle(active)}
             >
               <Icon size={14} />
@@ -167,8 +176,8 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
         {view === 'reviews' && <ReviewsView {...viewProps} />}
         {view === 'jobs' && <JobsView {...viewProps} />}
         {view === 'logs' && <LogsView {...viewProps} />}
-        {view === 'git' && <GitView baseUrl={baseUrl} refreshKey={refreshKey} />}
-        {view === 'settings' && <SettingsView {...viewProps} />}
+        {view === 'git' && <GitView baseUrl={baseUrl} refreshKey={refreshKey} repos={enabledRepos(snapshot)} openReposSettings={viewProps.openReposSettings} />}
+        {view === 'settings' && <SettingsView {...viewProps} initialSection={settingsSection} />}
       </div>
       {workerPick !== null && snapshot !== undefined && (
         <WorkerPicker

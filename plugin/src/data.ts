@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import type {
   CiCheck, CloneRecord, DshWorkerProgress, EventRecord, HarnessRepositoryStatus,
-  DshwRepositoryStatus, JobRecord, PrDashboardRecord, PrDashboardStatus,
+  DshwRepositoryStatus, JobRecord, MonitoredRepo, PrDashboardRecord, PrDashboardStatus,
   PullRequestReview, ReviewRequestRecord, ServiceState, WorkerConfig,
   WorkerTypeAvailability,
 } from '../../src/types.ts'
@@ -20,6 +20,7 @@ export interface KanbanSnapshot extends Omit<ServiceState, 'prDashboardCache'> {
     rateLimited: boolean
     rateLimitResetAt?: string
   }
+  repos: MonitoredRepo[]
   clones: CloneRecord[]
   worktreeCleanupCount?: number
   prs: PrDashboardRecord[]
@@ -141,6 +142,27 @@ export function useKanbanData(baseUrl: string, refreshKey: number): { snapshot?:
   return { snapshot, connection }
 }
 /* ── shared list helpers ── */
+
+/** 被监控（enabled）的仓库，按展示顺序。 */
+export function enabledRepos(snapshot?: KanbanSnapshot): MonitoredRepo[] {
+  return snapshot?.repos.filter(repo => repo.enabled) ?? []
+}
+
+/** 把记录（PR / review）按 repo 分组，顺序遵循监控列表（未在列表中的 repo 排在最后）。 */
+export function groupByRepo<T extends { repoSlug: string }>(
+  records: readonly T[],
+  repos: readonly MonitoredRepo[],
+): Array<{ repoSlug: string; records: T[] }> {
+  const byRepo = new Map<string, T[]>()
+  for (const record of records) {
+    const group = byRepo.get(record.repoSlug) ?? []
+    group.push(record)
+    byRepo.set(record.repoSlug, group)
+  }
+  const ordered = repos.filter(repo => repo.enabled).map(repo => repo.repoSlug)
+  const extra = [...byRepo.keys()].filter(slug => !ordered.includes(slug)).sort()
+  return [...ordered, ...extra].map(repoSlug => ({ repoSlug, records: byRepo.get(repoSlug) ?? [] }))
+}
 
 export function sortJobs(jobs: readonly JobRecord[]): JobRecord[] {
   return [...jobs].sort((left, right) => (

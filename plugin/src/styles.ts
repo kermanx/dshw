@@ -43,6 +43,47 @@ export const loadingStripStyle: CSSProperties = {
   background: C_HOVER,
 }
 
+/** Repo group row inside the shared table (multi-repo kanban): one header row
+ *  per repo that collapses/expands its PR rows. */
+export const repoGroupRowStyle: CSSProperties = {
+  background: C_HOVER,
+  cursor: 'pointer',
+  userSelect: 'none',
+}
+
+export const repoGroupCellStyle: CSSProperties = {
+  height: 30,
+  padding: '0 12px',
+  borderBottom: `1px solid ${C_BORDER}`,
+  verticalAlign: 'middle',
+}
+
+export const repoGroupTitleStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 7,
+  fontSize: 12,
+  fontWeight: 600,
+  color: C_TEXT,
+}
+
+export const repoGroupTitleTextStyle: CSSProperties = {
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  minWidth: 0,
+}
+
+/** Loading row shown under a repo group header while its data is refreshing. */
+export const prLoadingRowStyle: CSSProperties = {
+  height: 44,
+  padding: '0 12px',
+  borderBottom: `1px solid ${C_BORDER}`,
+  color: C_MUTED,
+  fontSize: 12,
+  textAlign: 'left',
+}
+
 export const tableScrollStyle: CSSProperties = {
   flex: 1,
   minHeight: 0,

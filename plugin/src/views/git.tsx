@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { CommitGraph } from '@dreamcatcher-tech/commit-graph'
-import type { GitGraphBranch, GitGraphSnapshot } from '../../../src/types.ts'
+import type { GitGraphBranch, GitGraphSnapshot, MonitoredRepo } from '../../../src/types.ts'
 import { shortTimeLabel } from '../data.ts'
 import { GGitGraph, StatusDot } from '../icons.tsx'
 import {
@@ -22,10 +22,11 @@ export const GRAPH_LEFT_PADDING = 12
 export const GRAPH_TEXT_GAP = 12
 export const GRAPH_PALETTE = ['#007acc', '#388a34', '#bf8803', '#a1260d', '#7b61a8', '#00838f', '#ad4e00', '#5b7c19', '#6c5ce7', '#c44569']
 
-export function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: number }): ReactNode {
+export function GitView({ baseUrl, refreshKey, repos, openReposSettings }: { baseUrl: string; refreshKey: number; repos: readonly MonitoredRepo[]; openReposSettings: () => void }): ReactNode {
   const [graph, setGraph] = useState<GitGraphSnapshot>()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [selectedRepo, setSelectedRepo] = useState<string>()
   const [focusedBranchOid, setFocusedBranchOid] = useState<string>()
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [graphWidth, setGraphWidth] = useState(72)
@@ -95,14 +96,15 @@ export function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: 
     branchesByOid.set(branch.oid, [...(branchesByOid.get(branch.oid) ?? []), branch])
   }
 
-  const load = async (): Promise<void> => {
+  const load = async (repoSlug: string | undefined): Promise<void> => {
     controllerRef.current?.abort()
     const controller = new AbortController()
     controllerRef.current = controller
     setLoading(true)
     setError('')
     try {
-      const response = await fetch(`${baseUrl}/api/git-graph`, { cache: 'no-store', signal: controller.signal })
+      const query = repoSlug === undefined ? '' : `?repo=${encodeURIComponent(repoSlug)}`
+      const response = await fetch(`${baseUrl}/api/git-graph${query}`, { cache: 'no-store', signal: controller.signal })
       const value = await response.json() as GitGraphSnapshot & { error?: string }
       if (!response.ok) throw new Error(value.error ?? 'Git tree 加载失败')
       setColors({})
@@ -119,10 +121,21 @@ export function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: 
     }
   }
 
+  const effectiveRepo = repos.length === 0
+    ? undefined
+    : selectedRepo !== undefined && repos.some(repo => repo.repoSlug === selectedRepo)
+      ? selectedRepo
+      : repos[0]!.repoSlug
+
   useEffect(() => {
-    void load()
+    if (repos.length === 0) {
+      setGraph(undefined)
+      setError('')
+      return
+    }
+    void load(effectiveRepo)
     return () => { controllerRef.current?.abort() }
-  }, [baseUrl, refreshKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [baseUrl, refreshKey, effectiveRepo, repos.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Measure the rendered CommitGraph: canvas width + per-branch colors.
   useEffect(() => {
@@ -199,7 +212,18 @@ export function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: 
         <div style={gitSidebarHeaderStyle}>
           <div style={gitSidebarTitleStyle}>
             <span style={{ display: 'inline-flex', flex: 'none', color: C_ACCENT }}><GGitGraph size={14} /></span>
-            <span style={gitSidebarTitleTextStyle}>{graph?.repoSlug ?? 'Git tree'}</span>
+            {repos.length > 1 ? (
+              <select
+                value={effectiveRepo ?? ''}
+                aria-label="选择仓库"
+                style={repoSelectStyle}
+                onChange={event => { setSelectedRepo(event.target.value === '' ? undefined : event.target.value) }}
+              >
+                {repos.map(repo => <option key={repo.repoSlug} value={repo.repoSlug}>{repo.repoSlug}</option>)}
+              </select>
+            ) : (
+              <span style={gitSidebarTitleTextStyle}>{effectiveRepo ?? 'Git tree'}</span>
+            )}
           </div>
           <div style={gitSidebarSubStyle}>
             {graph !== undefined
@@ -264,6 +288,13 @@ export function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: 
           )}
         </div>
 
+        {repos.length === 0 && (
+          <div style={emptyStateStyle}>
+            <p style={emptyStateTitleStyle}>还没有选择要监控的仓库</p>
+            <p style={emptyStateSubStyle}>选择仓库后，这里会显示它的 Git 历史和分支</p>
+            <button type="button" className="dshw-link" style={actionLinkStyle} onClick={openReposSettings}>去设置 Repos →</button>
+          </div>
+        )}
         {loading && graph === undefined && (
           <div style={emptyStateStyle}>
             <span style={emptyStateLineStyle}><StatusDot tone="accent" pulse />正在读取 Git 历史…</span>
@@ -273,7 +304,7 @@ export function GitView({ baseUrl, refreshKey }: { baseUrl: string; refreshKey: 
           <div style={emptyStateStyle}>
             <span style={{ ...emptyStateTitleStyle, color: bad }}>Git tree 加载失败</span>
             <span style={emptyStateSubStyle}>{error}</span>
-            <button type="button" className="dshw-link" style={actionLinkStyle} onClick={load}>重试</button>
+            <button type="button" className="dshw-link" style={actionLinkStyle} onClick={() => { void load(effectiveRepo) }}>重试</button>
           </div>
         )}
         {graph !== undefined && (
@@ -370,6 +401,20 @@ export const gitSidebarTitleStyle: CSSProperties = {
   fontSize: 12.5,
   fontWeight: 600,
   color: C_TEXT,
+}
+
+export const repoSelectStyle: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  padding: '2px 6px',
+  border: `1px solid ${C_BORDER}`,
+  borderRadius: 4,
+  background: C_SURFACE,
+  color: C_TEXT,
+  fontFamily: 'inherit',
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: 'pointer',
 }
 
 export const gitSidebarTitleTextStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }

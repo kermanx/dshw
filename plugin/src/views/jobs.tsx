@@ -91,7 +91,7 @@ export function JobsView({ baseUrl, snapshot, pending, post, openJob }: ViewProp
             <thead>
               <tr>
                 <th style={{ ...thStyle, width: 110 }}>状态</th>
-                <th style={{ ...thStyle, width: 100 }}>目标</th>
+                <th style={{ ...thStyle, width: 180 }}>目标</th>
                 <th style={{ ...thStyle, width: 120 }}>执行者</th>
                 <th style={thStyle}>任务</th>
                 <th style={{ ...thStyle, width: 100 }}>时间</th>
@@ -100,7 +100,8 @@ export function JobsView({ baseUrl, snapshot, pending, post, openJob }: ViewProp
             <tbody>
               {records.map(job => {
                 const sync = job.dshWorker?.sync ?? snapshot?.syncs.find(candidate => candidate.id === job.syncId)
-                const target = sync === undefined ? '全局' : `#${sync.prNumber}`
+                // 多 repo 混排时目标必须带仓库名；PR 行本身不带 repo 名（与其它列并列）
+                const target = sync === undefined ? '全局' : `${sync.repoSlug}#${sync.prNumber}`
                 const targetTitle = sync === undefined ? '不针对特定 PR' : `${sync.repoSlug}#${sync.prNumber}\n${sync.branch} → ${sync.baseRefName}`
                 return (
                   <tr

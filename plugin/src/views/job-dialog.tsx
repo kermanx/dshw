@@ -74,7 +74,7 @@ export function JobDialog({ job, baseUrl, snapshot, pending, post, onClose }: {
         ? '这个任务由升级前的 worker 启动，实时输出不可用；状态和事件仍会自动更新。'
         : progress?.message ?? '等待任务产生输出…'
   const sync = job.dshWorker?.sync
-  const dialogTitle = compactPrLabel(job.summary, sync)
+  const dialogTitle = compactPrLabel(job.summary, sync, true)
   const timeline = snapshot.events
     .filter((event) => {
       const start = Date.parse(job.startedAt ?? job.createdAt) - 1_000
@@ -388,9 +388,12 @@ function TimelineItem({ message, time, active = false }: { message: string; time
 
 /* ── helpers ── */
 
-function compactPrLabel(value: string, sync: JobRecord['dshWorker'] extends infer W ? W extends { sync?: infer S } ? S | undefined : never : never): string {
+/** 把 `${cloneName} / PR #n` 前缀精简为 PR 标识；withRepo 时带上仓库名
+ *  （对话框标题与 workerLabel 并列、无其它 repo 上下文，因此需要 repo 名）。 */
+function compactPrLabel(value: string, sync: JobRecord['dshWorker'] extends infer W ? W extends { sync?: infer S } ? S | undefined : never : never, withRepo = false): string {
   if (sync === undefined || sync.cloneName.toLowerCase() !== `pr-${sync.prNumber}`) return value
-  return value.replaceAll(`${sync.cloneName} / PR #${sync.prNumber}`, `PR #${sync.prNumber}`)
+  const replacement = withRepo ? `${sync.repoSlug} PR #${sync.prNumber}` : `PR #${sync.prNumber}`
+  return value.replaceAll(`${sync.cloneName} / PR #${sync.prNumber}`, replacement)
 }
 
 function outputLabel(block: ProgressOutputBlock): string {

@@ -70,6 +70,8 @@ const STYLE_TEXT = `
 @keyframes dshw-dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 [data-dshw-kanban="pulse"] { animation: dshw-dot-pulse 1.2s ease-in-out infinite; }
 [data-dshw-kanban="row"]:hover td { background: #f0f0f0; }
+[data-dshw-kanban="repogroup"]:hover { background: #e3e3e3; }
+[data-dshw-kanban="repogroup"] a:hover { color: #006ab1; }
 [data-dshw-kanban="gitrow"]:hover { background: #f0f0f0; }
 [data-dshw-kanban="gitbranch"]:hover { background: #f0f0f0; }
 [data-dshw-kanban="gitbranch"][aria-pressed="true"] { background: rgba(0, 122, 204, .12); }
@@ -191,7 +193,9 @@ export function KanbanFooterAction({ wide, t }: KanbanFooterActionProps): ReactN
           {wide && <span style={labelStyle}>{t('action.label')}</span>}
         </button>
       </Tooltip>
-      {open && <KanbanPanel t={t} onClose={() => { setOpen(false) }} />}
+      <KanbanPanel t={t} onClose={() => { setOpen(false) }} open={open} />
+      {/* The panel stays mounted while closed (display:none) so the data channel
+          and view state survive; reopening shows the last data instantly. */}
     </>
   )
 }
@@ -212,7 +216,7 @@ function measureSidebarRight(): number {
 }
 
 /** Panel: header chrome plus the native PR kanban (no iframe). */
-function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): ReactNode {
+function KanbanPanel({ t, onClose, open }: { t: Translate; onClose: () => void; open: boolean }): ReactNode {
   const [baseUrl, setBaseUrl] = useState(readBaseUrl)
   const [draft, setDraft] = useState(baseUrl)
   const [status, setStatus] = useState<PanelStatus>('checking')
@@ -252,14 +256,15 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
     }
   }, [])
 
-  // Close on Escape while the panel is mounted.
+  // Close on Escape while the panel is open.
   useEffect(() => {
+    if (!open) return
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => { document.removeEventListener('keydown', onKeyDown) }
-  }, [onClose])
+  }, [onClose, open])
 
   // Probe the daemon whenever the target changes: reachable → native kanban,
   // unreachable → the URL editor.
@@ -294,7 +299,7 @@ function KanbanPanel({ t, onClose }: { t: Translate; onClose: () => void }): Rea
   }
 
   return createPortal(
-    <div style={overlayStyle(left)} role="presentation">
+    <div style={{ ...overlayStyle(left), ...(open ? {} : { display: 'none' }) }} role="presentation" aria-hidden={!open}>
       <section style={panelStyle} role="dialog" aria-modal="true" aria-label={t('panel.title')} data-dshw-kanban="root">
         <header style={headerStyle}>
           <span style={titleGroupStyle}>

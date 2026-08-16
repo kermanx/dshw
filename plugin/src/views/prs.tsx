@@ -1,11 +1,13 @@
 /** Pull requests view (PullRequestsTable.vue port): table rows, CI / Review /
  *  Merge / Sync cells, hover popovers and the local-git maintenance chip. */
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import type { CloneGitStatus, JobRecord, PrDashboardRecord, PullRequestReview } from '../../../src/types.ts'
-import { HoverPopover } from '../components.tsx'
+import { HoverPopover, RepoGroupRow } from '../components.tsx'
 import {
   autoMergeAt, autoMergeMinutes, busyLabel, checkLabel, checkTone, ciLabel, ciTone,
-  findBusyJob, findWorkingAgent, hasLocalGitStatus, lastFailedMerge, mergeAction,
+  enabledRepos, findBusyJob, findWorkingAgent, groupByRepo, hasLocalGitStatus,
+  lastFailedMerge, mergeAction,
   mergeLabel, mergeTone, rank, reviewLabel, reviewState, reviewStateTone, reviewTone,
   type GitAction, type PrAction,
 } from '../data.ts'
@@ -19,7 +21,8 @@ import {
   popoverActionStyle, popoverEmptyStyle, popoverPersonRowStyle, popoverRowBadgeStyle,
   popoverRowStyle, popoverRowTextStyle, popoverSectionSpacedStyle, popoverSectionStyle,
   popoverSectionTitleStyle, avatarStackStyle, stackAvatarStyle,
-  stackMoreStyle, statusGlyphStyle, statusTextStyle, subTextStyle, syncCellStyle,
+  prLoadingRowStyle, stackMoreStyle, statusGlyphStyle,
+  statusTextStyle, subTextStyle, syncCellStyle,
   syncKnobStyle, syncSwitchRowStyle, syncSwitchStyle, tableScrollStyle,
   tableStyle, tdStyle, thStyle, titleLinkStyle, titleStyle, trStyle, draftRowStyle,
 } from '../styles.ts'
@@ -28,11 +31,22 @@ import type { ViewProps } from '../workspace.tsx'
 
 /* ── Pull requests view ── */
 
-export function PrsView({ snapshot, connection, pending, showToast, post, refresh, openWorkerPicker, openJob }: ViewProps): ReactNode {
+export function PrsView({ snapshot, connection, pending, showToast, post, refresh, openWorkerPicker, openJob, openReposSettings }: ViewProps): ReactNode {
   const busyByPr = new Map(snapshot?.prs.map(pr => [pr, findBusyJob(pr, snapshot.jobs)]) ?? [])
   const workingAgentByPr = new Map(snapshot?.prs.map(pr => [pr, findWorkingAgent(pr, snapshot.jobs)]) ?? [])
   const prs = snapshot?.prs ?? []
   const status = snapshot?.prDashboard
+  const groups = groupByRepo(prs, enabledRepos(snapshot))
+  const prsLoading = status?.state === 'loading' || status?.refreshing === true
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  const toggleRepo = (repoSlug: string): void => {
+    setCollapsed(current => {
+      const next = new Set(current)
+      if (next.has(repoSlug)) next.delete(repoSlug)
+      else next.add(repoSlug)
+      return next
+    })
+  }
 
   const runPrAction = (cloneName: string, action: PrAction): void => {
     if (action === 'merge-base-direct') {
@@ -66,7 +80,7 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
           <span>正在刷新上次保存的 PR 状态</span>
         </div>
       )}
-      <div style={{ ...tableScrollStyle, paddingRight: 12 }}>
+      <div style={tableScrollStyle}>
         {snapshot === undefined && (
           <div style={emptyStateStyle}>
             <span style={emptyStateLineStyle}>
@@ -75,13 +89,14 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
             </span>
           </div>
         )}
-        {snapshot !== undefined && prs.length === 0 && (
+        {snapshot !== undefined && (snapshot.repos?.length ?? 0) === 0 && (
           <div style={emptyStateStyle}>
-            <p style={emptyStateTitleStyle}>暂无追踪中的 PR</p>
-            <p style={emptyStateSubStyle}>GitHub 上你创建的 open PR 会被自动克隆并显示在这里</p>
+            <p style={emptyStateTitleStyle}>还没有选择要监控的仓库</p>
+            <p style={emptyStateSubStyle}>勾选仓库后，你创建的 open PR 会自动显示在这里</p>
+            <button type="button" className="dshw-link" style={actionLinkStyle} onClick={openReposSettings}>去设置 Repos →</button>
           </div>
         )}
-        {snapshot !== undefined && prs.length > 0 && (
+        {snapshot !== undefined && enabledRepos(snapshot).length > 0 && (
           <table style={{ ...tableStyle, tableLayout: 'auto' }}>
             <thead>
               <tr>
@@ -95,21 +110,41 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
               </tr>
             </thead>
             <tbody>
-              {prs.map(pr => (
-                <PrRow
-                  key={`${pr.repoSlug}-${pr.number}-${pr.cloneName}`}
-                  pr={pr}
-                  jobs={snapshot.jobs}
-                  busy={busyByPr.get(pr)}
-                  workingAgent={workingAgentByPr.get(pr)}
-                  pending={pending}
-                  onAction={runPrAction}
-                  onChooseWorker={openWorkerPicker}
-                  onToggleSync={(name, enabled) => { void post('/api/sync/toggle', { name, enabled }, `sync-toggle:${name}`) }}
-                  onGitAction={(name, action) => { void post('/api/clone/maintenance', { name, action }, `git-maintenance:${name}`) }}
-                  onRefresh={refresh}
-                  onOpenJob={openJob}
-                />
+              {groups.map(group => (
+                <RepoGroupRow
+                  key={group.repoSlug}
+                  repoSlug={group.repoSlug}
+                  collapsed={collapsed.has(group.repoSlug)}
+                  onToggle={toggleRepo}
+                  colSpan={5}
+                >
+                  {group.records.map(pr => (
+                    <PrRow
+                      key={`${pr.repoSlug}-${pr.number}-${pr.cloneName}`}
+                      pr={pr}
+                      jobs={snapshot.jobs}
+                      busy={busyByPr.get(pr)}
+                      workingAgent={workingAgentByPr.get(pr)}
+                      pending={pending}
+                      onAction={runPrAction}
+                      onChooseWorker={openWorkerPicker}
+                      onToggleSync={(name, enabled) => { void post('/api/sync/toggle', { name, enabled }, `sync-toggle:${name}`) }}
+                      onGitAction={(name, action) => { void post('/api/clone/maintenance', { name, action }, `git-maintenance:${name}`) }}
+                      onRefresh={refresh}
+                      onOpenJob={openJob}
+                    />
+                  ))}
+                  {group.records.length === 0 && prsLoading && (
+                    <tr>
+                      <td colSpan={5} style={prLoadingRowStyle}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                          <StatusDot tone="accent" pulse />
+                          <span>正在加载 PR…</span>
+                        </span>
+                      </td>
+                    </tr>
+                  )}
+                </RepoGroupRow>
               ))}
             </tbody>
           </table>

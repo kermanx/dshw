@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import type { WorkerConfig, WorkerModelCatalog, WorktreeCleanupPreview } from '../../../src/types.ts'
 import {
-  GDownload, GGrip, GKey, GPencil, GPlus, GRepository, GReset, GSettings, GSync, GTrash,
+  GDownload, GFolderGit, GGrip, GKey, GPencil, GPlus, GReset, GSettings, GSliders, GSync, GTrash,
   GWorktree, StatusDot,
 } from '../icons.tsx'
 import {
@@ -13,9 +13,10 @@ import {
   tdCompactStyle, thStyle,
 } from '../styles.ts'
 import { ok, warn, C_ACCENT, C_BADGE, C_BADGE_FG, C_BORDER, C_DANGER, C_FAINT, C_HOVER, C_MUTED, C_SECONDARY, C_SURFACE, C_TEXT, C_WARNING, FONT_MONO } from '../theme.ts'
-import type { ViewProps } from '../workspace.tsx'
+import type { SettingsSection, ViewProps } from '../workspace.tsx'
 import { WorkerFormDialog, type WorkerForm } from './worker-form-dialog.tsx'
 import { WorktreeCleanupDialog } from './worktree-cleanup-dialog.tsx'
+import { ReposSection } from './repos-settings.tsx'
 
 /* ── Settings view (WorkerSettings.vue port) ── */
 
@@ -27,9 +28,11 @@ export function emptyWorkerForm(): WorkerForm {
   }
 }
 
-export function SettingsView(props: ViewProps): ReactNode {
-  const { baseUrl, snapshot, showToast, post } = props
-  const [section, setSection] = useState<'repository' | 'workers'>('repository')
+export function SettingsView({ baseUrl, snapshot, showToast, post, initialSection }: ViewProps & { initialSection?: SettingsSection }): ReactNode {
+  const [section, setSection] = useState<SettingsSection>(initialSection ?? 'repository')
+  useEffect(() => {
+    if (initialSection !== undefined && initialSection !== section) setSection(initialSection)
+  }, [initialSection]) // eslint-disable-line react-hooks/exhaustive-deps
   const [editing, setEditing] = useState<WorkerConfig>()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState<WorkerForm>(emptyWorkerForm)
@@ -296,18 +299,25 @@ export function SettingsView(props: ViewProps): ReactNode {
       <div style={settingsHeaderStyle}>设置</div>
       <div style={settingsLayoutStyle}>
         <aside style={settingsNavStyle}>
-          <button type="button" className="dshw-nav" style={section === 'repository' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('repository') }}>
-            <GRepository size={12} />仓库管理
+          <button type="button" className="dshw-nav" style={section === 'repos' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('repos') }}>
+            <GFolderGit size={12} />Repos
           </button>
           <button type="button" className="dshw-nav" style={section === 'workers' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('workers') }}>
             <GSettings size={12} />Workers
           </button>
+          <button type="button" className="dshw-nav" style={section === 'repository' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('repository') }}>
+            <GSliders size={12} />System
+          </button>
         </aside>
+
+        {section === 'repos' && (
+          <ReposSection baseUrl={baseUrl} repos={snapshot?.repos ?? []} showToast={showToast} />
+        )}
 
         {section === 'repository' && (
           <section style={settingsSectionStyle}>
             <div style={settingsSectionHeaderStyle}>
-              <span style={settingsSectionTitleStyle}>仓库管理</span>
+              <span style={settingsSectionTitleStyle}>System</span>
               <span style={settingsSectionSubStyle}>dshw、主仓库与 Worktree</span>
               <button
                 type="button"
