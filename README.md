@@ -34,7 +34,7 @@
 ### 步骤
 
 ```sh
-git clone https://github.com/deepseek-harness/dshw.git
+git clone https://github.com/kermanx/dshw.git
 cd dshw
 pnpm install
 pnpm dshw start          # 初始化并后台启动服务
