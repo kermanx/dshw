@@ -238,7 +238,7 @@ export function JobDialog({ job, baseUrl, snapshot, pending, post, onClose }: {
                 {!paused ? (
                   <button
                     type="button"
-                    className="dshw-icon"
+                    className="dshw-jobbtn"
                     style={pauseButtonStyle}
                     disabled={pending.has(`pause:${job.id}`) || progress?.phase === 'cancelling' || job.cancelRequestedAt !== undefined}
                     title={pending.has(`pause:${job.id}`) || progress?.phase === 'cancelling' ? '暂停中' : '暂停任务'}
@@ -248,7 +248,7 @@ export function JobDialog({ job, baseUrl, snapshot, pending, post, onClose }: {
                 ) : (
                   <button
                     type="button"
-                    className="dshw-icon"
+                    className="dshw-jobbtn"
                     style={stopButtonStyle}
                     disabled={job.cancelRequestedAt !== undefined}
                     title={job.cancelRequestedAt !== undefined ? '终止中' : '终止任务'}
@@ -258,6 +258,7 @@ export function JobDialog({ job, baseUrl, snapshot, pending, post, onClose }: {
                 )}
                 <button
                   type="button"
+                  className="dshw-send"
                   style={sendButtonStyle}
                   disabled={prompt.trim() === '' || steering}
                   aria-label={steering ? '发送中' : paused ? '继续任务' : '发送'}
@@ -616,7 +617,7 @@ const taskFooterStyle: CSSProperties = {
   color: C_MUTED,
 }
 
-const composerStyle: CSSProperties = { display: 'flex', alignItems: 'stretch', gap: 5, height: 48 }
+const composerStyle: CSSProperties = { display: 'flex', alignItems: 'stretch', gap: 5, height: 48, flex: 1, minWidth: 0 }
 
 const controlInputStyle: CSSProperties = {
   minWidth: 0,
@@ -640,9 +641,7 @@ const pauseButtonStyle: CSSProperties = {
   minHeight: 0,
   display: 'grid',
   placeItems: 'center',
-  borderRadius: 3,
-  border: 'none',
-  background: 'transparent',
+  borderRadius: 4,
   color: C_MUTED,
   cursor: 'pointer',
 }
@@ -653,9 +652,7 @@ const sendButtonStyle: CSSProperties = {
   minHeight: 0,
   display: 'grid',
   placeItems: 'center',
-  borderRadius: 3,
-  border: 'none',
-  background: C_ACCENT,
+  borderRadius: 4,
   color: '#fff',
   cursor: 'pointer',
 }

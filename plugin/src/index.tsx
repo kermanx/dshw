@@ -91,6 +91,15 @@ const STYLE_TEXT = `
 .dshw-danger:hover { background: rgba(161, 38, 13, .1); }
 .dshw-btn-default:hover { background: #f3f3f3; }
 .dshw-btn-ghost:hover { background: #f0f0f0; }
+/* job-dialog composer buttons: secondary (pause/stop) outlined + hover,
+   primary (send) accent + darker hover. Inline styles can't do :hover, so
+   the base look lives here and the inline style keeps only non-hover props. */
+[data-dshw-kanban="root"] .dshw-jobbtn { background: transparent; border: 1px solid rgba(128, 128, 128, .35); }
+[data-dshw-kanban="root"] .dshw-jobbtn:hover { background: #f0f0f0; }
+[data-dshw-kanban="root"] .dshw-jobbtn:disabled { opacity: .45; cursor: default; }
+[data-dshw-kanban="root"] .dshw-send { background: #007acc; color: #ffffff; border: 1px solid transparent; }
+[data-dshw-kanban="root"] .dshw-send:hover { background: #0069ac; }
+[data-dshw-kanban="root"] .dshw-send:disabled { opacity: .45; cursor: default; }
 [data-dshw-kanban="row"] { transition: background-color 100ms; }
 /* While the kanban board is open the sidebar session list shows no current
    selection (visual only — the real session stays current). */
