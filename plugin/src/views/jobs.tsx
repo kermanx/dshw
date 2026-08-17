@@ -87,13 +87,14 @@ export function JobsView({ baseUrl, snapshot, pending, post, openJob }: ViewProp
       )}
       {records.length > 0 && (
         <div ref={scroller} style={jobsScrollStyle} onScroll={onScroll}>
-          <table style={{ ...tableStyle, minWidth: 880 }}>
+          <table style={{ ...tableStyle, tableLayout: 'auto' }}>
             <thead>
               <tr>
                 <th style={{ ...thStyle, width: 110 }}>状态</th>
-                <th style={{ ...thStyle, width: 180 }}>目标</th>
+                {/* 目标带仓库名（repo#n），按内容自适应；任务列吃掉剩余宽度 */}
+                <th style={{ ...thStyle, width: 'max-content' }}>目标</th>
                 <th style={{ ...thStyle, width: 120 }}>执行者</th>
-                <th style={thStyle}>任务</th>
+                <th style={{ ...thStyle, width: '100%' }}>任务</th>
                 <th style={{ ...thStyle, width: 100 }}>时间</th>
               </tr>
             </thead>
