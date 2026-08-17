@@ -1,5 +1,7 @@
 # dshw
 
+> 个人开源项目，非 DeepSeek 官方产品。
+
 `dshw` 是 DeepSeek Harness 的本机 PR 工作流工具，以看板形式嵌入 Harness Web。它会自动追踪你创建的 PR，克隆到本地独立目录，持续同步目标分支、监控 CI，并在需要时用 dsh Agent 自动处理冲突合并、修复 CI 失败、解决 review 评论。
 
 ![](./assets/screenshot.png)
