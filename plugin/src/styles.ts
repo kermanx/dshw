@@ -523,6 +523,146 @@ export const tabCountStyle: CSSProperties = {
   color: C_BADGE_FG,
 }
 
+/* ── worker launch dialog（WorkerLaunchDialog.vue 移植：radio 单选 + 附加指令 + 启动任务） ── */
+
+export const workerPickerOverlayStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  zIndex: 130,
+  display: 'grid',
+  placeItems: 'center',
+  padding: 24,
+  background: C_OVERLAY,
+}
+
+export const workerPickerStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  width: 'min(440px, 100%)',
+  maxHeight: 'calc(100vh - 48px)',
+  boxSizing: 'border-box',
+  overflow: 'hidden',
+  border: `1px solid ${C_BORDER}`,
+  borderRadius: 4,
+  background: C_SURFACE,
+  boxShadow: C_SHADOW_POP,
+}
+
+export const workerPickerHeaderStyle: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 8,
+  minHeight: 58,
+  padding: '10px 14px',
+  boxSizing: 'border-box',
+  borderBottom: `1px solid ${C_BORDER}`,
+}
+
+export const workerPickerTitleStyle: CSSProperties = { margin: 0, fontSize: 13.5, fontWeight: 600, color: C_TEXT }
+
+export const workerPickerSubtitleStyle: CSSProperties = { marginTop: 1, fontSize: 11, color: C_MUTED }
+
+export const workerPickerBodyStyle: CSSProperties = {
+  flex: 'none',
+  overflow: 'auto',
+  maxHeight: 'min(480px, calc(100vh - 180px))',
+  padding: 12,
+  boxSizing: 'border-box',
+}
+
+export const workerPickerLegendStyle: CSSProperties = { marginBottom: 5, fontSize: 11.5, fontWeight: 500, color: C_SECONDARY }
+
+export const workerPickerRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  minHeight: 48,
+  padding: '0 9px',
+  boxSizing: 'border-box',
+  borderRadius: 4,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+}
+
+export const workerPickerRowTextStyle: CSSProperties = { flex: 1, minWidth: 0 }
+
+export const workerPickerNameRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6 }
+
+export const workerPickerNameStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12.5, fontWeight: 500, color: C_TEXT }
+
+export const workerPickerSublineStyle: CSSProperties = {
+  display: 'block',
+  marginTop: 2,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontFamily: FONT_MONO,
+  fontSize: 10.5,
+  color: C_MUTED,
+}
+
+export const workerPickerEmptyStyle: CSSProperties = { padding: '26px 0', textAlign: 'center', fontSize: 12, color: C_MUTED }
+
+export const workerPickerFieldLabelStyle: CSSProperties = { display: 'block', marginTop: 12, fontSize: 11.5, fontWeight: 500, color: C_SECONDARY }
+
+export const workerPickerTextareaStyle: CSSProperties = {
+  display: 'block',
+  width: '100%',
+  minHeight: 76,
+  marginTop: 5,
+  boxSizing: 'border-box',
+  resize: 'vertical',
+  padding: '7px 9px',
+  border: `1px solid ${C_BORDER}`,
+  borderRadius: 4,
+  background: C_SURFACE,
+  outline: 'none',
+  color: C_TEXT,
+  fontSize: 12.5,
+  lineHeight: '18px',
+  fontFamily: 'inherit',
+}
+
+export const workerPickerFooterStyle: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'flex-end',
+  gap: 6,
+  height: 48,
+  padding: '0 12px',
+  boxSizing: 'border-box',
+  borderTop: `1px solid ${C_BORDER}`,
+}
+
+export const workerPickerGhostStyle: CSSProperties = {
+  height: 26,
+  padding: '0 11px',
+  border: 'none',
+  borderRadius: 4,
+  background: 'transparent',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  fontSize: 12,
+  color: C_SECONDARY,
+}
+
+export const workerPickerCloseStyle: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 30,
+  height: 30,
+  flex: 'none',
+  border: 'none',
+  borderRadius: 8,
+  padding: 0,
+  cursor: 'pointer',
+  color: C_SECONDARY,
+}
+
 export const viewAreaStyle: CSSProperties = {
   flex: 1,
   minHeight: 0,

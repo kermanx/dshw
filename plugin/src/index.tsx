@@ -100,6 +100,8 @@ const STYLE_TEXT = `
 [data-dshw-kanban="root"] .dshw-send { background: #007acc; color: #ffffff; border: 1px solid transparent; }
 [data-dshw-kanban="root"] .dshw-send:hover { background: #0069ac; }
 [data-dshw-kanban="root"] .dshw-send:disabled { opacity: .45; cursor: default; }
+[data-dshw-kanban="root"] .dshw-wprow:hover { background: #f0f0f0; }
+[data-dshw-kanban="root"] .dshw-wpta:focus { border-color: #007acc; }
 [data-dshw-kanban="row"] { transition: background-color 100ms; }
 /* While the kanban board is open the sidebar session list shows no current
    selection (visual only — the real session stays current). */

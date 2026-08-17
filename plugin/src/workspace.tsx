@@ -9,13 +9,18 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { JobRecord, WorkerConfig, WorkerTypeAvailability } from '../../src/types.ts'
 import { useKanbanData, enabledRepos, type KanbanSnapshot, type PrAction } from './data.ts'
-import { GGitGraph } from './icons.tsx'
+import { GClose, GGitGraph } from './icons.tsx'
 import {
-  dialogCancelStyle, dialogCloseRowStyle, dialogInputStyle, dialogListStyle,
-  dialogMaskStyle, dialogOverlayStyle, dialogStyle, dialogTitleStyle, dialogWorkerNameStyle,
-  dialogWorkerRowStyle, dialogWorkerTypeStyle, popoverEmptyStyle,
+  draftBadgeStyle, primaryButtonStyle,
   rootStyle, tabCountStyle, tabStyle, tabbarStyle, toastStyle, viewAreaStyle,
+  workerPickerBodyStyle, workerPickerEmptyStyle, workerPickerFieldLabelStyle,
+  workerPickerFooterStyle, workerPickerGhostStyle, workerPickerHeaderStyle,
+  workerPickerLegendStyle, workerPickerNameRowStyle, workerPickerNameStyle,
+  workerPickerOverlayStyle, workerPickerRowStyle, workerPickerRowTextStyle,
+  workerPickerStyle, workerPickerSublineStyle, workerPickerSubtitleStyle,
+  workerPickerTextareaStyle, workerPickerTitleStyle, workerPickerCloseStyle,
 } from './styles.ts'
+import { C_ACCENT, C_HOVER, C_MUTED } from './theme.ts'
 import { PrsView } from './views/prs.tsx'
 import { ReviewsView } from './views/reviews.tsx'
 import { JobsView } from './views/jobs.tsx'
@@ -181,6 +186,7 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
       </div>
       {workerPick !== null && snapshot !== undefined && (
         <WorkerPicker
+          action={workerPick.action}
           workers={snapshot.workers}
           workerTypes={snapshot.workerTypes}
           onClose={() => { setWorkerPick(null) }}
@@ -202,52 +208,98 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
   )
 }
 
-/* ── worker picker dialog ── */
+/* ── worker picker dialog（WorkerLaunchDialog.vue 移植：radio 单选 + 附加指令 + 启动任务） ── */
 
-export function WorkerPicker({ workers, workerTypes, onClose, onPick }: {
+export function WorkerPicker({ action, workers, workerTypes, onClose, onPick }: {
+  action: PrAction
   workers: readonly WorkerConfig[]
   workerTypes: readonly WorkerTypeAvailability[]
   onClose: () => void
   onPick: (workerConfigId: string, additionalInstruction: string) => void
 }): ReactNode {
-  const [instruction, setInstruction] = useState('')
   const usable = workers.filter(worker => worker.enabled
     && workerTypes.find(status => status.type === worker.type)?.available === true)
+  const [selectedId, setSelectedId] = useState(usable[0]?.id ?? '')
+  const [instruction, setInstruction] = useState('')
+
+  // 默认选中第一个可用 worker；列表变化时保持选中有效
+  useEffect(() => {
+    if (!usable.some(worker => worker.id === selectedId)) setSelectedId(usable[0]?.id ?? '')
+  }, [usable, selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') onClose() }
     document.addEventListener('keydown', onKeyDown)
     return () => { document.removeEventListener('keydown', onKeyDown) }
   }, [onClose])
+
+  const title = action === 'merge-base' ? '合并 base' : action === 'fix-ci' ? '修复 CI' : '解决评论'
+  const subtitle = (worker: WorkerConfig): string => {
+    const type = worker.type === 'dsh' ? 'dsh' : worker.type === 'codex' ? 'Codex' : 'Claude Code'
+    return `${type} · ${worker.model || '默认模型'} · ${worker.reasoningEffort || '默认推理'}`
+  }
+
   return createPortal(
-    <div style={dialogOverlayStyle} role="presentation" data-dshw-kanban="root">
-      <div style={dialogMaskStyle} aria-hidden="true" onClick={onClose} />
-      <div style={dialogStyle} role="dialog" aria-modal="true" aria-label="选择 Worker">
-        <div style={dialogTitleStyle}>选择 Worker 执行任务</div>
-        <div style={dialogListStyle}>
-          {usable.map(worker => (
-            <button
-              key={worker.id}
-              type="button"
-              style={dialogWorkerRowStyle}
-              onClick={() => { onPick(worker.id, instruction) }}
-            >
-              <span style={dialogWorkerNameStyle}>{worker.name}</span>
-              <span style={dialogWorkerTypeStyle}>{worker.type}{worker.model !== undefined ? ` · ${worker.model}` : ''}</span>
-            </button>
-          ))}
-          {usable.length === 0 && <div style={popoverEmptyStyle}>没有可用的 Worker</div>}
+    <div style={workerPickerOverlayStyle} role="presentation" data-dshw-kanban="root"
+      onClick={event => { if (event.target === event.currentTarget) onClose() }}>
+      <section style={workerPickerStyle} role="dialog" aria-modal="true" aria-label="启动任务">
+        <header style={workerPickerHeaderStyle}>
+          <div style={{ minWidth: 0 }}>
+            <h2 style={workerPickerTitleStyle}>启动任务</h2>
+            <div style={workerPickerSubtitleStyle}>{title}</div>
+          </div>
+          <button
+            type="button"
+            className="dshw-icon"
+            style={workerPickerCloseStyle}
+            aria-label="关闭"
+            onClick={onClose}
+          ><GClose size={15} /></button>
+        </header>
+        <div style={workerPickerBodyStyle}>
+          <fieldset style={{ margin: 0, padding: 0, border: 'none' }}>
+            <legend style={workerPickerLegendStyle}>Worker</legend>
+            {usable.map(worker => (
+              <label
+                key={worker.id}
+                className="dshw-wprow"
+                style={{ ...workerPickerRowStyle, ...(selectedId === worker.id ? { background: C_HOVER } : {}) }}
+              >
+                <input
+                  type="radio"
+                  name="worker"
+                  checked={selectedId === worker.id}
+                  onChange={() => { setSelectedId(worker.id) }}
+                  style={{ flex: 'none', margin: 0, accentColor: C_ACCENT, cursor: 'pointer' }}
+                />
+                <span style={workerPickerRowTextStyle}>
+                  <span style={workerPickerNameRowStyle}>
+                    <span style={workerPickerNameStyle}>{worker.name}</span>
+                    {worker.isDefault && <span style={draftBadgeStyle}>默认</span>}
+                  </span>
+                  <span style={workerPickerSublineStyle}>{subtitle(worker)}</span>
+                </span>
+              </label>
+            ))}
+            {usable.length === 0 && <div style={workerPickerEmptyStyle}>没有可用的 Worker</div>}
+          </fieldset>
+          <label style={workerPickerFieldLabelStyle}>
+            <span>额外指令 <span style={{ fontWeight: 400, color: C_MUTED }}>（可选）</span></span>
+            <textarea
+              className="dshw-wpta"
+              style={workerPickerTextareaStyle}
+              maxLength={4000}
+              placeholder="例如：只修改相关文件，不要调整现有 API"
+              value={instruction}
+              onChange={event => { setInstruction(event.target.value) }}
+            />
+          </label>
         </div>
-        <input
-          style={dialogInputStyle}
-          placeholder="附加指令（可选）"
-          value={instruction}
-          onChange={event => { setInstruction(event.target.value) }}
-          onKeyDown={event => { if (event.key === 'Enter' && usable.length > 0) onPick(usable[0]!.id, instruction) }}
-        />
-        <div style={dialogCloseRowStyle}>
-          <button type="button" style={dialogCancelStyle} onClick={onClose}>取消</button>
-        </div>
-      </div>
+        <footer style={workerPickerFooterStyle}>
+          <button type="button" className="dshw-btn-ghost" style={workerPickerGhostStyle} onClick={onClose}>取消</button>
+          <button type="button" style={primaryButtonStyle} disabled={selectedId === ''} onClick={() => { onPick(selectedId, instruction) }}>启动任务</button>
+        </footer>
+      </section>
     </div>,
     document.body,
   )
