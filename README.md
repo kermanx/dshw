@@ -1,173 +1,102 @@
 # dshw
 
-`dshw` 是 DeepSeek Harness 的本机 PR 工作流工具。它会追踪你在**所有被监控仓库**上创建的
-open PR，管理独立 worktree，并提供 PR、review、CI 和后台任务状态页。它以 **dsh 插件**的
-形式嵌入 Harness Web；在 Settings 的 **Repos** 面板中勾选、排序任意你有权限的 GitHub
-仓库即可纳入监控。
+`dshw` 是 DeepSeek Harness 的本机 PR 工作流工具，以看板形式嵌入 Harness Web。它会自动追踪你创建的 PR，克隆到本地独立目录，持续同步目标分支、监控 CI，并在需要时用 dsh Agent 自动处理冲突合并、修复 CI 失败、解决 review 评论。
 
 ![](./assets/screenshot.png)
 
-## 准备环境
+## 功能
+
+- **Pull requests**：按仓库列出你创建的 open PR，展示 CI、review、合并与同步状态；冲突、落后、失败检查都有一键或自动处理入口
+- **Reviews**：列出待你 review 的 PR
+- **Git**：仓库分支与提交历史可视化
+- **Jobs**：后台任务列表与详情，运行中的任务可 steer、暂停、终止
+- **Logs**：服务与任务日志
+- **Settings**：
+  - **Repos**：选择要监控的 GitHub 仓库（勾选并排序，顺序即各页展示顺序）
+  - **Workers**：配置 dsh / Codex 等执行器
+  - **System**：更新 dshw、同步主仓库、清理过期 worktree
+
+支持同时监控多个仓库；新增仓库后，它的 PR 会被自动发现并展示。
+
+## 安装
+
+### 前置条件
 
 - macOS
 - Node.js 24+
-- pnpm 11+
+- pnpm
 - Git
 - GitHub CLI，并已运行 `gh auth login`
 - DeepSeek Harness
 
-## 开始使用
-
-dshw 的 daemon 是看板的数据来源：看板通过 `http://127.0.0.1:7849`（默认端口，可用
-`DSHW_PORT` 修改）上的 HTTP API 与 SSE 拉取快照。因此**先启动 daemon**：
+### 步骤
 
 ```sh
 git clone https://github.com/deepseek-harness/dshw.git
 cd dshw
 pnpm install
-pnpm dshw start              # 初始化并后台启动 daemon（自动构建插件 bundle 与 VS Code workspace）
+pnpm dshw start          # 初始化并后台启动服务
 ```
 
-首次启动会在当前 clone 内创建 `.dshw/`，准备被监控仓库的托管 clone 与 dshw 固定版本
-的 dsh runtime，构建插件 bundle 与 VS Code workspace，注册当前用户的
-macOS LaunchAgent，然后在后台启动服务。固定 runtime 首次安装和构建可能需要几分钟；
-CLI 会逐步显示当前阶段、耗时，并在长时间操作中持续报告等待时间。以后在仓库目录中
-直接用 `pnpm dshw status` / `pnpm dshw restart` / `pnpm dshw stop` 管理服务。
+首次启动会准备托管仓库与运行时、构建插件、注册 LaunchAgent，可能需要几分钟。
 
-## 安装到你的 dsh
-
-前提：本机已有可用的 `dsh` 命令和正在运行的 dsh Web 服务。
+然后把看板装进你的 dsh：
 
 ```sh
-# 1. daemon 已启动后，把本仓库安装进 dsh 的 web profile
 dsh plugin --profile web add "$PWD"
-
-# 2. 重启你的 dsh web 服务（停掉后重新运行 `dsh web` / `pnpm dsh web`）
-#    插件列表在启动时组装，新增插件必须重启才会生效；
-#    重启后刷新页面即可在左侧栏底部看到"看板"入口
 ```
 
-安装后，看板占据左侧栏右侧全部空间（侧栏保持可见），包含 Pull requests / Reviews /
-Git / Jobs / Logs / Settings 六个视图，数据实时更新。多仓库模式下：
+重启你的 dsh Web 服务（停掉后重新运行 `dsh web`），刷新页面即可在左侧栏看到看板入口。插件列表在启动时组装，新增插件必须重启 dsh web 才会生效。
 
-- **Pull requests / Reviews** 按仓库分组展示（`[gh 图标] user/repo` 分组头 + 该仓库的
-  PR 列表），顺序即 Settings 里 Repos 面板的监控顺序；
-- **Git** 页顶部用下拉框选择要查看的仓库；
-- **Jobs / Logs** 保持全仓库混合。
+## 使用要点
 
-- **卸载**：`dsh plugin --profile web remove dshw`，再重启 dsh web。
-- **更新**：`git pull` 后运行 `pnpm dshw restart`，再重启 dsh web。
-- **换端口**：daemon 用 `DSHW_PORT` 启动在不同端口时，在看板面板的连接失败界面修改
-  服务地址即可。
-- profile 名称要与你的 Harness Web 一致（默认 `web`）；插件只面向 Web 类 profile。
-
-## 配置模型凭据
-
-dshw 默认把 `start` 时已有的 Harness 环境变量传给后台服务和任务。例如：
-
-```sh
-export DEEPSEEK_API_KEY=...
-pnpm dshw start
-```
-
-也可以使用 Harness 自己的标准用户环境文件 `~/.dsh/.env`：
-
-```dotenv
-DEEPSEEK_API_KEY=...
-```
-
-这是 Harness 原生的 dotenv 格式，dshw 不定义额外配置文件或字段；启动环境中的变量优先于文件。每个 dsh 任务仍使用独立的 `DSH_HOME`，dshw 只复用这里的环境变量，不会读写或共享用户的全局 session 和 profile。
-
-## 可选：安装全局命令
-
-一般不需要全局安装；从 clone 中运行 `pnpm dshw ...` 即可。如果希望直接使用 `dshw` 命令：
-
-```sh
-cd <你的 dshw clone 目录>
-pnpm add --global "$(pwd)"
-dshw status
-```
-
-全局命令仍使用这份源码 clone，运行数据也仍保存在该 clone 的 `.dshw/` 中。
-
-## 本地目录
-
-所有 dshw 管理的数据都位于仓库内：
-
-```text
-dshw/
-  .dshw/
-    managed/<owner>/<name>/ 每个被监控仓库的托管 clone（worktree 的共享对象库）
-    runtime/deepseek-harness/  dshw 固定版本的 Harness runtime
-    worktrees/                 PR worktree（目录名即 PR 标识，无独立元数据文件）
-    logs/                      服务和任务日志
-    workers/                   独立后台任务数据
-    workers.json               worker 配置（不含密钥）
-    worker-secrets.env         设置页保存的 worker 密钥（权限 0600）
-    state.json                 持久化状态（v3 起含 repos 监控列表与 syncs）
-    dshw.code-workspace        VS Code workspace
-```
-
-`.dshw/` 已被 Git 忽略。
-
-## 监控仓库（Repos）
-
-Settings 的 **Repos** 面板列出你所有有权限（owner / collaborator / organization member）
-的 GitHub 仓库：勾选即纳入 dshw 监控（该仓库的 PR / review 会自动发现并展示），拖动
-排序决定各面板的展示顺序。新仓库首次启用时会自动克隆到 `.dshw/managed/` 并开始追踪。
+- 看板数据由本机后台服务实时提供，无需手动刷新
+- 服务默认监听 `127.0.0.1:7849`，可用环境变量 `DSHW_PORT` 修改；换端口后在看板的连接失败界面修改服务地址即可
+- **更新**：`git pull` 后运行 `pnpm dshw restart`，再重启 dsh web
+- **卸载**：`dsh plugin --profile web remove dshw`，再重启 dsh web
 
 ## Worker 配置
 
-Settings 的 **System** 页面会显示 dshw 与主仓库当前落后上游的提交数，以及 Worktree 总数和可清理数量。dshw 可以一键 fast-forward 更新、安装依赖、完成检查与构建，然后安全重启服务；存在本地修改时会拒绝自动更新。主仓库维护集中提供同步、从头配置与过期 Worktree 清理。清理只处理不再对应 active PR 且没有运行中任务占用的 Worktree；包含未提交改动或未推送提交时必须逐项确认是否丢弃。
+Settings 的 **Workers** 页可以维护多个执行器配置并拖动排序，第一项即默认执行器。支持：
 
-看板的 **Settings** 页可以维护多个 worker 配置并查看运行状态。Worker 可以直接拖拽排序，排在第一项的配置就是默认 Worker；任务选择面板也使用相同顺序。初始只创建 dsh 配置；Codex 需要用户手动添加，不会自动成为默认 worker。
+- **dsh**：填写 Provider、模型、API Key 等即可使用
+- **Codex**：使用本机 Codex CLI 与登录状态
+- **Claude Code**：仅保留入口，尚未接入
 
-新建 dsh Worker 时，可以直接填写 Provider、模型、API Key、API Base URL 和 Search Base URL，不需要额外配置环境变量。API Key 也可以改为从指定环境变量读取；此时沿用启动环境或 Harness 原生的 `~/.dsh/.env`。
+直接输入的 API Key 不会出现在配置文件里，而是以受限权限单独保存。PR 操作按钮左键使用默认执行器，右键可为本次任务选择其他执行器。
 
-直接输入的 API Key 不会出现在状态 API 或 `workers.json` 中，而是单独保存在权限为 `0600` 的 `worker-secrets.env`。Base URL 留空时继续使用对应的 Harness 环境变量。
+## 任务控制
 
-Codex Worker 直接使用本机的 Codex CLI、登录状态和配置。设置页检测不到可运行且已登录的 Codex 时，会禁用 Codex 类型并显示原因；可用时只需填写配置名称，模型留空则沿用本机默认值。每个任务使用不落盘的临时 Codex thread，不会加入用户的 Codex 任务历史。
+运行中的任务可以：
 
-服务内部通过统一的 Worker Driver 接口管理不同执行器。dsh 和 Codex 都提供相同的启动、等待、状态、Steer、暂停和终止能力；新增执行器不需要让任务调度层感知其协议细节。Claude Code 目前仅保留类型入口，尚未接入。
+- **Steer**：在下一个 step 前插入指令
+- **暂停 / 继续**：暂停当前 turn，输入新指令后继续同一个任务
+- **终止**：结束任务
 
-PR 操作按钮左键单击时会直接使用默认 Worker；右键单击时可以为本次任务选择其他 Worker，不会改变全局排序。自动任务始终使用触发时排在第一项的 Worker。
+daemon 重启后会重新接管运行中的任务。
 
-## dsh 任务控制
+## 安全与运维
 
-dshw 为每个后台任务直接创建并持有一个具体的 Harness Session。任务运行时可以在任务详情中：
+- dshw 只注册当前用户的 LaunchAgent，不使用 sudo，不创建系统级服务
+- 所有数据都在仓库的 `.dshw/` 目录内（已被 Git 忽略）
+- worker 使用独立的运行环境，不会写入你的全局配置
+- 每份 clone 有独立身份；不同安装互不干扰，冲突操作会明确拒绝
 
-- 发送 **Steer**，让指令在下一个 step 前进入正在运行的任务；
-- **暂停**当前 turn，再输入新指令继续同一个 Session；
-- **终止**整个任务。
-
-初始任务 prompt 也通过同一条 Session steer 路径发送。daemon 重启后会使用持久化的 worker handle、SessionEvent 日志和本地控制 socket 重新接管运行中的任务，不需要等待轮询刷新。
-
-worker 不启动 Harness Web 服务，也不占用 TCP 端口。控制只通过权限为当前用户的 Unix domain socket；每个 worker 使用 `.dshw/workers/` 下独立的 `DSH_HOME`，因此不会把 session、profile 或配置写入用户的全局 `~/.dsh`。PR worktree 只作为任务工作目录。dshw 使用源码中明确固定并验证过的 Harness commit，不依赖用户全局安装的 `dsh`，也不跟随 PR 分支里的 breaking change。
-
-## 后台服务安全边界
-
-`dshw` 只注册当前用户的 LaunchAgent，不使用 `sudo`，也不会创建系统级 daemon。
-
-每份 clone 都有独立 installation ID。启动、停止、重启或查询服务前，dshw 会校验 LaunchAgent ownership 和运行中 daemon 的身份。如果同名服务、端口或 plist 属于另一份安装，命令会明确报冲突并退出，不会覆盖、停止或接管对方。
-
-`dshw stop` 只停止当前 clone 拥有的服务，不会删除 `.dshw/`。涉及清理托管仓库的操作也会先校验 ownership。
-
-## 常用命令
+### 常用命令
 
 ```sh
-pnpm dshw start              # 初始化并启动后台服务（构建插件 bundle 与 VS Code workspace）
-pnpm dshw stop               # 停止后台服务
-pnpm dshw restart            # 构建插件 bundle 并安全重启
-pnpm dshw status             # 查看服务摘要
-pnpm dshw code [name]        # 打开当前分支对应的 worktree
-pnpm dshw doctor             # 检查本机依赖和服务状态
+pnpm dshw start      # 初始化并启动
+pnpm dshw stop       # 停止
+pnpm dshw restart    # 构建插件并重启
+pnpm dshw status     # 查看状态
+pnpm dshw code       # 打开当前分支对应的 worktree
+pnpm dshw doctor     # 检查环境
 ```
 
 ## 开发
 
 ```sh
-pnpm dev       # UI 热更新预览：http://127.0.0.1:7850
-pnpm check     # TypeScript、Vue、production build 和测试
+pnpm check     # 类型检查 + 构建 + 测试
 ```
 
-修改正式服务代码后运行 `pnpm dshw restart`。正在运行的 dsh worker 由 launchd 独立管理，daemon 安全重启时不会中断这些任务。
+修改正式服务代码后运行 `pnpm dshw restart`。
