@@ -2,13 +2,13 @@
 
 > 个人开源项目，非 DeepSeek 官方产品。
 
-`dshw` 是 DeepSeek Harness 的本机 PR 工作流工具，以看板形式嵌入 Harness Web。它会自动追踪你创建的 PR，克隆到本地独立目录，持续同步目标分支、监控 CI，并在需要时用 dsh Agent 自动处理冲突合并、修复 CI 失败、解决 review 评论。
+`dshw` 是 DeepSeek Harness 的本机 PR 工作流工具，以看板形式嵌入 Harness Web。它会自动追踪你创建的、以及 assign 给你的 PR，克隆到本地独立目录，持续同步目标分支、监控 CI，并在需要时用 dsh Agent 自动处理冲突合并、修复 CI 失败、解决 review 评论。
 
 ![](./assets/screenshot.png)
 
 ## 功能
 
-- **Pull requests**：按仓库列出你创建的 open PR，展示 CI、review、合并与同步状态；冲突、落后、失败检查都有一键或自动处理入口
+- **Pull requests**：按仓库列出你创建或 assign 给你的 open PR，展示 CI、review、合并与同步状态；冲突、落后、失败检查都有一键或自动处理入口
 - **Reviews**：列出待你 review 的 PR
 - **Git**：仓库分支与提交历史可视化
 - **Jobs**：后台任务列表与详情，运行中的任务可 steer、暂停、终止
@@ -54,7 +54,7 @@ dsh plugin --profile web add "$PWD"
 
 - 看板数据由本机后台服务实时提供，无需手动刷新
 - 服务默认监听 `127.0.0.1:7849`，可用环境变量 `DSHW_PORT` 修改；换端口后在看板的连接失败界面修改服务地址即可
-- **更新**：`git pull` 后运行 `pnpm dshw restart`，再重启 dsh web
+- **更新**：`git pull` 后运行 `pnpm dshw restart` 即可。
 - **卸载**：`dsh plugin --profile web remove dshw`，再重启 dsh web
 
 ## Worker 配置
