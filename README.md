@@ -8,7 +8,7 @@
 
 ## 功能
 
-- **Pull requests**：按仓库列出你创建或 assign 给你的 open PR，展示 CI、review、合并与同步状态；冲突、落后、失败检查都有一键或自动处理入口
+- **Pull requests**：按仓库列出你创建或 assign 给你的 open PR，展示 CI、review、合并与同步状态；冲突、落后、失败检查都有一键或自动处理入口。stacked PR 会彼此连续排列，并用树形连接线标出 base → top 的依赖关系
 - **Reviews**：列出待你 review 的 PR
 - **Git**：仓库分支与提交历史可视化
 - **Jobs**：后台任务列表与详情，运行中的任务可 steer、暂停、终止

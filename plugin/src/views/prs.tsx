@@ -11,6 +11,7 @@ import {
   mergeLabel, mergeTone, rank, reviewLabel, reviewState, reviewStateTone, reviewTone,
   type GitAction, type PrAction,
 } from '../data.ts'
+import { orderStackedPrs } from '../stack.ts'
 import { GAlert, StatusDot, StatusIcon } from '../icons.tsx'
 import {
   actionLinkStyle, busyRowStyle, cellColumnStyle, cellMainStyle, cellNoteRowStyle,
@@ -118,22 +119,27 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
                   onToggle={toggleRepo}
                   colSpan={5}
                 >
-                  {group.records.map(pr => (
-                    <PrRow
-                      key={`${pr.repoSlug}-${pr.number}-${pr.cloneName}`}
-                      pr={pr}
-                      jobs={snapshot.jobs}
-                      busy={busyByPr.get(pr)}
-                      workingAgent={workingAgentByPr.get(pr)}
-                      pending={pending}
-                      onAction={runPrAction}
-                      onChooseWorker={openWorkerPicker}
-                      onToggleSync={(name, enabled) => { void post('/api/sync/toggle', { name, enabled }, `sync-toggle:${name}`) }}
-                      onGitAction={(name, action) => { void post('/api/clone/maintenance', { name, action }, `git-maintenance:${name}`) }}
-                      onRefresh={refresh}
-                      onOpenJob={openJob}
-                    />
-                  ))}
+                  {orderStackedPrs(group.records).map(row => {
+                    const pr = row.pr
+                    const stack = row.depth > 0 || row.hasChild ? { depth: row.depth, hasChild: row.hasChild } : undefined
+                    return (
+                      <PrRow
+                        key={`${pr.repoSlug}-${pr.number}-${pr.cloneName}`}
+                        pr={pr}
+                        stack={stack}
+                        jobs={snapshot.jobs}
+                        busy={busyByPr.get(pr)}
+                        workingAgent={workingAgentByPr.get(pr)}
+                        pending={pending}
+                        onAction={runPrAction}
+                        onChooseWorker={openWorkerPicker}
+                        onToggleSync={(name, enabled) => { void post('/api/sync/toggle', { name, enabled }, `sync-toggle:${name}`) }}
+                        onGitAction={(name, action) => { void post('/api/clone/maintenance', { name, action }, `git-maintenance:${name}`) }}
+                        onRefresh={refresh}
+                        onOpenJob={openJob}
+                      />
+                    )
+                  })}
                   {group.records.length === 0 && prsLoading && (
                     <tr>
                       <td colSpan={5} style={prLoadingRowStyle}>
@@ -156,8 +162,13 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
 
 /* ── one PR row ── */
 
-export function PrRow({ pr, jobs, busy, workingAgent, pending, onAction, onChooseWorker, onToggleSync, onGitAction, onRefresh, onOpenJob }: {
+/** stack 中非根部（叠在其他 PR 之上）的 PR 统一缩进量；最接近 master 的根部不缩进。 */
+const STACK_CHILD_INDENT = 12
+
+export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, onChooseWorker, onToggleSync, onGitAction, onRefresh, onOpenJob }: {
   pr: PrDashboardRecord
+  /** 所在 stack 的树位置；undefined = 不在 stack 中。 */
+  stack?: { depth: number; hasChild: boolean }
   jobs: readonly JobRecord[]
   busy?: JobRecord
   workingAgent?: JobRecord
@@ -174,7 +185,10 @@ export function PrRow({ pr, jobs, busy, workingAgent, pending, onAction, onChoos
   // drifts the header/body columns apart. Draft dimming rides the row itself.
   return (
     <tr data-dshw-kanban="row" style={pr.isDraft ? draftRowStyle : trStyle}>
-      <td style={tdStyle}>
+      <td style={{
+        ...tdStyle,
+        ...(stack === undefined ? {} : { paddingLeft: 12 + (stack.depth > 0 ? STACK_CHILD_INDENT : 0) }),
+      }}>
         <div style={cellMainStyle}>
           <a style={titleLinkStyle} data-dshw-kanban="titlelink" href={pr.url} title={pr.title} target="_blank" rel="noreferrer">
             <span style={numberStyle}>#{pr.number}</span>
