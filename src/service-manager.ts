@@ -177,7 +177,7 @@ export async function getWorkflowState(installation: InstallationRecord): Promis
   await assertOwnedControl(installation)
   let response: Response
   try {
-    response = await fetch(`http://${HOST}:${PORT}/api/state`, { signal: AbortSignal.timeout(3_000) })
+    response = await fetch(`http://${HOST}:${PORT}/api/state`, { signal: AbortSignal.timeout(8_000) })
   } catch (error) {
     throw new Error(`后台服务未运行（${messageOf(error)}）`)
   }

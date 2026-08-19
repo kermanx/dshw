@@ -282,7 +282,7 @@ function KanbanPanel({ t, onClose, open }: { t: Translate; onClose: () => void; 
   useEffect(() => {
     let cancelled = false
     setStatus('checking')
-    fetch(`${baseUrl}/api/state`, { mode: 'no-cors', signal: AbortSignal.timeout(3000) })
+    fetch(`${baseUrl}/api/state`, { mode: 'no-cors', signal: AbortSignal.timeout(8000) })
       .then(() => { if (!cancelled) setStatus('ready') })
       .catch(() => { if (!cancelled) setStatus('down') })
     return () => { cancelled = true }

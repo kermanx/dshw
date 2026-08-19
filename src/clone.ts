@@ -97,9 +97,25 @@ async function describeClone(path: string, name: string, worktreeBranch: string)
   }
 }
 
+/** worktree 集合很少变化，但每次 /api/state 都会重新枚举（每个 worktree 要跑
+ *  数次 git 子进程，几十个 PR 时可达数秒）。缓存后状态接口降到毫秒级；
+ *  创建 / 删除 clone 时主动失效，新增托管 repo 等未覆盖的变更由滑动 TTL 兜底
+ *  （空闲超过 TTL 才重算，活跃使用期间一直命中缓存）。 */
+const CLONES_CACHE_IDLE_TTL_MS = 60_000
+let clonesCache: { at: number; records: CloneRecord[] } | undefined
+
+/** clone 集合变化后调用，使 listClones 立即重算。 */
+export function invalidateClonesCache(): void {
+  clonesCache = undefined
+}
+
 /** 枚举所有 dshw 管理的 PR worktree。git 是唯一真相源：worktree 分支
  *  `dshw/<name>` 标识归属，repo / PR head 分支从 worktree 自身推导。 */
 export async function listClones(): Promise<CloneRecord[]> {
+  if (clonesCache !== undefined && Date.now() - clonesCache.at < CLONES_CACHE_IDLE_TTL_MS) {
+    clonesCache.at = Date.now()
+    return clonesCache.records
+  }
   const clones: CloneRecord[] = []
   for (const root of await managedRoots()) {
     const result = await run('git', ['worktree', 'list', '--porcelain'], { cwd: root, timeoutMs: 15_000 })
@@ -112,9 +128,10 @@ export async function listClones(): Promise<CloneRecord[]> {
       if (record !== undefined) clones.push(record)
     }
   }
-  return clones.sort((left, right) => left.name.localeCompare(right.name))
+  const records = clones.sort((left, right) => left.name.localeCompare(right.name))
+  clonesCache = { at: Date.now(), records }
+  return records
 }
-
 /**
  * 为自动发现的 PR 创建 clone：克隆名即 PR 名（pr-<owner>-<repo>-<number>）。
  * 已存在同分支 clone（包括旧的 dsh-N 命名）时直接复用。
@@ -133,6 +150,7 @@ export async function createPrClone(pr: MyPullRequestSummary, repoSlug: string):
     const managedRoot = managedRootFor(repoSlug)
     const worktreeBranch = await addSharedWorktree(managedRoot, pr.headRefName, name, destination)
     worktreeCreated = true
+    invalidateClonesCache()
     return { name, path: destination, repoSlug, branch: pr.headRefName, worktreeBranch }
   } catch (error) {
     if (worktreeCreated) await removeSharedWorktree(managedRootFor(repoSlug), `dshw/${name}`, destination)
@@ -161,6 +179,7 @@ export async function removeCloneRecord(
   const managedRoot = paths.managedRoot ?? managedRootFor(clone.repoSlug)
   await removeSharedWorktree(managedRoot, clone.worktreeBranch, clone.path)
   await rm(clone.path, { recursive: true, force: true })
+  invalidateClonesCache()
 }
 
 export function formatClonePath(clone: CloneRecord): string {
