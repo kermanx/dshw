@@ -3,7 +3,7 @@
  *  empty states, strips, action links, popovers, dialogs, jobs/logs cells
  *  and the workspace tab bar. */
 import type { CSSProperties } from 'react'
-import { warn, C_ACCENT, C_BADGE, C_BADGE_FG, C_BORDER, C_DANGER, C_FAINT, C_HOVER, C_LINK, C_MUTED, C_OVERLAY, C_SECONDARY, C_SURFACE, C_TEXT, C_WARN_SOFT, C_WIDGET, C_SHADOW_POP, FONT_MONO } from './theme.ts'
+import { warn, C_ACCENT, C_ACCENT_SOFT, C_BADGE, C_BADGE_FG, C_BORDER, C_DANGER, C_FAINT, C_HOVER, C_LINK, C_MUTED, C_OVERLAY, C_SECONDARY, C_SURFACE, C_TEXT, C_WARN_SOFT, C_WIDGET, C_SHADOW_POP, FONT_MONO } from './theme.ts'
 
 /* ── styles ── */
 
@@ -181,6 +181,20 @@ export const cellSubStyle: CSSProperties = {
 }
 
 export const subTextStyle: CSSProperties = { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+
+/** “assign 给我的 PR”标识：作者不是自己，用 accent 底色与草稿徽标区分。 */
+export const assignedBadgeStyle: CSSProperties = {
+  flex: 'none',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: '0 5px',
+  borderRadius: 3,
+  fontSize: 10.5,
+  lineHeight: '14px',
+  background: C_ACCENT_SOFT,
+  color: C_ACCENT,
+}
 
 export const gitChipStyle: CSSProperties = {
   flex: 'none',

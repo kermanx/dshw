@@ -14,7 +14,7 @@ import {
 import { orderStackedPrs } from '../stack.ts'
 import { GAlert, StatusDot, StatusIcon } from '../icons.tsx'
 import {
-  actionLinkStyle, busyRowStyle, cellColumnStyle, cellMainStyle, cellNoteRowStyle,
+  actionLinkStyle, assignedBadgeStyle, busyRowStyle, cellColumnStyle, cellMainStyle, cellNoteRowStyle,
   cellNoteStyle, cellSubStyle, countStyle, draftBadgeStyle, emptyStateLineStyle,
   emptyStateStyle, emptyStateSubStyle, emptyStateTitleStyle, errorStripStyle,
   errorStripTextStyle, gitChipStyle, loadingStripStyle, mergeableLabelStyle,
@@ -93,7 +93,7 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
         {snapshot !== undefined && (snapshot.repos?.length ?? 0) === 0 && (
           <div style={emptyStateStyle}>
             <p style={emptyStateTitleStyle}>还没有选择要监控的仓库</p>
-            <p style={emptyStateSubStyle}>勾选仓库后，你创建的 open PR 会自动显示在这里</p>
+            <p style={emptyStateSubStyle}>勾选仓库后，你创建或 assign 给你的 open PR 会自动显示在这里</p>
             <button type="button" className="dshw-link" style={actionLinkStyle} onClick={openReposSettings}>去设置 Repos →</button>
           </div>
         )}
@@ -199,6 +199,9 @@ export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, 
         <div style={cellSubStyle}>
           {hasLocalGitStatus(pr) && pr.localGitStatus !== undefined && (
             <LocalGitChip status={pr.localGitStatus} pending={pending.has(`git-maintenance:${pr.cloneName}`)} onAction={action => onGitAction(pr.cloneName, action)} />
+          )}
+          {pr.assignedToMe === true && pr.author !== undefined && (
+            <span style={assignedBadgeStyle} title={`assign 给你的 PR，作者 @${pr.author}`}>by @{pr.author}</span>
           )}
           <span style={subTextStyle} title={pr.branch}>{pr.branch} → {pr.baseRefName}</span>
         </div>

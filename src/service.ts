@@ -27,7 +27,7 @@ import { createPrClone, listClones, removeClone } from './clone.ts'
 import { readDshwRepositoryStatus } from './dshw-repository.ts'
 import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, maintainClone, mergeConflictPaths, remoteBranchOid } from './git.ts'
 import type { CloneMaintenanceAction } from './git.ts'
-import { assessCiAutoFix, ciChecks, listUserRepos, myOpenPullRequests, openPullRequests, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks } from './github.ts'
+import { assessCiAutoFix, ciChecks, dashboardOpenPullRequests, listUserRepos, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks, trackedOpenPullRequests } from './github.ts'
 import { readHarnessRepositoryStatus } from './harness-repository.ts'
 import { mergePrDashboardSyncState } from './pr-dashboard.ts'
 import { readGitGraph } from './git-graph.ts'
@@ -763,7 +763,7 @@ class WorkflowService {
     return sync
   }
 
-  /** 自动发现在所有被监控仓库上我的 open PR：克隆并纳入追踪（sync 默认关闭），并清理已关闭 PR 的 sync。 */
+  /** 自动发现在所有被监控仓库上我创建或 assign 给我的 open PR：克隆并纳入追踪（sync 默认关闭），并清理已关闭 PR 的 sync。 */
   async #discoverMyPrs(): Promise<void> {
     if (this.#discoveryPromise !== undefined) return await this.#discoveryPromise
     this.#lastDiscoveryAt = Date.now()
@@ -780,7 +780,7 @@ class WorkflowService {
           const repoSlug = repo.repoSlug
           try {
             const root = await ensureManagedRoot(repoSlug, this.#installation)
-            const prs = await myOpenPullRequests(root, repoSlug)
+            const prs = await trackedOpenPullRequests(root, repoSlug)
             for (const pr of prs) {
               const existing = this.#store.state.syncs.find(
                 sync => sync.repoSlug === repoSlug && sync.prNumber === pr.number,
@@ -812,7 +812,7 @@ class WorkflowService {
                 nextPrRefreshAt: now(),
               }
               this.#store.state.syncs.push(sync)
-              this.#store.event('info', 'track', `发现我的 PR #${pr.number}「${pr.title}」（${repoSlug}），已克隆并纳入追踪（sync 默认关闭，可在 UI 打开）`)
+              this.#store.event('info', 'track', `发现 PR #${pr.number}「${pr.title}」（${repoSlug}），已克隆并纳入追踪（sync 默认关闭，可在 UI 打开）`)
               tracked += 1
             }
             const openNumbers = new Set(prs.map(pr => pr.number))
@@ -1087,9 +1087,12 @@ class WorkflowService {
       for (const repo of enabled) {
         const repoSlug = repo.repoSlug
         let openPrs: PullRequestInfo[]
+        let assignedOnlyNumbers: ReadonlySet<number> = new Set()
         try {
           const root = await ensureManagedRoot(repoSlug, this.#installation)
-          openPrs = await openPullRequests(root, repoSlug)
+          const combined = await dashboardOpenPullRequests(root, repoSlug)
+          openPrs = combined.prs
+          assignedOnlyNumbers = combined.assignedOnlyNumbers
         } catch (error) {
           this.#noteGhFailure(error)
           recordRefreshError(`${repoSlug}: ${messageOf(error)}`)
@@ -1143,6 +1146,8 @@ class WorkflowService {
               isDraft: pr.isDraft,
               branch: pr.headRefName,
               baseRefName: pr.baseRefName,
+              author: pr.author?.login ?? '',
+              ...(assignedOnlyNumbers.has(pr.number) ? { assignedToMe: true } : {}),
               headOid: pr.headRefOid,
               baseOid: pr.baseRefOid,
               mergeable: pr.mergeable,

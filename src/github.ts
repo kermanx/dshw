@@ -2,10 +2,32 @@ import type { CiCheck, CiStatus, MyPullRequestSummary, PullRequestCheck, PullReq
 import { run, runOrThrow } from './util.ts'
 
 const PR_FIELDS = [
-  'number', 'title', 'url', 'state', 'isDraft', 'mergeable', 'mergeStateStatus',
+  'number', 'title', 'url', 'state', 'isDraft', 'author', 'mergeable', 'mergeStateStatus',
   'baseRefName', 'baseRefOid', 'headRefName', 'headRefOid',
   'reviewDecision', 'reviewRequests', 'latestReviews', 'statusCheckRollup',
 ].join(',')
+
+async function listOpenPullRequests(
+  cwd: string,
+  repoSlug: string,
+  flags: readonly string[],
+  fields: string,
+  signal?: AbortSignal,
+): Promise<PullRequestInfo[]> {
+  const result = await runOrThrow(
+    'gh',
+    ['pr', 'list', '--repo', repoSlug, ...flags, '--state', 'open', '--limit', '100', '--json', fields],
+    { cwd, timeoutMs: 30_000, signal },
+  )
+  const parsed = JSON.parse(result.stdout) as PullRequestInfo[]
+  for (const pr of parsed) {
+    pr.latestReviews ??= []
+    pr.reviewRequests ??= []
+    pr.statusCheckRollup ??= []
+    pr.reviewDecision ??= ''
+  }
+  return parsed
+}
 
 export async function pullRequest(
   cwd: string,
@@ -30,31 +52,78 @@ export async function pullRequest(
 
 export async function openPullRequests(cwd: string, repoSlug: string, signal?: AbortSignal): Promise<PullRequestInfo[]> {
   // 只查自己的 open PR：全仓库带 statusCheckRollup/mergeable 的重字段查询会让 GraphQL 504
-  const result = await runOrThrow(
-    'gh',
-    ['pr', 'list', '--repo', repoSlug, '--author', '@me', '--state', 'open', '--limit', '100', '--json', PR_FIELDS],
-    { cwd, timeoutMs: 30_000, signal },
-  )
-  const parsed = JSON.parse(result.stdout) as PullRequestInfo[]
-  for (const pr of parsed) {
-    pr.latestReviews ??= []
-    pr.reviewRequests ??= []
-    pr.statusCheckRollup ??= []
-    pr.reviewDecision ??= ''
-  }
-  return parsed
+  return listOpenPullRequests(cwd, repoSlug, ['--author', '@me'], PR_FIELDS, signal)
 }
 
-export async function myOpenPullRequests(cwd: string, repoSlug: string, signal?: AbortSignal): Promise<MyPullRequestSummary[]> {
+export async function assignedOpenPullRequests(cwd: string, repoSlug: string, signal?: AbortSignal): Promise<PullRequestInfo[]> {
+  return listOpenPullRequests(cwd, repoSlug, ['--assignee', '@me'], PR_FIELDS, signal)
+}
+
+export interface DashboardOpenPullRequests {
+  /** 我创建的 open PR ∪ assign 给我的 open PR（按 number 去重）。 */
+  prs: PullRequestInfo[]
+  /** 只看板里 assign 给我、但不是由我创建的 PR number。 */
+  assignedOnlyNumbers: ReadonlySet<number>
+}
+
+/** 看板展示范围：我创建的 open PR ∪ assign 给我的 open PR。 */
+export async function dashboardOpenPullRequests(cwd: string, repoSlug: string, signal?: AbortSignal): Promise<DashboardOpenPullRequests> {
+  const [authored, assigned] = await Promise.all([
+    openPullRequests(cwd, repoSlug, signal),
+    assignedOpenPullRequests(cwd, repoSlug, signal),
+  ])
+  const authoredNumbers = new Set(authored.map(pr => pr.number))
+  const seen = new Set<number>()
+  const prs: PullRequestInfo[] = []
+  for (const pr of [...authored, ...assigned]) {
+    if (seen.has(pr.number)) continue
+    seen.add(pr.number)
+    prs.push(pr)
+  }
+  return {
+    prs,
+    assignedOnlyNumbers: new Set(assigned.filter(pr => !authoredNumbers.has(pr.number)).map(pr => pr.number)),
+  }
+}
+
+const MY_PR_SUMMARY_FIELDS = 'number,title,url,isDraft,author,baseRefName,baseRefOid,headRefName,headRefOid'
+
+async function listMyOpenPullRequests(
+  cwd: string,
+  repoSlug: string,
+  flags: readonly string[],
+  signal?: AbortSignal,
+): Promise<MyPullRequestSummary[]> {
   const result = await runOrThrow(
     'gh',
-    [
-      'pr', 'list', '--repo', repoSlug, '--author', '@me', '--state', 'open', '--limit', '100',
-      '--json', 'number,title,url,isDraft,baseRefName,baseRefOid,headRefName,headRefOid',
-    ],
+    ['pr', 'list', '--repo', repoSlug, ...flags, '--state', 'open', '--limit', '100', '--json', MY_PR_SUMMARY_FIELDS],
     { cwd, timeoutMs: 30_000, signal },
   )
   return JSON.parse(result.stdout) as MyPullRequestSummary[]
+}
+
+export async function myOpenPullRequests(cwd: string, repoSlug: string, signal?: AbortSignal): Promise<MyPullRequestSummary[]> {
+  return listMyOpenPullRequests(cwd, repoSlug, ['--author', '@me'], signal)
+}
+
+export async function assignedMyOpenPullRequests(cwd: string, repoSlug: string, signal?: AbortSignal): Promise<MyPullRequestSummary[]> {
+  return listMyOpenPullRequests(cwd, repoSlug, ['--assignee', '@me'], signal)
+}
+
+/** 自动追踪范围：我创建的 open PR ∪ assign 给我的 open PR（按 number 去重）。 */
+export async function trackedOpenPullRequests(cwd: string, repoSlug: string, signal?: AbortSignal): Promise<MyPullRequestSummary[]> {
+  const [authored, assigned] = await Promise.all([
+    myOpenPullRequests(cwd, repoSlug, signal),
+    assignedMyOpenPullRequests(cwd, repoSlug, signal),
+  ])
+  const seen = new Set<number>()
+  const combined: MyPullRequestSummary[] = []
+  for (const pr of [...authored, ...assigned]) {
+    if (seen.has(pr.number)) continue
+    seen.add(pr.number)
+    combined.push(pr)
+  }
+  return combined
 }
 
 export async function reviewRequestedPullRequests(cwd: string, repoSlug: string, signal?: AbortSignal): Promise<ReviewRequestRecord[]> {

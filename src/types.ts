@@ -291,6 +291,7 @@ export interface PullRequestInfo {
   url: string
   state: string
   isDraft: boolean
+  author?: { login?: string }
   mergeable: string
   mergeStateStatus: string
   baseRefName: string
@@ -308,12 +309,13 @@ export interface PullRequestReviewRequest {
   login?: string
 }
 
-/** `gh pr list --author @me` 返回的轻量摘要，用于自动追踪发现。 */
+/** `gh pr list --author @me` / `--assignee @me` 返回的轻量摘要，用于自动追踪发现。 */
 export interface MyPullRequestSummary {
   number: number
   title: string
   url: string
   isDraft: boolean
+  author?: { login?: string }
   baseRefName: string
   baseRefOid: string
   headRefName: string
@@ -382,6 +384,10 @@ export interface PrDashboardRecord {
   isDraft: boolean
   branch: string
   baseRefName: string
+  /** PR 作者 login；非自己创建的 PR（assign 给我）会带上。 */
+  author?: string
+  /** PR assign 给我但不是由我创建（用于看板区分“我的 PR”和“assign 给我的 PR”）。 */
+  assignedToMe?: boolean
   /** Exact remote PR head observed during the latest GitHub refresh. */
   headOid?: string
   /** PR-specific base snapshot observed during the latest GitHub refresh. */
