@@ -233,17 +233,21 @@ export function checkLabel(check: CiCheck): string { return check.bucket === 'pa
 export function checkTone(check: CiCheck): Tone { return check.bucket === 'pass' ? 'ok' : check.bucket === 'pending' ? 'warn' : 'bad' }
 
 export function reviewState(review: PullRequestReview, pr: PrDashboardRecord): string {
+  if (review.state === 'APPROVED') return '已批准'
+  if (review.state === 'CHANGES_REQUESTED') return '要求修改'
   const login = review.author?.login
   const progress = login === undefined ? undefined : pr.reviewerComments?.[login]
   if (progress !== undefined && progress.total > 0) return `${progress.resolved}/${progress.total}`
-  return review.state === 'APPROVED' ? '已批准' : review.state === 'CHANGES_REQUESTED' ? '要求修改' : '已 review'
+  return '已 review'
 }
 
 export function reviewStateTone(review: PullRequestReview, pr: PrDashboardRecord): Tone {
+  if (review.state === 'APPROVED') return 'ok'
+  if (review.state === 'CHANGES_REQUESTED') return 'bad'
   const login = review.author?.login
   const progress = login === undefined ? undefined : pr.reviewerComments?.[login]
   if (progress !== undefined && progress.total > 0) return progress.resolved === progress.total ? 'ok' : 'warn'
-  return review.state === 'APPROVED' ? 'ok' : review.state === 'CHANGES_REQUESTED' ? 'bad' : 'neutral'
+  return 'neutral'
 }
 
 

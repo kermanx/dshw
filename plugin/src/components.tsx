@@ -1,5 +1,5 @@
 /** Shared presentational primitives. */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { GCaretDown, GCaretRight, GGithub } from './icons.tsx'
@@ -57,25 +57,39 @@ export function HoverPopover({ label, width, children, render, maxHeight, hoverC
   hoverClass?: string
 }): ReactNode {
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState({ top: 0, left: 0 })
   const closeTimer = useRef<number | undefined>(undefined)
+  /** 以触发器为锚点计算浮窗位置：默认放在触发器下方；下方空间不够时翻到上方，
+   *  并用实际渲染高度（而非 maxHeight）判断，避免靠底部的行弹窗被顶到很上面。 */
+  const place = (): void => {
+    const rect = triggerRef.current?.getBoundingClientRect()
+    if (rect === undefined) return
+    const popWidth = Math.min(width, window.innerWidth - 16)
+    const popHeight = popoverRef.current?.offsetHeight ?? maxHeight
+    let top = rect.bottom + 6
+    if (top + popHeight > window.innerHeight - 8) {
+      top = rect.top - popHeight - 6
+    }
+    setPosition({
+      top: Math.max(8, top),
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - popWidth - 8)),
+    })
+  }
   const show = (): void => {
     if (closeTimer.current !== undefined) window.clearTimeout(closeTimer.current)
-    const rect = triggerRef.current?.getBoundingClientRect()
-    if (rect !== undefined) {
-      const popWidth = Math.min(width, window.innerWidth - 16)
-      setPosition({
-        top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - maxHeight - 40)),
-        left: Math.max(8, Math.min(rect.left, window.innerWidth - popWidth - 8)),
-      })
-    }
     setOpen(true)
   }
   const hideSoon = (): void => {
     if (closeTimer.current !== undefined) window.clearTimeout(closeTimer.current)
     closeTimer.current = window.setTimeout(() => { setOpen(false) }, 100)
   }
+  // 打开且浮窗渲染后，按实际高度重新定位；之后鼠标移入浮窗也沿用同一位置。
+  useLayoutEffect(() => {
+    if (open) place()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, width])
   useEffect(() => () => { if (closeTimer.current !== undefined) window.clearTimeout(closeTimer.current) }, [])
   return (
     <>
@@ -95,6 +109,7 @@ export function HoverPopover({ label, width, children, render, maxHeight, hoverC
       </button>
       {open && createPortal(
         <div
+          ref={popoverRef}
           data-dshw-kanban="root"
           style={{ ...popoverStyle, top: position.top, left: position.left, width: Math.min(width, window.innerWidth - 16), maxHeight }}
           onMouseEnter={show}

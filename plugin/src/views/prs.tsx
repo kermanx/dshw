@@ -262,13 +262,7 @@ export function CiCell({ pr, busy, workingAgent, pending, onAction, onChooseWork
   const failed = pr.checks.filter(check => check.bucket === 'fail' || check.bucket === 'cancel').length
   const pendingCount = pr.checks.filter(check => check.bucket === 'pending').length
   const note = failed > 0 ? `${failed} 个失败` : pendingCount > 0 ? `${pendingCount} 个运行中` : pr.checks.length > 0 ? '' : '尚无 checks'
-  if (busy?.type === 'fix-ci') {
-    return (
-      <div style={cellColumnStyle}>
-        <button type="button" className="dshw-link" style={busyRowStyle} onClick={() => { onOpenJob(busy) }}><StatusDot tone="accent" pulse />修复中 · 查看</button>
-      </div>
-    )
-  }
+  const fixing = busy !== undefined && busy.type === 'fix-ci'
   return (
     <div style={cellColumnStyle}>
       <HoverPopover label={`PR #${pr.number} CI checks`} width={360} maxHeight={300} render={close => (
@@ -292,18 +286,24 @@ export function CiCell({ pr, busy, workingAgent, pending, onAction, onChooseWork
         )}
       </HoverPopover>
       <div style={cellNoteRowStyle}>
-        {note !== '' && <span style={cellNoteStyle}>{note}</span>}
-        {(pr.ciStatus === 'failed' || pr.checks.some(check => check.bucket === 'fail' || check.bucket === 'cancel')) && (
+        {fixing ? (
+          <button type="button" className="dshw-link" style={busyRowStyle} onClick={() => { onOpenJob(busy) }}><StatusDot tone="accent" pulse />修复中 · 查看</button>
+        ) : (
           <>
-            {note !== '' && <span style={noteSeparatorStyle}>·</span>}
-            <button
-              type="button"
-              className="dshw-link" style={actionLinkStyle}
-              disabled={workingAgent !== undefined || pending.has(`fix-ci:${pr.cloneName}`)}
-              title={workingAgent !== undefined ? '该 PR 已有 Agent 正在工作' : '单击使用默认 Worker · 右键选择 Worker'}
-              onClick={() => { onAction(pr.cloneName, 'fix-ci') }}
-              onContextMenu={(e) => { e.preventDefault(); onChooseWorker(pr.cloneName, 'fix-ci') }}
-            >修 CI</button>
+            {note !== '' && <span style={cellNoteStyle}>{note}</span>}
+            {(pr.ciStatus === 'failed' || pr.checks.some(check => check.bucket === 'fail' || check.bucket === 'cancel')) && (
+              <>
+                {note !== '' && <span style={noteSeparatorStyle}>·</span>}
+                <button
+                  type="button"
+                  className="dshw-link" style={actionLinkStyle}
+                  disabled={workingAgent !== undefined || pending.has(`fix-ci:${pr.cloneName}`)}
+                  title={workingAgent !== undefined ? '该 PR 已有 Agent 正在工作' : '单击使用默认 Worker · 右键选择 Worker'}
+                  onClick={() => { onAction(pr.cloneName, 'fix-ci') }}
+                  onContextMenu={(e) => { e.preventDefault(); onChooseWorker(pr.cloneName, 'fix-ci') }}
+                >修 CI</button>
+              </>
+            )}
           </>
         )}
       </div>
