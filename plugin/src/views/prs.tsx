@@ -334,13 +334,7 @@ export function ReviewCell({ pr, busy, workingAgent, pending, onAction, onChoose
       ? `${reviewed.length} 人已 review`
       : '尚未 request review'
   const avatar = (login: string): string => `https://github.com/${encodeURIComponent(login)}.png?size=64`
-  if (busy?.type === 'resolve-comments') {
-    return (
-      <div style={cellColumnStyle}>
-        <button type="button" className="dshw-link" style={busyRowStyle} onClick={() => { onOpenJob(busy) }}><StatusDot tone="accent" pulse />解决评论中 · 查看</button>
-      </div>
-    )
-  }
+  const resolving = busy !== undefined && busy.type === 'resolve-comments'
   return (
     <div style={cellColumnStyle}>
       <HoverPopover label={`PR #${pr.number} reviews`} width={380} maxHeight={340} render={close => (
@@ -389,18 +383,24 @@ export function ReviewCell({ pr, busy, workingAgent, pending, onAction, onChoose
         )}
       </HoverPopover>
       <div style={cellNoteRowStyle}>
-        <span style={cellNoteStyle} title={summary}>{summary}</span>
-        {pr.unresolvedComments !== undefined && pr.unresolvedComments > 0 && (
+        {resolving ? (
+          <button type="button" className="dshw-link" style={busyRowStyle} onClick={() => { onOpenJob(busy) }}><StatusDot tone="accent" pulse />解决评论中 · 查看</button>
+        ) : (
           <>
-            <span style={noteSeparatorStyle}>·</span>
-            <button
-              type="button"
-              className="dshw-link" style={actionLinkStyle}
-              disabled={workingAgent !== undefined || pending.has(`resolve-comments:${pr.cloneName}`)}
-              title={workingAgent !== undefined ? '该 PR 已有 Agent 正在工作' : '单击使用默认 Worker · 右键选择 Worker'}
-              onClick={() => { onAction(pr.cloneName, 'resolve-comments') }}
-              onContextMenu={(e) => { e.preventDefault(); onChooseWorker(pr.cloneName, 'resolve-comments') }}
-            >解决 {pr.unresolvedComments} 条评论</button>
+            <span style={cellNoteStyle} title={summary}>{summary}</span>
+            {pr.unresolvedComments !== undefined && pr.unresolvedComments > 0 && (
+              <>
+                <span style={noteSeparatorStyle}>·</span>
+                <button
+                  type="button"
+                  className="dshw-link" style={actionLinkStyle}
+                  disabled={workingAgent !== undefined || pending.has(`resolve-comments:${pr.cloneName}`)}
+                  title={workingAgent !== undefined ? '该 PR 已有 Agent 正在工作' : '单击使用默认 Worker · 右键选择 Worker'}
+                  onClick={() => { onAction(pr.cloneName, 'resolve-comments') }}
+                  onContextMenu={(e) => { e.preventDefault(); onChooseWorker(pr.cloneName, 'resolve-comments') }}
+                >解决 {pr.unresolvedComments} 条评论</button>
+              </>
+            )}
           </>
         )}
       </div>
