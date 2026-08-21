@@ -50,8 +50,8 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
   }
 
   const runPrAction = (cloneName: string, action: PrAction): void => {
-    if (action === 'merge-base-direct') {
-      void post('/api/pr-action', { name: cloneName, action }, `merge-base-direct:${cloneName}`)
+    if (action === 'merge-base' || action === 'merge-base-direct') {
+      void post('/api/pr-action', { name: cloneName, action }, `${action}:${cloneName}`)
       return
     }
     const defaultWorker = snapshot?.workers.find(worker => worker.enabled)

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { removeCloneRecord, validateCloneName } from '../src/clone.ts'
-import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, maintainClone, mergeConflictPaths, repoSlugFromRemote } from '../src/git.ts'
+import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchMergePreflight, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, maintainClone, mergeConflictPaths, repoSlugFromRemote } from '../src/git.ts'
 import { assessCiAutoFix, ciLaneKey, rollupChecks, selectCiAutoFixChecks, summarizeChecks } from '../src/github.ts'
 import { AGENT_STEER_INTERVAL_MS, CLONES_ROOT, DSHW_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
@@ -562,6 +562,14 @@ test('computes conflicts against the latest target tip instead of the PR base sn
     const headOid = await commitOid(source, 'HEAD')
     await runOrThrow('git', ['push', 'origin', 'feature'], { cwd: source })
 
+    await fetchBranch(clone, 'feature')
+    assert.deepEqual(await fetchMergePreflight(clone, 'master', headOid), {
+      targetRef: 'refs/remotes/origin/master',
+      targetOid: baseSnapshot,
+      conflictPaths: [],
+    })
+    assert.equal((await runOrThrow('git', ['status', '--porcelain=v1'], { cwd: clone })).stdout, '')
+
     await runOrThrow('git', ['checkout', 'master'], { cwd: source })
     await writeFile(join(source, 'file.txt'), 'latest master\n')
     await runOrThrow('git', ['commit', '-am', 'master changes'], { cwd: source })
@@ -572,6 +580,11 @@ test('computes conflicts against the latest target tip instead of the PR base sn
     assert.deepEqual(await mergeConflictPaths(clone, headOid, baseSnapshot), [])
     assert.equal(await fetchRemoteBranchTip(clone, 'master'), latestTarget)
     assert.deepEqual(await mergeConflictPaths(clone, headOid, latestTarget), ['file.txt'])
+    assert.deepEqual(await fetchMergePreflight(clone, 'master', headOid), {
+      targetRef: 'refs/remotes/origin/master',
+      targetOid: latestTarget,
+      conflictPaths: ['file.txt'],
+    })
   } finally {
     await rm(root, { recursive: true, force: true })
   }

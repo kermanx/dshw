@@ -25,7 +25,7 @@ import {
 } from './config.ts'
 import { createPrClone, listClones, removeClone } from './clone.ts'
 import { readDshwRepositoryStatus } from './dshw-repository.ts'
-import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, maintainClone, mergeConflictPaths, remoteBranchOid } from './git.ts'
+import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchMergePreflight, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, maintainClone, mergeConflictPaths, remoteBranchOid } from './git.ts'
 import type { CloneMaintenanceAction } from './git.ts'
 import { assessCiAutoFix, ciChecks, dashboardOpenPullRequests, listUserRepos, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks, trackedOpenPullRequests } from './github.ts'
 import { readHarnessRepositoryStatus } from './harness-repository.ts'
@@ -529,8 +529,11 @@ class WorkflowService {
       if (action !== 'merge-base' && action !== 'fix-ci' && action !== 'merge-base-direct' && action !== 'resolve-comments' && action !== 'custom') throw new Error('未知 PR 操作')
       const clone = await findClone(name)
       const sync = await this.#manualSync(clone)
-      if (action === 'merge-base-direct') this.#startDirectMergeBase(sync)
-      else {
+      if (action === 'merge-base' || action === 'merge-base-direct') {
+        const additionalInstruction = bodyString(body, 'additionalInstruction')?.trim()
+        if ((additionalInstruction?.length ?? 0) > 4_000) throw new Error('额外指令不能超过 4000 个字符')
+        this.#startManualMergeBase(sync, bodyString(body, 'workerConfigId'), additionalInstruction)
+      } else {
         const workerConfig = this.#workers.executionConfig(bodyString(body, 'workerConfigId'))
         const additionalInstruction = bodyString(body, 'additionalInstruction')?.trim()
         if ((additionalInstruction?.length ?? 0) > 4_000) throw new Error('额外指令不能超过 4000 个字符')
@@ -1441,14 +1444,22 @@ class WorkflowService {
       this.#applyPr(sync, pr)
       let mergeSummary = `mergeable=${pr.mergeable}`
       if (pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY') {
-        await fetchBranch(sync.clonePath, sync.baseRefName, signal)
-        const conflictPaths = await mergeConflictPaths(sync.clonePath, 'HEAD', `origin/${sync.baseRefName}`, signal)
+        const preflight = await fetchMergePreflight(sync.clonePath, sync.baseRefName, 'HEAD', signal)
+        const { conflictPaths } = preflight
         if (conflictPaths.length > 0 && conflictPaths.every(isDocumentationConflictPath)) {
           mergeSummary += '（仅文档冲突，跳过自动合并）'
           this.#store.event(
             'info',
             'mergeability',
             `PR #${sync.prNumber} 仅有文档冲突，跳过自动合并：${conflictPaths.join('、')}`,
+          )
+        } else if (conflictPaths.length === 0) {
+          await this.#mergeBaseDirect(sync, preflight.targetRef, signal)
+          mergeSummary += '（本地预检无冲突，已直接合并并 push）'
+          this.#store.event(
+            'info',
+            'merge-base',
+            `${sync.cloneName} / PR #${sync.prNumber}: GitHub 报告冲突，但本地预检无冲突；已直接合并 origin/${sync.baseRefName} 并 push`,
           )
         } else {
           await this.#runAgent(sync, 'merge-base')
@@ -1556,7 +1567,13 @@ class WorkflowService {
     await this.#runAgent(sync, 'fix-ci', undefined, additionalInstruction)
   }
 
-  async #runAgent(sync: SyncRecord, kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom', selectedWorker?: WorkerExecutionConfig, additionalInstruction?: string): Promise<void> {
+  async #runAgent(
+    sync: SyncRecord,
+    kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom',
+    selectedWorker?: WorkerExecutionConfig,
+    additionalInstruction?: string,
+    existingJob?: JobRecord,
+  ): Promise<void> {
     if (sync.agentPausedReason !== undefined) {
       this.#store.event(
         'warning',
@@ -1567,8 +1584,13 @@ class WorkflowService {
       return
     }
     const type = kind
-    const label = kind === 'merge-base' ? `合并 ${sync.baseRefName}` : kind === 'fix-ci' ? '修复 CI' : kind === 'resolve-comments' ? '解决 review 评论' : '自定义任务'
-    const job = this.#beginJob(type, `${sync.cloneName} / PR #${sync.prNumber}: ${label}`, sync.id)
+    const label = kind === 'merge-base'
+      ? `合并 ${sync.baseRefName}`
+      : kind === 'fix-ci'
+        ? '修复 CI'
+        : kind === 'resolve-comments' ? '解决 review 评论' : '自定义任务'
+    const job = existingJob ?? this.#beginJob(type, `${sync.cloneName} / PR #${sync.prNumber}: ${label}`, sync.id)
+    job.summary = `${sync.cloneName} / PR #${sync.prNumber}: ${label}`
     const oldHead = sync.headOid
     try {
       if (kind === 'fix-ci') sync.lastFixedHeadOid = oldHead
@@ -1703,9 +1725,8 @@ class WorkflowService {
     }
   }
 
-  #startManualAction(sync: SyncRecord, action: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom', workerConfig: WorkerExecutionConfig, additionalInstruction?: string): void {
+  #prepareManualAction(sync: SyncRecord, label: string): void {
     if (this.#syncLocks.has(sync.id)) throw new Error(`${sync.cloneName} 已有任务执行中`)
-    const label = action === 'merge-base' ? `手动合并最新 ${sync.baseRefName}` : action === 'fix-ci' ? '手动修复 CI' : action === 'resolve-comments' ? '手动解决 review 评论' : '手动执行自定义任务'
     if (sync.agentPausedReason !== undefined) {
       this.#store.event('info', 'dsh-resumed', `${sync.cloneName} / PR #${sync.prNumber}: 手动操作恢复 dsh 任务`)
       sync.agentPausedAt = undefined
@@ -1713,34 +1734,66 @@ class WorkflowService {
     }
     this.#store.event('info', 'manual', `${sync.cloneName} / PR #${sync.prNumber}: ${label}`)
     void this.#store.changed()
+  }
+
+  #startManualAction(sync: SyncRecord, action: 'fix-ci' | 'resolve-comments' | 'custom', workerConfig: WorkerExecutionConfig, additionalInstruction?: string): void {
+    const label = action === 'fix-ci' ? '手动修复 CI' : action === 'resolve-comments' ? '手动解决 review 评论' : '手动执行自定义任务'
+    this.#prepareManualAction(sync, label)
     void this.#withSyncLock(sync, async () => {
       await this.#runAgent(sync, action, workerConfig, additionalInstruction)
     })
   }
 
-  /** 无冲突时的快速路径：直接 git merge + push，不启动 dsh agent。 */
-  #startDirectMergeBase(sync: SyncRecord): void {
-    if (this.#syncLocks.has(sync.id)) throw new Error(`${sync.cloneName} 已有任务执行中`)
-    this.#store.event('info', 'manual', `${sync.cloneName} / PR #${sync.prNumber}: 直接合并最新 ${sync.baseRefName}（无冲突，不经模型）`)
-    void this.#store.changed()
+  #startManualMergeBase(sync: SyncRecord, workerConfigId?: string, additionalInstruction?: string): void {
+    this.#prepareManualAction(sync, `手动合并最新 ${sync.baseRefName}`)
+    void this.#withSyncLock(sync, async () => {
+      await this.#runMergeBaseWithPreflight(sync, workerConfigId, additionalInstruction)
+    })
+  }
+
+  /** Always preview the latest target locally; use an Agent only for confirmed conflicts. */
+  async #runMergeBaseWithPreflight(
+    sync: SyncRecord,
+    workerConfigId?: string,
+    additionalInstruction?: string,
+  ): Promise<void> {
     const job = this.#beginJob('merge-base', `${sync.cloneName} / PR #${sync.prNumber}: 直接合并 ${sync.baseRefName}`, sync.id)
     const signal = this.#jobSignal(job)
-    void this.#withSyncLock(sync, async () => {
-      try {
-        await fetchBranch(sync.clonePath, sync.baseRefName, signal)
-        await runOrThrow('git', ['merge', '--no-edit', `origin/${sync.baseRefName}`], { cwd: sync.clonePath, signal })
-        await runOrThrow('git', ['push'], { cwd: sync.clonePath, timeoutMs: 5 * 60 * 1000, signal })
-        this.#finishJob(job, 'succeeded', `已合并 origin/${sync.baseRefName} 并 push`)
-        this.#store.event('info', 'merge-base', `${sync.cloneName} / PR #${sync.prNumber}: 已合并 origin/${sync.baseRefName} 并 push`)
+    let delegatedToAgent = false
+    try {
+      const preflight = await fetchMergePreflight(sync.clonePath, sync.baseRefName, 'HEAD', signal)
+      if (preflight.conflictPaths.length > 0) {
+        this.#store.event(
+          'info',
+          'merge-preflight',
+          `${sync.cloneName} / PR #${sync.prNumber}: 本地预检确认 ${preflight.conflictPaths.length} 个冲突文件；启动 Agent`,
+        )
         await this.#store.changed()
-      } catch (error) {
+        const workerConfig = this.#workers.executionConfig(workerConfigId)
+        this.#workerRegistry.assertAvailable(workerConfig.type)
+        delegatedToAgent = true
+        await this.#runAgent(sync, 'merge-base', workerConfig, additionalInstruction, job)
+        return
+      }
+      await this.#mergeBaseDirect(sync, preflight.targetRef, signal)
+      this.#finishJob(job, 'succeeded', `已合并 origin/${sync.baseRefName} 并 push（本地预检无冲突，未启动 Agent）`)
+      this.#store.event('info', 'merge-base', `${sync.cloneName} / PR #${sync.prNumber}: 本地预检无冲突；已直接合并 origin/${sync.baseRefName} 并 push`)
+      await this.#store.changed()
+    } catch (error) {
+      if (job.status === 'running') {
         this.#finishJob(job, isTaskCancelled(error) ? 'cancelled' : 'failed', messageOf(error))
-        this.#store.event('error', 'merge-base', `${sync.cloneName} / PR #${sync.prNumber}: ${messageOf(error)}`)
         await this.#store.changed()
       }
-    }).finally(() => {
-      void this.#refreshPrDashboardAfterAction()
-    })
+      this.#store.event('error', 'merge-base', `${sync.cloneName} / PR #${sync.prNumber}: ${messageOf(error)}`)
+      throw error
+    } finally {
+      if (!delegatedToAgent || job.dshWorker === undefined) void this.#refreshPrDashboardAfterAction()
+    }
+  }
+
+  async #mergeBaseDirect(sync: SyncRecord, targetRef: string, signal: AbortSignal): Promise<void> {
+    await runOrThrow('git', ['merge', '--no-edit', targetRef], { cwd: sync.clonePath, signal })
+    await runOrThrow('git', ['push'], { cwd: sync.clonePath, timeoutMs: 5 * 60 * 1000, signal })
   }
 
   async #cancelJob(jobId: string | undefined): Promise<string[]> {

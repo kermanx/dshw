@@ -244,6 +244,26 @@ export async function mergeConflictPaths(
   return paths.filter(path => path !== '')
 }
 
+export interface MergePreflight {
+  targetRef: string
+  targetOid: string
+  conflictPaths: string[]
+}
+
+/** Fetch a target branch and preview the exact local merge without changing the worktree or index. */
+export async function fetchMergePreflight(
+  root: string,
+  targetBranch: string,
+  left = 'HEAD',
+  signal?: AbortSignal,
+): Promise<MergePreflight> {
+  await fetchBranch(root, targetBranch, signal)
+  const targetRef = `refs/remotes/origin/${targetBranch}`
+  const targetOid = await commitOid(root, targetRef)
+  const conflictPaths = await mergeConflictPaths(root, left, targetOid, signal)
+  return { targetRef, targetOid, conflictPaths }
+}
+
 export function isDocumentationConflictPath(path: string): boolean {
   return path.endsWith('.md') || path.endsWith('.i18n.yaml') || path.endsWith('.i18n.yml')
 }
