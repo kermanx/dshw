@@ -233,7 +233,8 @@ export function WorkerPicker({ action, workers, workerTypes, onClose, onPick }: 
     return () => { document.removeEventListener('keydown', onKeyDown) }
   }, [onClose])
 
-  const title = action === 'merge-base' ? '合并 base' : action === 'fix-ci' ? '修复 CI' : '解决评论'
+  const custom = action === 'custom'
+  const title = action === 'merge-base' ? '合并 base' : action === 'fix-ci' ? '修复 CI' : action === 'resolve-comments' ? '解决评论' : '自定义任务'
   const subtitle = (worker: WorkerConfig): string => {
     const type = worker.type === 'dsh' ? 'dsh' : worker.type === 'codex' ? 'Codex' : 'Claude Code'
     return `${type} · ${worker.model || '默认模型'} · ${worker.reasoningEffort || '默认推理'}`
@@ -284,12 +285,13 @@ export function WorkerPicker({ action, workers, workerTypes, onClose, onPick }: 
             {usable.length === 0 && <div style={workerPickerEmptyStyle}>没有可用的 Worker</div>}
           </fieldset>
           <label style={workerPickerFieldLabelStyle}>
-            <span>额外指令 <span style={{ fontWeight: 400, color: C_MUTED }}>（可选）</span></span>
+            <span>{custom ? '任务指令' : '额外指令'} {!custom && <span style={{ fontWeight: 400, color: C_MUTED }}>（可选）</span>}</span>
             <textarea
               className="dshw-wpta"
               style={workerPickerTextareaStyle}
               maxLength={4000}
-              placeholder="例如：只修改相关文件，不要调整现有 API"
+              autoFocus={custom}
+              placeholder={custom ? '描述希望 Worker 在这个 PR 分支上完成的工作' : '例如：只修改相关文件，不要调整现有 API'}
               value={instruction}
               onChange={event => { setInstruction(event.target.value) }}
             />
@@ -297,7 +299,7 @@ export function WorkerPicker({ action, workers, workerTypes, onClose, onPick }: 
         </div>
         <footer style={workerPickerFooterStyle}>
           <button type="button" className="dshw-btn-ghost" style={workerPickerGhostStyle} onClick={onClose}>取消</button>
-          <button type="button" style={primaryButtonStyle} disabled={selectedId === ''} onClick={() => { onPick(selectedId, instruction) }}>启动任务</button>
+          <button type="button" style={primaryButtonStyle} disabled={selectedId === '' || (custom && instruction.trim() === '')} onClick={() => { onPick(selectedId, instruction) }}>启动任务</button>
         </footer>
       </section>
     </div>,

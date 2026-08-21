@@ -27,6 +27,12 @@ test('finds an Agent currently working on a PR', () => {
   assert.equal(findWorkingAgent(pr, [working]), working)
 })
 
+test('finds a custom Worker task on its PR', () => {
+  const working = job({ type: 'custom', dshWorker: {} as JobRecord['dshWorker'] })
+  assert.equal(findBusyJob(pr, [working]), working)
+  assert.equal(findWorkingAgent(pr, [working]), working)
+})
+
 test('does not treat built-in PR work as a working Agent', () => {
   const directMerge = job({ type: 'merge-base', dshWorker: undefined })
   assert.equal(findBusyJob(pr, [directMerge]), directMerge)

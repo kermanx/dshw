@@ -46,7 +46,9 @@ export function renderPeriodicAgentReminder(worker: DshWorkerState): string {
     ? `把 origin/${worker.sync.baseRefName} 合并到 PR #${worker.sync.prNumber} 的当前分支并解决冲突`
     : worker.kind === 'fix-ci'
       ? `修复 PR #${worker.sync.prNumber} 启动本任务时已经失败的 CI checks`
-      : `处理 PR #${worker.sync.prNumber} 启动本任务时尚未解决的 review threads`
+      : worker.kind === 'resolve-comments'
+        ? `处理 PR #${worker.sync.prNumber} 启动本任务时尚未解决的 review threads`
+        : `完成用户为 PR #${worker.sync.prNumber} 指定的自定义任务`
   return [
     '# 20 分钟任务边界提醒',
     '',
@@ -92,6 +94,11 @@ export function dshWorkerLaunchSpec(
 }
 
 export async function loadWorkerPrompt(sync: SyncRecord, kind: DshRunRecord['kind'], additionalInstruction?: string): Promise<string> {
+  if (kind === 'custom') {
+    const instruction = additionalInstruction?.trim()
+    if (instruction === undefined || instruction === '') throw new Error('自定义任务指令不能为空')
+    return instruction
+  }
   const filename = kind === 'merge-base' ? 'merge-base.md' : kind === 'fix-ci' ? 'fix-ci.md' : 'resolve-comments.md'
   const template = await readFile(join(DSHW_ROOT, 'prompts', filename), 'utf8')
   return appendAdditionalInstruction(renderPromptTemplate(template, {

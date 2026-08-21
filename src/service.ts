@@ -526,7 +526,7 @@ class WorkflowService {
       const body = await readBody(request)
       const name = bodyString(body, 'name')
       const action = bodyString(body, 'action')
-      if (action !== 'merge-base' && action !== 'fix-ci' && action !== 'merge-base-direct' && action !== 'resolve-comments') throw new Error('未知 PR 操作')
+      if (action !== 'merge-base' && action !== 'fix-ci' && action !== 'merge-base-direct' && action !== 'resolve-comments' && action !== 'custom') throw new Error('未知 PR 操作')
       const clone = await findClone(name)
       const sync = await this.#manualSync(clone)
       if (action === 'merge-base-direct') this.#startDirectMergeBase(sync)
@@ -534,6 +534,7 @@ class WorkflowService {
         const workerConfig = this.#workers.executionConfig(bodyString(body, 'workerConfigId'))
         const additionalInstruction = bodyString(body, 'additionalInstruction')?.trim()
         if ((additionalInstruction?.length ?? 0) > 4_000) throw new Error('额外指令不能超过 4000 个字符')
+        if (action === 'custom' && (additionalInstruction === undefined || additionalInstruction === '')) throw new Error('自定义任务指令不能为空')
         this.#workerRegistry.assertAvailable(workerConfig.type)
         this.#startManualAction(sync, action, workerConfig, additionalInstruction)
       }
@@ -1555,7 +1556,7 @@ class WorkflowService {
     await this.#runAgent(sync, 'fix-ci', undefined, additionalInstruction)
   }
 
-  async #runAgent(sync: SyncRecord, kind: 'merge-base' | 'fix-ci' | 'resolve-comments', selectedWorker?: WorkerExecutionConfig, additionalInstruction?: string): Promise<void> {
+  async #runAgent(sync: SyncRecord, kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom', selectedWorker?: WorkerExecutionConfig, additionalInstruction?: string): Promise<void> {
     if (sync.agentPausedReason !== undefined) {
       this.#store.event(
         'warning',
@@ -1566,7 +1567,7 @@ class WorkflowService {
       return
     }
     const type = kind
-    const label = kind === 'merge-base' ? `合并 ${sync.baseRefName}` : kind === 'fix-ci' ? '修复 CI' : '解决 review 评论'
+    const label = kind === 'merge-base' ? `合并 ${sync.baseRefName}` : kind === 'fix-ci' ? '修复 CI' : kind === 'resolve-comments' ? '解决 review 评论' : '自定义任务'
     const job = this.#beginJob(type, `${sync.cloneName} / PR #${sync.prNumber}: ${label}`, sync.id)
     const oldHead = sync.headOid
     try {
@@ -1702,9 +1703,9 @@ class WorkflowService {
     }
   }
 
-  #startManualAction(sync: SyncRecord, action: 'merge-base' | 'fix-ci' | 'resolve-comments', workerConfig: WorkerExecutionConfig, additionalInstruction?: string): void {
+  #startManualAction(sync: SyncRecord, action: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom', workerConfig: WorkerExecutionConfig, additionalInstruction?: string): void {
     if (this.#syncLocks.has(sync.id)) throw new Error(`${sync.cloneName} 已有任务执行中`)
-    const label = action === 'merge-base' ? `手动合并最新 ${sync.baseRefName}` : action === 'fix-ci' ? '手动修复 CI' : '手动解决 review 评论'
+    const label = action === 'merge-base' ? `手动合并最新 ${sync.baseRefName}` : action === 'fix-ci' ? '手动修复 CI' : action === 'resolve-comments' ? '手动解决 review 评论' : '手动执行自定义任务'
     if (sync.agentPausedReason !== undefined) {
       this.#store.event('info', 'dsh-resumed', `${sync.cloneName} / PR #${sync.prNumber}: 手动操作恢复 dsh 任务`)
       sync.agentPausedAt = undefined

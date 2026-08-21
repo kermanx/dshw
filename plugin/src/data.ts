@@ -35,7 +35,7 @@ export interface KanbanSnapshot extends Omit<ServiceState, 'prDashboardCache'> {
 }
 
 /** One PR action the kanban can dispatch. */
-export type PrAction = 'merge-base' | 'merge-base-direct' | 'fix-ci' | 'resolve-comments'
+export type PrAction = 'merge-base' | 'merge-base-direct' | 'fix-ci' | 'resolve-comments' | 'custom'
 
 /** Local git maintenance action (LocalGitStatus port). */
 export type GitAction = 'discard-unstaged' | 'discard-staged' | 'abort-merge' | 'discard-unpushed' | 'pull'
@@ -83,7 +83,7 @@ export function findWorkingAgent(pr: PrDashboardRecord, jobs: readonly JobRecord
 }
 
 export function busyLabel(job?: JobRecord): string {
-  return job?.type === 'fix-ci' ? '修复 CI' : job?.type === 'merge-base' ? '合并 base' : job?.type === 'resolve-comments' ? '解决评论' : '检查状态'
+  return job?.type === 'fix-ci' ? '修复 CI' : job?.type === 'merge-base' ? '合并 base' : job?.type === 'resolve-comments' ? '解决评论' : job?.type === 'custom' ? '自定义任务' : '检查状态'
 }
 
 export function lastFailedMerge(pr: PrDashboardRecord, jobs: readonly JobRecord[]): JobRecord | undefined {
@@ -195,7 +195,7 @@ export const jobLabel = (value: string): string =>
 export const jobTone = (value: string): Tone =>
   value === 'succeeded' ? 'ok' : value === 'failed' || value === 'blocked' ? 'bad' : value === 'running' ? 'warn' : 'neutral'
 export const kindLabel = (value: string): string =>
-  ({ 'merge-base': '合并 base', 'fix-ci': '修 CI', 'resolve-comments': '解决评论', 'update-dshw': '更新 dshw', 'update-harness': '更新 Harness', 'reconfigure-harness': '从头配置 Harness', 'sync-check': '状态检查' })[value] ?? value
+  ({ 'merge-base': '合并 base', 'fix-ci': '修 CI', 'resolve-comments': '解决评论', custom: '自定义任务', 'update-dshw': '更新 dshw', 'update-harness': '更新 Harness', 'reconfigure-harness': '从头配置 Harness', 'sync-check': '状态检查' })[value] ?? value
 
 export function jobExecutor(job: JobRecord): string {
   if (job.executor !== undefined) return job.executor

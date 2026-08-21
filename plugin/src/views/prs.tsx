@@ -180,6 +180,7 @@ export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, 
   onRefresh: () => void
   onOpenJob: (job: JobRecord) => void
 }): ReactNode {
+  const customJob = workingAgent?.type === 'custom' ? workingAgent : busy?.type === 'custom' ? busy : undefined
   // One <tr> per row — no <tbody> wrapper per row: nested tbodys are invalid
   // markup and the engine drops the row from the fixed column model, which
   // drifts the header/body columns apart. Draft dimming rides the row itself.
@@ -190,7 +191,18 @@ export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, 
         ...(stack === undefined ? {} : { paddingLeft: 12 + (stack.depth > 0 ? STACK_CHILD_INDENT : 0) }),
       }}>
         <div style={cellMainStyle}>
-          <a style={titleLinkStyle} data-dshw-kanban="titlelink" href={pr.url} title={pr.title} target="_blank" rel="noreferrer">
+          <a
+            style={titleLinkStyle}
+            data-dshw-kanban="titlelink"
+            href={pr.url}
+            title={workingAgent !== undefined || busy !== undefined ? '该 PR 已有任务执行中' : `${pr.title} · 右键启动自定义任务`}
+            target="_blank"
+            rel="noreferrer"
+            onContextMenu={(event) => {
+              event.preventDefault()
+              if (workingAgent === undefined && busy === undefined) onChooseWorker(pr.cloneName, 'custom')
+            }}
+          >
             <span style={numberStyle}>#{pr.number}</span>
             <span style={{ ...titleStyle, ...(pr.isDraft ? { color: C_SECONDARY } : {}) }}>{pr.title}</span>
           </a>
@@ -204,6 +216,16 @@ export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, 
             <span style={assignedBadgeStyle} title={`assign 给你的 PR，作者 @${pr.author}`}>by @{pr.author}</span>
           )}
           <span style={subTextStyle} title={pr.branch}>{pr.branch} → {pr.baseRefName}</span>
+          {customJob !== undefined && (
+            <button
+              type="button"
+              className="dshw-link"
+              style={{ ...busyRowStyle, flex: 'none', marginLeft: 6, fontFamily: 'var(--dsw-font-family)' }}
+              onClick={() => { onOpenJob(customJob) }}
+            >
+              <StatusDot tone="accent" pulse />工作中 · 查看
+            </button>
+          )}
         </div>
       </td>
 
@@ -420,7 +442,7 @@ export function MergeCell({ pr, busy, workingAgent, pending, jobs, onAction, onC
   onOpenJob: (job: JobRecord) => void
 }): ReactNode {
   const action = mergeAction(pr)
-  const busyHere = busy !== undefined && busy.type !== 'fix-ci' && busy.type !== 'resolve-comments'
+  const busyHere = busy !== undefined && busy.type !== 'fix-ci' && busy.type !== 'resolve-comments' && busy.type !== 'custom'
   const autoAt = autoMergeAt(pr)
   const failedMerge = lastFailedMerge(pr, jobs)
   return (

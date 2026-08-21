@@ -12,7 +12,7 @@ import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
 import { countVisibleRunningJobs, DSHW_UPDATE_STEPS, HARNESS_RECONFIGURE_STEPS, observeBaseTip, readOutputPage, scheduleBaseCheck, summarizePrDashboardErrors, worktreeNeedsCleanupDecision } from '../src/service.ts'
 import { pageJobs, readEventLogPage } from '../src/state.ts'
-import { appendAdditionalInstruction, cancelDshWorker, dshWorkerLaunchSpec, headlessDshArguments, inspectDshWorker, missingTypertRuntimeArtifacts, parseDshOutcome, renderPeriodicAgentReminder, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
+import { appendAdditionalInstruction, cancelDshWorker, dshWorkerLaunchSpec, headlessDshArguments, inspectDshWorker, loadWorkerPrompt, missingTypertRuntimeArtifacts, parseDshOutcome, renderPeriodicAgentReminder, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
 import { dshLaunchEnvironmentXml, dshWorkerLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
 import { jobExecutor, mergeProgressOutput, parseProgressOutput } from '../plugin/src/data.ts'
@@ -749,6 +749,11 @@ test('appends optional user instructions to the worker prompt', () => {
   assert.equal(appendAdditionalInstruction('Base prompt', '  Keep the API stable.  '), 'Base prompt\n\n## 用户额外指令\n\nKeep the API stable.')
   assert.equal(appendAdditionalInstruction('Base prompt', '   '), 'Base prompt')
   assert.equal(appendAdditionalInstruction('Base prompt'), 'Base prompt')
+})
+
+test('uses a custom PR instruction as the complete worker prompt', async () => {
+  assert.equal(await loadWorkerPrompt({} as SyncRecord, 'custom', '  Update the parser.  '), 'Update the parser.')
+  await assert.rejects(loadWorkerPrompt({} as SyncRecord, 'custom', '   '), /自定义任务指令不能为空/)
 })
 
 test('recognizes a machine-readable blocked dsh result and its reason', () => {

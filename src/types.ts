@@ -162,7 +162,7 @@ export interface SyncRecord {
 
 export interface JobRecord {
   id: string
-  type: 'update-dshw' | 'update-harness' | 'reconfigure-harness' | 'sync-check' | 'merge-base' | 'fix-ci' | 'resolve-comments'
+  type: 'update-dshw' | 'update-harness' | 'reconfigure-harness' | 'sync-check' | 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom'
   status: JobStatus
   syncId?: string
   /** Worker configuration name captured when the job starts. Missing for built-in and legacy jobs. */
@@ -217,7 +217,7 @@ export interface WorkerState {
 export interface WorkerRunRecord {
   id: string
   syncId: string
-  kind: 'merge-base' | 'fix-ci' | 'resolve-comments'
+  kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom'
   clonePath: string
   startedAt: string
   finishedAt: string
