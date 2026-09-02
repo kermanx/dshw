@@ -131,6 +131,8 @@ export interface SyncRecord {
   remoteUrl: string
   repoSlug: string
   prNumber: number
+  /** PR title captured when the task starts; absent on legacy persisted records. */
+  prTitle?: string
   prUrl: string
   branch: string
   baseRefName: string
@@ -162,7 +164,7 @@ export interface SyncRecord {
 
 export interface JobRecord {
   id: string
-  type: 'update-dshw' | 'update-harness' | 'reconfigure-harness' | 'sync-check' | 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom'
+  type: 'update-dshw' | 'update-harness' | 'reconfigure-harness' | 'sync-check' | 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom' | 'review'
   status: JobStatus
   syncId?: string
   /** Worker configuration name captured when the job starts. Missing for built-in and legacy jobs. */
@@ -217,7 +219,7 @@ export interface WorkerState {
 export interface WorkerRunRecord {
   id: string
   syncId: string
-  kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom'
+  kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom' | 'review'
   clonePath: string
   startedAt: string
   finishedAt: string
@@ -332,12 +334,68 @@ export interface ReviewRequestRecord {
   headRefName: string
   baseRefName: string
   updatedAt: string
+  /** Read-status summary merged by the daemon snapshot (absent on persisted rows). */
+  viewed?: ReviewViewedSummary
+}
+
+/** Read-status progress of one review (viewed files / changed files). */
+export interface ReviewViewedSummary {
+  count: number
+  total: number
 }
 
 export interface PullRequestReview {
   author?: { login?: string }
   state: string
   submittedAt?: string
+}
+
+/* ── Review diff workspace (angry-turtle-review port, driven by local clones) ── */
+
+/** Git status of one changed file in a review diff. */
+export type ReviewDiffStatus = 'added' | 'deleted' | 'renamed' | 'copied' | 'modified'
+export type ReviewDiffRowKind = 'hunk' | 'added' | 'removed' | 'context'
+
+/** One changed file in the review manifest (paths, status, index). */
+export interface ReviewDiffFile {
+  index: number
+  status: ReviewDiffStatus
+  /** New path; falls back to the old path for deletions. */
+  path: string
+  /** Original path when renamed; absent otherwise. */
+  oldPath?: string
+  /** Hash of this file's changed-line content in the captured diff; used to
+   *  auto-unview files whose diff changed after a PR head update. Absent when
+   *  the file has no textual patch (binary etc.). */
+  fingerprint?: string
+}
+
+/** One display row of a file's textual diff. */
+export interface ReviewDiffRow {
+  kind: ReviewDiffRowKind
+  text: string
+  oldLine?: number
+  newLine?: number
+}
+
+/** Per-file diff payload served lazily by the review diff endpoint. */
+export type ReviewDiffPayload =
+  | { kind: 'text'; file: ReviewDiffFile; rows: ReviewDiffRow[]; additions: number; deletions: number }
+  | { kind: 'unavailable'; file: ReviewDiffFile; rows: ReviewDiffRow[]; additions: number; deletions: number; reason: string }
+
+/** Review diff manifest returned after the local clone is prepared. */
+export interface ReviewDiffManifest {
+  available: boolean
+  token: string
+  files: ReviewDiffFile[]
+  baseRefName: string
+  headRefName: string
+  clonePath: string
+  /** Currently viewed files (path → fingerprint), reconciled against this diff:
+   *  paths whose diff changed since the user read them are dropped. */
+  viewed: Record<string, string>
+  /** Set when the diff could not be captured (e.g. clone preparation failed). */
+  error?: string
 }
 
 export interface ReviewerCommentProgress {

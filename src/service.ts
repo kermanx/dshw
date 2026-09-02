@@ -23,9 +23,9 @@ import {
   SERVICE_LABEL,
   WORKSPACE_REFRESH_INTERVAL_MS,
 } from './config.ts'
-import { createPrClone, listClones, removeClone } from './clone.ts'
+import { createPrClone, createReviewClone, listClones, removeClone } from './clone.ts'
 import { readDshwRepositoryStatus } from './dshw-repository.ts'
-import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchMergePreflight, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, maintainClone, mergeConflictPaths, remoteBranchOid } from './git.ts'
+import { cloneGitStatus, commitOid, currentHead, fetchBranch, fetchMergePreflight, fetchPullRequestHead, fetchRemoteBranchTip, gitCommonDir, isAncestor, isDocumentationConflictPath, maintainClone, mergeConflictPaths, remoteBranchOid, synchronizeMergeWorktree, synchronizeReviewWorktree } from './git.ts'
 import type { CloneMaintenanceAction } from './git.ts'
 import { assessCiAutoFix, ciChecks, dashboardOpenPullRequests, listUserRepos, pullRequest, reviewerCommentProgress, reviewRequestedPullRequests, rollupChecks, summarizeChecks, trackedOpenPullRequests } from './github.ts'
 import { readHarnessRepositoryStatus } from './harness-repository.ts'
@@ -33,13 +33,16 @@ import { mergePrDashboardSyncState } from './pr-dashboard.ts'
 import { readGitGraph } from './git-graph.ts'
 import { StateStore } from './state.ts'
 import { ensureManagedRoot } from './repos.ts'
-import type { CiCheck, CloneGitStatus, CloneRecord, DshwRepositoryStatus, DshWorkerProgress, HarnessRepositoryStatus, JobRecord, MonitoredRepo, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, SyncRecord, WorkerConfigInput, WorkerExecutionConfig, WorktreeCleanupCandidate, WorktreeCleanupPreview } from './types.ts'
+import type { CiCheck, CloneGitStatus, CloneRecord, DshwRepositoryStatus, DshWorkerProgress, HarnessRepositoryStatus, JobRecord, MonitoredRepo, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, ReviewDiffManifest, SyncRecord, WorkerConfigInput, WorkerExecutionConfig, WorktreeCleanupCandidate, WorktreeCleanupPreview } from './types.ts'
 import { after, id, isTaskCancelled, messageOf, now, run, runOrThrow, TaskCancelledError } from './util.ts'
 import { refreshCodeWorkspace } from './workspace.ts'
 import { assertManagedHarnessOwned, ensureInstallation, ensureManagedHarness, requireDaemonInstallation, type InstallationRecord } from './install.ts'
 import { WorkerConfigStore } from './worker-config.ts'
 import { WorkerRegistry } from './worker-driver.ts'
 import { renderPeriodicAgentReminder } from './dsh.ts'
+import { renderReviewTurnPrompt } from './review-conversation.ts'
+import { ReviewDiffCache } from './review-diff.ts'
+import { reviewViewedKey, ReviewViewedStore } from './review-viewed.ts'
 
 const NO_CHECKS_GRACE_MS = 5 * 60 * 1000
 const HISTORY_PAGE_SIZE = 35
@@ -138,10 +141,11 @@ export async function runService(): Promise<void> {
   const store = await StateStore.open()
   const workers = await WorkerConfigStore.open()
   const workerRegistry = await WorkerRegistry.create()
+  const reviewViewed = await ReviewViewedStore.open()
   store.state.serviceStartedAt = now()
   store.event('info', 'service', `后台服务已启动，监听 http://${HOST}:${PORT}`)
   await store.changed()
-  const service = new WorkflowService(store, installation, workers, workerRegistry)
+  const service = new WorkflowService(store, installation, workers, workerRegistry, reviewViewed)
   await service.start()
 }
 
@@ -156,6 +160,9 @@ class WorkflowService {
   readonly #sse = new Set<ServerResponse>()
   readonly #workerProgress = new Map<string, DshWorkerProgress>()
   readonly #agentSteersInFlight = new Set<string>()
+  readonly #reviewActionsInFlight = new Set<string>()
+  readonly #reviewViewed: ReviewViewedStore
+  readonly #reviewDiffCache: ReviewDiffCache
   readonly #conflictPathsCache = new Map<string, Promise<string[]>>()
   #server: Server | undefined
   #timer: NodeJS.Timeout | undefined
@@ -188,11 +195,13 @@ class WorkflowService {
   /** 用户有权限的仓库列表缓存（gh 分页拉取较慢，避免每次进入设置面板都等十几秒）。 */
   #userReposCache: { repos: string[]; fetchedAt: number } | undefined
 
-  constructor(store: StateStore, installation: InstallationRecord, workers: WorkerConfigStore, workerRegistry: WorkerRegistry) {
+  constructor(store: StateStore, installation: InstallationRecord, workers: WorkerConfigStore, workerRegistry: WorkerRegistry, reviewViewed: ReviewViewedStore) {
     this.#store = store
     this.#installation = installation
     this.#workers = workers
     this.#workerRegistry = workerRegistry
+    this.#reviewViewed = reviewViewed
+    this.#reviewDiffCache = new ReviewDiffCache(reviewViewed)
     this.#monitoredRepos = store.state.repos
     const cached = store.state.prDashboardCache
     this.#prDashboard = cached?.records ?? []
@@ -521,6 +530,12 @@ class WorkflowService {
       this.#json(response, 202, { accepted: true })
       return
     }
+    if (method === 'POST' && url === '/api/jobs/finish') {
+      const body = await readBody(request)
+      await this.#finishReviewConversation(bodyString(body, 'jobId'))
+      this.#json(response, 202, { accepted: true })
+      return
+    }
     if (method === 'POST' && url === '/api/pr-action') {
       if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
       const body = await readBody(request)
@@ -542,6 +557,109 @@ class WorkflowService {
         this.#startManualAction(sync, action, workerConfig, additionalInstruction)
       }
       this.#json(response, 202, { accepted: true, syncId: sync.id })
+      return
+    }
+    if (url.startsWith('/api/reviews/')) {
+      const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
+      const parsed = parseReviewPath(requestUrl.pathname)
+      if (parsed === undefined) throw new Error('无效的 review 路径')
+      if (method === 'GET' && parsed.action === 'diff') {
+        const review = this.#reviewRecordFor(parsed.repoSlug, parsed.prNumber)
+        // 允许 review 任意被跟踪的 PR（含自己创建的 PR，而不仅是“需要我 review 的 PR”）。
+        if (review === undefined) throw new Error(`找不到要 Review 的 PR：${parsed.repoSlug}#${String(parsed.prNumber)}`)
+        const managedRoot = await ensureManagedRoot(parsed.repoSlug, this.#installation)
+        if (requestUrl.searchParams.has('file')) {
+          const fileIndex = Number(requestUrl.searchParams.get('file'))
+          const payload = this.#reviewDiffCache.payload(requestUrl.searchParams.get('token') ?? '', fileIndex)
+          if (payload === undefined) throw new Error('该 diff 已失效，请重新打开 Review')
+          this.#json(response, 200, payload)
+        } else {
+          const refresh = requestUrl.searchParams.get('refresh') === '1'
+          const manifest: ReviewDiffManifest = await this.#reviewDiffCache.open(review, managedRoot, { refresh })
+          this.#json(response, 200, manifest)
+        }
+        return
+      }
+      if (method === 'PUT' && parsed.action === 'viewed') {
+        const body = await readBody(request)
+        const total = body.total
+        const incoming = body.viewed
+        if (typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0) throw new Error('viewed.total must be a non-negative integer')
+        if (typeof incoming !== 'object' || incoming === null || Array.isArray(incoming)) throw new Error('viewed.viewed must be an object')
+        const viewed: Record<string, string> = {}
+        let count = 0
+        for (const [path, fingerprint] of Object.entries(incoming as Record<string, unknown>)) {
+          if (typeof fingerprint !== 'string') throw new Error('viewed.viewed values must be strings')
+          if (typeof path !== 'string' || path.length === 0 || path.length > 2_000) throw new Error('viewed 路径无效')
+          viewed[path] = fingerprint
+          count += 1
+          if (count > 5_000) throw new Error('viewed 文件数超过上限')
+        }
+        this.#reviewViewed.set(reviewViewedKey(parsed.repoSlug, parsed.prNumber), { total, viewed })
+        // Push the updated read-status summary to the lists immediately.
+        this.#broadcast()
+        this.#json(response, 200, { accepted: true })
+        return
+      }
+      throw new Error(`未知的 review 请求：${method} ${parsed.action}`)
+    }
+    if (method === 'POST' && url === '/api/review-action') {
+      if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
+      const body = await readBody(request)
+      const repoSlug = bodyString(body, 'repoSlug')
+      const prNumberValue = body.number
+      if (repoSlug === undefined || typeof prNumberValue !== 'number' || !Number.isSafeInteger(prNumberValue) || prNumberValue <= 0) {
+        throw new Error('Review 请求缺少有效的 repoSlug 或 PR 编号')
+      }
+      const prNumber = prNumberValue
+      const review = this.#reviewRecordFor(repoSlug, prNumber)
+      if (review === undefined) throw new Error(`找不到待 Review PR：${repoSlug}#${String(prNumber)}`)
+      const additionalInstruction = bodyString(body, 'additionalInstruction')?.trim()
+      if (additionalInstruction === undefined || additionalInstruction === '') throw new Error('Review 对话指令不能为空')
+      if (additionalInstruction.length > 4_000) throw new Error('Review 对话指令不能超过 4000 个字符')
+      const actionKey = `${repoSlug}#${String(prNumber)}`
+      const alreadyRunning = this.#store.state.jobs.some(job => (
+        job.status === 'running'
+        && job.type === 'review'
+        && job.dshWorker?.sync.repoSlug === repoSlug
+        && job.dshWorker.sync.prNumber === prNumber
+      ))
+      if (alreadyRunning || this.#reviewActionsInFlight.has(actionKey)) throw new Error(`${actionKey} 已有 Review 对话正在进行或准备中`)
+
+      this.#reviewActionsInFlight.add(actionKey)
+      try {
+        const workerConfig = this.#workers.executionConfig(bodyString(body, 'workerConfigId'))
+        this.#workerRegistry.assertAvailable(workerConfig.type)
+        const managedRoot = await ensureManagedRoot(repoSlug, this.#installation)
+        const pr = await pullRequest(managedRoot, repoSlug, prNumber)
+        if (pr.state !== 'OPEN') throw new Error(`PR #${String(prNumber)} 当前不是 open 状态`)
+        const head = await fetchPullRequestHead(managedRoot, prNumber)
+        const clone = await createReviewClone({ ...review, headRefName: pr.headRefName }, managedRoot, head.ref)
+        const synchronized = await synchronizeReviewWorktree(
+          clone.path,
+          head.ref,
+          body.stashDirty === true,
+          `dshw review ${repoSlug}#${String(prNumber)} ${now()}`,
+        )
+        if (!synchronized.ready) {
+          this.#json(response, 409, {
+            error: 'Review 本地分支存在未提交改动；启动前需要先 stash',
+            needsStash: true,
+            clonePath: clone.path,
+            dirtySummary: synchronized.dirtySummary.slice(0, 4_000),
+          })
+          return
+        }
+        if (synchronized.stashed) {
+          this.#store.event('warning', 'review-stash', `${repoSlug} / PR #${String(prNumber)}: 启动 Review 对话前已 stash 本地改动`)
+        }
+        this.#reviewDiffCache.invalidate(review)
+        const sync = this.#manualSyncFromPr(clone, { ...pr, headRefOid: head.oid })
+        this.#startManualAction(sync, 'review', workerConfig, additionalInstruction)
+        this.#json(response, 202, { accepted: true, syncId: sync.id, clonePath: clone.path, stashed: synchronized.stashed })
+      } finally {
+        this.#reviewActionsInFlight.delete(actionKey)
+      }
       return
     }
     if (method === 'POST' && url === '/api/restart') {
@@ -599,6 +717,26 @@ class WorkflowService {
     this.#json(response, 404, { error: 'not found' })
   }
 
+  /** Resolve a review identity for a PR: prefer an explicit review request, then
+   *  fall back to any tracked dashboard PR (so own PRs are reviewable too). */
+  #reviewRecordFor(repoSlug: string, prNumber: number): ReviewRequestRecord | undefined {
+    const requested = this.#reviewRequests.find(candidate => candidate.repoSlug === repoSlug && candidate.number === prNumber)
+    if (requested !== undefined) return requested
+    const pr = this.#prDashboard.find(candidate => candidate.repoSlug === repoSlug && candidate.number === prNumber)
+    if (pr === undefined) return undefined
+    return {
+      repoSlug: pr.repoSlug,
+      number: pr.number,
+      title: pr.title,
+      url: pr.url,
+      isDraft: pr.isDraft,
+      author: pr.author ?? '',
+      headRefName: pr.branch,
+      baseRefName: pr.baseRefName,
+      updatedAt: pr.updatedAt,
+    }
+  }
+
   async #snapshot(): Promise<object> {
     const { prDashboardCache: _prDashboardCache, reviewRequestsCache: _reviewRequestsCache, repos: _repos, jobs, ...state } = this.#store.state
     const recentJobs = jobs.filter((job, index) => job.status === 'running' || index >= jobs.length - HISTORY_PAGE_SIZE)
@@ -623,7 +761,10 @@ class WorkflowService {
       ...(worktreeCleanupCount === undefined ? {} : { worktreeCleanupCount }),
       prs: mergePrDashboardSyncState(this.#prDashboard, this.#store.state.syncs),
       prDashboard: this.#prDashboardStatus,
-      reviewRequests: this.#reviewRequests,
+      reviewRequests: this.#reviewRequests.map(record => {
+        const viewed = this.#reviewViewed.summary(reviewViewedKey(record.repoSlug, record.number))
+        return viewed === undefined ? record : { ...record, viewed }
+      }),
       reviewRequestsStatus: this.#reviewRequestsStatus,
       jobProgress: this.#readJobProgress(),
       workers: this.#workers.list(),
@@ -1299,6 +1440,34 @@ class WorkflowService {
     }
   }
 
+  /** Refresh and exactly align a managed merge worktree before any preflight or Agent delegation. */
+  async #prepareMergeWorktree(sync: SyncRecord, signal: AbortSignal): Promise<void> {
+    const head = await fetchPullRequestHead(sync.clonePath, sync.prNumber, signal)
+    const result = await synchronizeMergeWorktree(sync.clonePath, head.ref)
+    sync.headOid = head.oid
+    sync.updatedAt = now()
+    if (result.mode === 'fast-forwarded') {
+      this.#store.event(
+        'info',
+        'merge-head-sync',
+        `${sync.cloneName} / PR #${sync.prNumber}: 合并前已 fast-forward 到 GitHub PR head ${head.oid.slice(0, 10)}`,
+      )
+    } else if (result.mode === 'reset') {
+      this.#store.event(
+        'warning',
+        'merge-head-sync',
+        `${sync.cloneName} / PR #${sync.prNumber}: 合并前已从 ${result.previousHead.slice(0, 10)} 对齐到 GitHub PR head ${head.oid.slice(0, 10)}；原本地提交保留在 ${result.recoveryRef}`,
+      )
+    } else {
+      this.#store.event(
+        'info',
+        'merge-head-sync',
+        `${sync.cloneName} / PR #${sync.prNumber}: 合并前 worktree 已是 GitHub PR head ${head.oid.slice(0, 10)}`,
+      )
+    }
+    await this.#store.changed()
+  }
+
   /** gh 调用失败时识别 GraphQL 限流；REST core 是独立额度，可顺带查出重置时间。 */
   #noteGhFailure(error: unknown): void {
     if (!/rate limit/iu.test(messageOf(error)) || this.#rateLimited) return
@@ -1444,6 +1613,7 @@ class WorkflowService {
       this.#applyPr(sync, pr)
       let mergeSummary = `mergeable=${pr.mergeable}`
       if (pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY') {
+        await this.#prepareMergeWorktree(sync, signal)
         const preflight = await fetchMergePreflight(sync.clonePath, sync.baseRefName, 'HEAD', signal)
         const { conflictPaths } = preflight
         if (conflictPaths.length > 0 && conflictPaths.every(isDocumentationConflictPath)) {
@@ -1569,7 +1739,7 @@ class WorkflowService {
 
   async #runAgent(
     sync: SyncRecord,
-    kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom',
+    kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom' | 'review',
     selectedWorker?: WorkerExecutionConfig,
     additionalInstruction?: string,
     existingJob?: JobRecord,
@@ -1588,7 +1758,7 @@ class WorkflowService {
       ? `合并 ${sync.baseRefName}`
       : kind === 'fix-ci'
         ? '修复 CI'
-        : kind === 'resolve-comments' ? '解决 review 评论' : '自定义任务'
+        : kind === 'resolve-comments' ? '解决 review 评论' : kind === 'review' ? 'Review 对话' : '自定义任务'
     const job = existingJob ?? this.#beginJob(type, `${sync.cloneName} / PR #${sync.prNumber}: ${label}`, sync.id)
     job.summary = `${sync.cloneName} / PR #${sync.prNumber}: ${label}`
     const oldHead = sync.headOid
@@ -1598,7 +1768,7 @@ class WorkflowService {
       job.executor = workerConfig.name
       const handle = await this.#workerRegistry.start(sync, kind, workerConfig, additionalInstruction)
       job.dshWorker = { handle, kind, sync: structuredClone(sync), oldHead, label }
-      job.nextAgentSteerAt = after(AGENT_STEER_INTERVAL_MS)
+      job.nextAgentSteerAt = kind === 'review' ? undefined : after(AGENT_STEER_INTERVAL_MS)
       await this.#store.changed()
       await this.#completeDshJob(job, sync)
     } catch (error) {
@@ -1640,6 +1810,12 @@ class WorkflowService {
         await this.#store.changed()
         return
       }
+      if (worker.kind === 'review') {
+        this.#finishJob(job, 'succeeded', `${worker.label}已完成`)
+        this.#store.event('info', 'review', `${sync.repoSlug} / PR #${sync.prNumber}: ${worker.label}已完成`)
+        await this.#store.changed()
+        return
+      }
       const localHead = await currentHead(sync.clonePath)
       const pr = await pullRequest(sync.clonePath, sync.repoSlug, sync.prNumber, undefined, signal)
       this.#applyPr(sync, pr)
@@ -1672,7 +1848,8 @@ class WorkflowService {
     for (const job of jobs) {
       const worker = job.dshWorker
       if (worker === undefined) continue
-      job.nextAgentSteerAt ??= new Date(Date.parse(job.startedAt ?? worker.handle.startedAt) + AGENT_STEER_INTERVAL_MS).toISOString()
+      if (worker.kind === 'review') job.nextAgentSteerAt = undefined
+      else job.nextAgentSteerAt ??= new Date(Date.parse(job.startedAt ?? worker.handle.startedAt) + AGENT_STEER_INTERVAL_MS).toISOString()
       const sync = this.#store.state.syncs.find(candidate => candidate.id === job.syncId) ?? structuredClone(worker.sync)
       if (this.#syncLocks.has(sync.id)) {
         job.status = 'failed'
@@ -1704,6 +1881,10 @@ class WorkflowService {
       this.#applyPr(existing, pr)
       return existing
     }
+    return this.#manualSyncFromPr(clone, pr)
+  }
+
+  #manualSyncFromPr(clone: CloneRecord, pr: PullRequestInfo): SyncRecord {
     const timestamp = now()
     return {
       id: `manual:${clone.path}`,
@@ -1712,6 +1893,7 @@ class WorkflowService {
       remoteUrl: `https://github.com/${clone.repoSlug}.git`,
       repoSlug: clone.repoSlug,
       prNumber: pr.number,
+      prTitle: pr.title,
       prUrl: pr.url,
       branch: pr.headRefName,
       baseRefName: pr.baseRefName,
@@ -1736,8 +1918,8 @@ class WorkflowService {
     void this.#store.changed()
   }
 
-  #startManualAction(sync: SyncRecord, action: 'fix-ci' | 'resolve-comments' | 'custom', workerConfig: WorkerExecutionConfig, additionalInstruction?: string): void {
-    const label = action === 'fix-ci' ? '手动修复 CI' : action === 'resolve-comments' ? '手动解决 review 评论' : '手动执行自定义任务'
+  #startManualAction(sync: SyncRecord, action: 'fix-ci' | 'resolve-comments' | 'custom' | 'review', workerConfig: WorkerExecutionConfig, additionalInstruction?: string): void {
+    const label = action === 'fix-ci' ? '手动修复 CI' : action === 'resolve-comments' ? '手动解决 review 评论' : action === 'review' ? '手动发起 Review 对话' : '手动执行自定义任务'
     this.#prepareManualAction(sync, label)
     void this.#withSyncLock(sync, async () => {
       await this.#runAgent(sync, action, workerConfig, additionalInstruction)
@@ -1761,6 +1943,7 @@ class WorkflowService {
     const signal = this.#jobSignal(job)
     let delegatedToAgent = false
     try {
+      await this.#prepareMergeWorktree(sync, signal)
       const preflight = await fetchMergePreflight(sync.clonePath, sync.baseRefName, 'HEAD', signal)
       if (preflight.conflictPaths.length > 0) {
         this.#store.event(
@@ -1829,10 +2012,23 @@ class WorkflowService {
   async #steerDshJob(jobId: string | undefined, prompt: string | undefined): Promise<void> {
     if (prompt === undefined || prompt.trim() === '') throw new Error('请输入要发送给 dsh 的内容')
     const job = this.#activeDshJob(jobId)
-    await this.#workerRegistry.steer(job.dshWorker!.handle, prompt.trim())
-    job.nextAgentSteerAt ??= after(AGENT_STEER_INTERVAL_MS)
-    await this.#appendDshOutput(job, `用户指令：${prompt.trim()}`)
+    const instruction = prompt.trim()
+    await this.#workerRegistry.steer(job.dshWorker!.handle, job.type === 'review' ? renderReviewTurnPrompt(instruction) : instruction)
+    if (job.type !== 'review') job.nextAgentSteerAt ??= after(AGENT_STEER_INTERVAL_MS)
+    await this.#appendDshOutput(job, `用户指令：${instruction}`)
     this.#store.event('info', 'dsh-control', `已 steer：${job.summary}`)
+    await this.#store.changed()
+  }
+
+  async #finishReviewConversation(jobId: string | undefined): Promise<void> {
+    const job = this.#activeDshJob(jobId)
+    if (job.type !== 'review') throw new Error('只有 Review 对话可以正常结束会话')
+    const phase = this.#workerProgress.get(job.dshWorker.handle.runId)?.phase
+    if (phase !== 'paused') throw new Error('请等待当前一轮回答完成后再结束对话')
+    await this.#workerRegistry.complete(job.dshWorker.handle)
+    job.nextAgentSteerAt = undefined
+    await this.#appendDshOutput(job, '系统：已请求结束 Review 对话')
+    this.#store.event('info', 'dsh-control', `已请求结束：${job.summary}`)
     await this.#store.changed()
   }
 
@@ -2143,6 +2339,20 @@ function bodyString(body: Record<string, unknown>, key: string): string | undefi
   if (value === undefined) return undefined
   if (typeof value !== 'string') throw new Error(`${key} must be a string`)
   return value
+}
+
+/** Parse `/api/reviews/<owner>/<name>/<number>/<diff|viewed>` into its review identity. */
+function parseReviewPath(pathname: string): { repoSlug: string; prNumber: number; action: 'diff' | 'viewed' } | undefined {
+  const prefix = '/api/reviews/'
+  if (!pathname.startsWith(prefix)) return undefined
+  const parts = pathname.slice(prefix.length).split('/')
+  if (parts.length !== 4) return undefined
+  const repoSlug = `${parts[0]}/${parts[1]}`
+  const prNumber = Number(parts[2])
+  const action = parts[3]
+  if (parts[0] === '' || parts[1] === '' || !Number.isSafeInteger(prNumber) || prNumber <= 0) return undefined
+  if (action !== 'diff' && action !== 'viewed') return undefined
+  return { repoSlug, prNumber, action }
 }
 
 async function findClone(name: string | undefined): Promise<CloneRecord> {
