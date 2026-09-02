@@ -2,6 +2,7 @@ import { startCodexWorker } from './codex.ts'
 import { detectCodexRuntime, readCodexModelCatalog } from './codex-runtime.ts'
 import {
   cancelDshWorker,
+  completeDshWorker,
   inspectDshWorker,
   startDshWorker,
   steerDshWorker,
@@ -28,6 +29,7 @@ export interface WorkerDriver {
   inspect(handle: WorkerHandle): Promise<WorkerProgress>
   steer(handle: WorkerHandle, prompt: string): Promise<void>
   cancel(handle: WorkerHandle): Promise<void>
+  complete(handle: WorkerHandle): Promise<void>
   terminate(handle: WorkerHandle): Promise<void>
 }
 
@@ -105,6 +107,10 @@ export class WorkerRegistry {
     await this.#driverForHandle(handle).cancel(handle)
   }
 
+  async complete(handle: WorkerHandle): Promise<void> {
+    await this.#driverForHandle(handle).complete(handle)
+  }
+
   async terminate(handle: WorkerHandle): Promise<void> {
     await this.#driverForHandle(handle).terminate(handle)
   }
@@ -137,6 +143,10 @@ abstract class SessionWorkerDriver implements WorkerDriver {
 
   async cancel(handle: WorkerHandle): Promise<void> {
     await cancelDshWorker(handle)
+  }
+
+  async complete(handle: WorkerHandle): Promise<void> {
+    await completeDshWorker(handle)
   }
 
   async terminate(handle: WorkerHandle): Promise<void> {

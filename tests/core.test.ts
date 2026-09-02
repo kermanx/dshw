@@ -4,15 +4,16 @@ import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { removeCloneRecord, validateCloneName } from '../src/clone.ts'
-import { addSharedWorktree, cloneGitStatus, commitOid, fetchBranch, fetchMergePreflight, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, maintainClone, mergeConflictPaths, repoSlugFromRemote } from '../src/git.ts'
+import { removeCloneRecord, reviewCloneName, validateCloneName } from '../src/clone.ts'
+import { addSharedWorktree, addSharedWorktreeAtRef, cloneGitStatus, commitOid, fetchBranch, fetchMergePreflight, fetchPullRequestHead, fetchRemoteBranchTip, gitCommonDir, isDocumentationConflictPath, isInsideDirectory, maintainClone, mergeConflictPaths, repoSlugFromRemote, synchronizeMergeWorktree, synchronizeReviewWorktree } from '../src/git.ts'
 import { assessCiAutoFix, ciLaneKey, rollupChecks, selectCiAutoFixChecks, summarizeChecks } from '../src/github.ts'
 import { AGENT_STEER_INTERVAL_MS, CLONES_ROOT, DSHW_ROOT } from '../src/config.ts'
 import { codeWorkspaceFolders } from '../src/workspace.ts'
 import { run, runOrThrow } from '../src/util.ts'
 import { countVisibleRunningJobs, DSHW_UPDATE_STEPS, HARNESS_RECONFIGURE_STEPS, observeBaseTip, readOutputPage, scheduleBaseCheck, summarizePrDashboardErrors, worktreeNeedsCleanupDecision } from '../src/service.ts'
 import { pageJobs, readEventLogPage } from '../src/state.ts'
-import { appendAdditionalInstruction, cancelDshWorker, dshWorkerLaunchSpec, headlessDshArguments, inspectDshWorker, loadWorkerPrompt, missingTypertRuntimeArtifacts, parseDshOutcome, renderPeriodicAgentReminder, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
+import { appendAdditionalInstruction, cancelDshWorker, completeDshWorker, dshWorkerLaunchSpec, headlessDshArguments, inspectDshWorker, loadWorkerPrompt, missingTypertRuntimeArtifacts, parseDshOutcome, renderPeriodicAgentReminder, renderPromptTemplate, steerDshWorker } from '../src/dsh.ts'
+import { isReviewConversation, renderReviewTurnPrompt, REVIEW_READ_ONLY_REMINDER } from '../src/review-conversation.ts'
 import { dshLaunchEnvironmentXml, dshWorkerLaunchEnvironmentXml } from '../src/dsh-launch-env.ts'
 import { formatProgressEvent } from '../src/dsh-progress-plugin.ts'
 import { jobExecutor, mergeProgressOutput, parseProgressOutput } from '../plugin/src/data.ts'
@@ -631,6 +632,10 @@ test('validates clone names before using them as directories', () => {
   }
 })
 
+test('uses stable review-only clone names', () => {
+  assert.equal(reviewCloneName(42, 'owner/repo'), 'review-owner-repo-42')
+})
+
 test('waits for all CI checks before classifying a completed failure', () => {
   assert.deepEqual(summarizeChecks([]), { status: 'none', summary: '尚无 CI checks' })
   assert.equal(summarizeChecks([
@@ -758,6 +763,20 @@ test('steers running agents every 20 minutes with the original task boundary', (
   assert.match(prompt, /由 dshw 负责/)
 })
 
+test('keeps Review conversation reminders read-only unless the user requested changes', () => {
+  const prompt = renderPeriodicAgentReminder({
+    handle: {} as DshWorkerHandle,
+    kind: 'review',
+    sync: { prNumber: 1768 } as SyncRecord,
+    oldHead: 'old-head',
+    label: 'Review 对话',
+  })
+  assert.equal(prompt, REVIEW_READ_ONLY_REMINDER)
+  assert.equal(renderReviewTurnPrompt('  What caused this race?  '), `What caused this race?\n\n${REVIEW_READ_ONLY_REMINDER}`)
+  assert.equal(isReviewConversation('review'), true)
+  assert.equal(isReviewConversation('custom'), false)
+})
+
 test('appends optional user instructions to the worker prompt', () => {
   assert.equal(appendAdditionalInstruction('Base prompt', '  Keep the API stable.  '), 'Base prompt\n\n## 用户额外指令\n\nKeep the API stable.')
   assert.equal(appendAdditionalInstruction('Base prompt', '   '), 'Base prompt')
@@ -767,6 +786,23 @@ test('appends optional user instructions to the worker prompt', () => {
 test('uses a custom PR instruction as the complete worker prompt', async () => {
   assert.equal(await loadWorkerPrompt({} as SyncRecord, 'custom', '  Update the parser.  '), 'Update the parser.')
   await assert.rejects(loadWorkerPrompt({} as SyncRecord, 'custom', '   '), /自定义任务指令不能为空/)
+})
+
+test('wraps a Review conversation goal with concise PR context and a read-only boundary', async () => {
+  const prompt = await loadWorkerPrompt({
+    repoSlug: 'deepseek-ai/DeepSeek-V3',
+    prNumber: 42,
+    prTitle: 'Keep parser state stable',
+    prUrl: 'https://github.com/deepseek-ai/DeepSeek-V3/pull/42',
+    clonePath: '/tmp/review-deepseek-v3-42',
+    branch: 'fix/parser',
+    baseRefName: 'main',
+  } as SyncRecord, 'review', '  Explain this diff.  ')
+  assert.match(prompt, /你正在查看 `deepseek-ai\/DeepSeek-V3` 的 PR #42：Keep parser state stable/)
+  assert.match(prompt, /`fix\/parser` → `main`/)
+  assert.match(prompt, /## 用户目标\n\nExplain this diff\./)
+  assert.match(prompt, /除非获得用户显式同意，否则不许修改代码和分支。$/)
+  await assert.rejects(loadWorkerPrompt({} as SyncRecord, 'review', '   '), /Review 对话指令不能为空/)
 })
 
 test('recognizes a machine-readable blocked dsh result and its reason', () => {
@@ -874,7 +910,7 @@ test('merges durable output pages with their overlapping live tail', () => {
   assert.equal(mergeProgressOutput('一\n二', '三\n四'), '一\n二\n三\n四')
 })
 
-test('steers and pauses a persisted dsh session over its Unix JSON-RPC socket', async () => {
+test('steers, pauses, and completes a persisted dsh session over its Unix JSON-RPC socket', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dshw-worker-rpc-'))
   const socketPath = join(tmpdir(), `dshw-rpc-${process.pid}-${Date.now()}.sock`)
   const frames: Array<{ method: string; params: Record<string, unknown> }> = []
@@ -902,9 +938,11 @@ test('steers and pauses a persisted dsh session over its Unix JSON-RPC socket', 
     })
     await steerDshWorker(handle, '改成只修复这个测试')
     await cancelDshWorker(handle)
+    await completeDshWorker(handle)
     assert.deepEqual(frames, [
       { method: 'session.steer', params: { prompt: '改成只修复这个测试' } },
       { method: 'session.cancel', params: {} },
+      { method: 'runtime.complete', params: {} },
     ])
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))
@@ -957,6 +995,7 @@ test('reconstructs live dsh progress from the durable session event tail after r
 test('keeps code workspace PR folders in dashboard order without an all-worktrees folder', () => {
   const folders = codeWorkspaceFolders([
     { name: 'dsh-9', path: `${CLONES_ROOT}/dsh-9`, prNumber: 120, repoSlug: 'deepseek-harness/deepseek-harness' },
+    { name: 'review-owner-repo-42', path: `${CLONES_ROOT}/review-owner-repo-42`, prNumber: 42, repoSlug: 'owner/repo' },
     { name: 'dsh-2', path: `${CLONES_ROOT}/dsh-2`, prNumber: 7, repoSlug: 'deepseek-harness/deepseek-harness' },
   ])
   assert.deepEqual(folders, [
@@ -964,6 +1003,114 @@ test('keeps code workspace PR folders in dashboard order without an all-worktree
     { name: '#7 · deepseek-harness/deepseek-harness', path: './worktrees/dsh-2' },
     { name: 'dshw', path: './..' },
   ])
+})
+
+test('fetches fork-safe PR refs and stashes a dirty review worktree before exact synchronization', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-review-worktree-'))
+  const remote = join(root, 'remote.git')
+  const source = join(root, 'source')
+  const managed = join(root, 'managed')
+  const worktree = join(root, 'review')
+  try {
+    await runOrThrow('git', ['init', '--bare', remote])
+    await mkdir(source)
+    await runOrThrow('git', ['init', '-b', 'master'], { cwd: source })
+    await runOrThrow('git', ['config', 'user.name', 'dshw test'], { cwd: source })
+    await runOrThrow('git', ['config', 'user.email', 'dshw@example.invalid'], { cwd: source })
+    await writeFile(join(source, 'file.txt'), 'review v1\n')
+    await runOrThrow('git', ['add', 'file.txt'], { cwd: source })
+    await runOrThrow('git', ['commit', '-m', 'review v1'], { cwd: source })
+    const firstHead = await commitOid(source, 'HEAD')
+    await runOrThrow('git', ['remote', 'add', 'origin', remote], { cwd: source })
+    await runOrThrow('git', ['push', 'origin', 'master'], { cwd: source })
+    await runOrThrow('git', ['update-ref', 'refs/pull/42/head', firstHead], { cwd: remote })
+    await runOrThrow('git', ['clone', remote, managed])
+
+    const fetched = await fetchPullRequestHead(managed, 42)
+    assert.equal(fetched.oid, firstHead)
+    const branch = await addSharedWorktreeAtRef(managed, fetched.ref, 'review-owner-repo-42', worktree)
+    assert.equal(branch, 'dshw/review-owner-repo-42')
+
+    await writeFile(join(worktree, 'file.txt'), 'dirty tracked\n')
+    await writeFile(join(worktree, 'notes.txt'), 'dirty untracked\n')
+    const blocked = await synchronizeReviewWorktree(worktree, fetched.ref, false, 'review stash')
+    assert.equal(blocked.ready, false)
+    if (!blocked.ready) assert.match(blocked.dirtySummary, /file\.txt|notes\.txt/u)
+
+    assert.deepEqual(await synchronizeReviewWorktree(worktree, fetched.ref, true, 'review stash'), { ready: true, stashed: true })
+    assert.equal(await commitOid(worktree, 'HEAD'), firstHead)
+    assert.equal((await runOrThrow('git', ['status', '--short'], { cwd: worktree })).stdout, '')
+    assert.match((await runOrThrow('git', ['stash', 'list'], { cwd: worktree })).stdout, /review stash/u)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('synchronizes a merge worktree to the exact PR head before delegation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dshw-merge-worktree-sync-'))
+  const remote = join(root, 'remote.git')
+  const source = join(root, 'source')
+  const managed = join(root, 'managed')
+  const worktree = join(root, 'worktree')
+  try {
+    await runOrThrow('git', ['init', '--bare', remote])
+    await mkdir(source)
+    await runOrThrow('git', ['init', '-b', 'master'], { cwd: source })
+    await runOrThrow('git', ['config', 'user.name', 'dshw test'], { cwd: source })
+    await runOrThrow('git', ['config', 'user.email', 'dshw@example.invalid'], { cwd: source })
+    await writeFile(join(source, 'file.txt'), 'v1\n')
+    await runOrThrow('git', ['add', 'file.txt'], { cwd: source })
+    await runOrThrow('git', ['commit', '-m', 'v1'], { cwd: source })
+    await runOrThrow('git', ['branch', 'feature'], { cwd: source })
+    await runOrThrow('git', ['remote', 'add', 'origin', remote], { cwd: source })
+    await runOrThrow('git', ['push', 'origin', 'master', 'feature'], { cwd: source })
+    await runOrThrow('git', ['clone', remote, managed])
+    await addSharedWorktree(managed, 'feature', 'pr-owner-repo-42', worktree)
+    await runOrThrow('git', ['config', 'user.name', 'dshw test'], { cwd: worktree })
+    await runOrThrow('git', ['config', 'user.email', 'dshw@example.invalid'], { cwd: worktree })
+
+    await runOrThrow('git', ['checkout', 'feature'], { cwd: source })
+    await writeFile(join(source, 'file.txt'), 'v2\n')
+    await runOrThrow('git', ['commit', '-am', 'v2'], { cwd: source })
+    const secondHead = await commitOid(source, 'HEAD')
+    await runOrThrow('git', ['push', 'origin', 'feature'], { cwd: source })
+    await fetchBranch(worktree, 'feature')
+    assert.deepEqual(await synchronizeMergeWorktree(worktree, 'refs/remotes/origin/feature'), {
+      mode: 'fast-forwarded',
+      previousHead: await commitOid(source, 'HEAD^'),
+      headOid: secondHead,
+    })
+
+    await writeFile(join(worktree, 'local.txt'), 'local merge result\n')
+    await runOrThrow('git', ['add', 'local.txt'], { cwd: worktree })
+    await runOrThrow('git', ['commit', '-m', 'local merge'], { cwd: worktree })
+    const localHead = await commitOid(worktree, 'HEAD')
+    await writeFile(join(source, 'remote.txt'), 'author update\n')
+    await runOrThrow('git', ['add', 'remote.txt'], { cwd: source })
+    await runOrThrow('git', ['commit', '-m', 'author update'], { cwd: source })
+    const remoteHead = await commitOid(source, 'HEAD')
+    await runOrThrow('git', ['push', 'origin', 'feature'], { cwd: source })
+    await fetchBranch(worktree, 'feature')
+
+    const recoveryRef = `refs/dshw/recovery/merge-worktree/${localHead}`
+    assert.deepEqual(await synchronizeMergeWorktree(worktree, 'refs/remotes/origin/feature'), {
+      mode: 'reset',
+      previousHead: localHead,
+      headOid: remoteHead,
+      recoveryRef,
+    })
+    assert.equal(await commitOid(worktree, 'HEAD'), remoteHead)
+    assert.equal(await commitOid(worktree, recoveryRef), localHead)
+
+    await writeFile(join(worktree, 'file.txt'), 'dirty\n')
+    await assert.rejects(
+      synchronizeMergeWorktree(worktree, 'refs/remotes/origin/feature'),
+      /worktree 存在未提交改动/u,
+    )
+    assert.equal(await commitOid(worktree, 'HEAD'), remoteHead)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('embeds a verifiable installation owner in the service plist', () => {

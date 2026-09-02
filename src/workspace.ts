@@ -1,6 +1,6 @@
 import { dirname, relative, sep } from 'node:path'
 import { CODE_WORKSPACE_FILE, DSHW_ROOT, STATE_FILE } from './config.ts'
-import { listClones } from './clone.ts'
+import { isReviewCloneName, listClones } from './clone.ts'
 import { pullRequest } from './github.ts'
 import type { PrDashboardRecord, ServiceState } from './types.ts'
 import { messageOf, readJson, writeJsonAtomic } from './util.ts'
@@ -19,7 +19,7 @@ export function codeWorkspaceFolders(
   clones: readonly { name: string; path: string; prNumber: number; repoSlug: string }[],
   workspaceRoot = dirname(CODE_WORKSPACE_FILE),
 ): CodeWorkspaceFolder[] {
-  const folders = clones.map(clone => ({
+  const folders = clones.filter(clone => !isReviewCloneName(clone.name)).map(clone => ({
     // 多 repo 下 PR 号会跨仓库冲突，文件夹名带上仓库名以便区分
     name: `#${clone.prNumber} · ${clone.repoSlug}`,
     path: `./${relative(workspaceRoot, clone.path).split(sep).join('/')}`,
@@ -49,7 +49,7 @@ export async function refreshCodeWorkspace(dashboard?: readonly PrDashboardRecor
 
   // First-ever startup has no dashboard snapshot yet. Resolve open PRs once,
   // using the dashboard's active-before-draft, then PR-number ordering.
-  const clones = await listClones()
+  const clones = (await listClones()).filter(clone => !isReviewCloneName(clone.name))
   const warnings: string[] = []
   const resolved = await Promise.all(clones.map(async clone => {
     try {

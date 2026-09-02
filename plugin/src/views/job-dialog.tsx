@@ -50,9 +50,12 @@ export function JobDialog({ job, baseUrl, snapshot, pending, post, onClose }: {
   const stickToBottom = useRef(true)
 
   const running = job.status === 'running'
+  const reviewConversation = job.type === 'review'
   const tone: Tone = jobToneOf(job.status)
   const phase = running
-    ? progress !== undefined ? phaseLabel(progress.phase) : job.dshWorker !== undefined ? 'Agent 运行中' : '后台检查中'
+    ? progress !== undefined
+      ? reviewConversation && progress.phase === 'paused' ? '等待继续对话' : phaseLabel(progress.phase)
+      : job.dshWorker !== undefined ? 'Agent 运行中' : '后台检查中'
     : jobLabel(job.status)
   const controllable = running && job.dshWorker?.handle.progressProtocol === 'session-control-v1'
   const paused = progress?.phase === 'paused'
@@ -226,7 +229,9 @@ export function JobDialog({ job, baseUrl, snapshot, pending, post, onClose }: {
               <textarea
                 style={controlInputStyle}
                 rows={2}
-                placeholder={paused ? '输入指令并继续任务…' : '在下一个 step 前插入指令…'}
+                placeholder={reviewConversation
+                  ? paused ? '继续 Review 对话…' : '向当前一轮补充消息…'
+                  : paused ? '输入指令并继续任务…' : '在下一个 step 前插入指令…'}
                 disabled={steering || job.cancelRequestedAt !== undefined}
                 value={prompt}
                 onChange={event => { setPrompt(event.target.value) }}
@@ -245,6 +250,16 @@ export function JobDialog({ job, baseUrl, snapshot, pending, post, onClose }: {
                     aria-label="暂停任务"
                     onClick={() => { void post('/api/jobs/pause', { jobId: job.id }, `pause:${job.id}`) }}
                   ><PauseIcon size={13} /></button>
+                ) : reviewConversation ? (
+                  <button
+                    type="button"
+                    className="dshw-jobbtn"
+                    style={finishButtonStyle}
+                    disabled={pending.has(`finish:${job.id}`)}
+                    title={pending.has(`finish:${job.id}`) ? '结束中' : '结束对话'}
+                    aria-label="结束对话"
+                    onClick={() => { void post('/api/jobs/finish', { jobId: job.id }, `finish:${job.id}`) }}
+                  ><CheckIcon size={13} /></button>
                 ) : (
                   <button
                     type="button"
@@ -428,6 +443,9 @@ const PauseIcon = ({ size = 13 }: { size?: number }): ReactNode => (
 )
 const StopIcon = ({ size = 12 }: { size?: number }): ReactNode => (
   <StrokeIcon size={size}><rect width="18" height="18" x="3" y="3" rx="1" /></StrokeIcon>
+)
+const CheckIcon = ({ size = 13 }: { size?: number }): ReactNode => (
+  <StrokeIcon size={size}><path d="m5 12 4 4L19 6" /></StrokeIcon>
 )
 const SendIcon = ({ size = 13 }: { size?: number }): ReactNode => (
   <StrokeIcon size={size}><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></StrokeIcon>
@@ -647,6 +665,8 @@ const pauseButtonStyle: CSSProperties = {
 }
 
 const stopButtonStyle: CSSProperties = { ...pauseButtonStyle, color: C_DANGER }
+
+const finishButtonStyle: CSSProperties = { ...pauseButtonStyle, color: C_SUCCESS }
 
 const sendButtonStyle: CSSProperties = {
   minHeight: 0,

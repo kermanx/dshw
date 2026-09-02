@@ -82,6 +82,15 @@ export function findWorkingAgent(pr: PrDashboardRecord, jobs: readonly JobRecord
   return jobs.find(job => job.status === 'running' && job.dshWorker !== undefined && belongsToPr(job, pr))
 }
 
+export function findWorkingReview(review: ReviewRequestRecord, jobs: readonly JobRecord[]): JobRecord | undefined {
+  return jobs.find(job => (
+    job.status === 'running'
+    && job.type === 'review'
+    && job.dshWorker?.sync.repoSlug === review.repoSlug
+    && job.dshWorker.sync.prNumber === review.number
+  ))
+}
+
 export function busyLabel(job?: JobRecord): string {
   return job?.type === 'fix-ci' ? '修复 CI' : job?.type === 'merge-base' ? '合并 base' : job?.type === 'resolve-comments' ? '解决评论' : job?.type === 'custom' ? '自定义任务' : '检查状态'
 }
@@ -195,7 +204,7 @@ export const jobLabel = (value: string): string =>
 export const jobTone = (value: string): Tone =>
   value === 'succeeded' ? 'ok' : value === 'failed' || value === 'blocked' ? 'bad' : value === 'running' ? 'warn' : 'neutral'
 export const kindLabel = (value: string): string =>
-  ({ 'merge-base': '合并 base', 'fix-ci': '修 CI', 'resolve-comments': '解决评论', custom: '自定义任务', 'update-dshw': '更新 dshw', 'update-harness': '更新 Harness', 'reconfigure-harness': '从头配置 Harness', 'sync-check': '状态检查' })[value] ?? value
+  ({ 'merge-base': '合并 base', 'fix-ci': '修 CI', 'resolve-comments': '解决评论', custom: '自定义任务', review: 'Review 对话', 'update-dshw': '更新 dshw', 'update-harness': '更新 Harness', 'reconfigure-harness': '从头配置 Harness', 'sync-check': '状态检查' })[value] ?? value
 
 export function jobExecutor(job: JobRecord): string {
   if (job.executor !== undefined) return job.executor

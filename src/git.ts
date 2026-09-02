@@ -135,6 +135,26 @@ export async function fetchRemoteBranchTip(root: string, branch: string, signal?
   return oid
 }
 
+export interface PullRequestHeadRef {
+  ref: string
+  oid: string
+}
+
+/** Fetch GitHub's synthetic PR head ref, which also works when the PR branch lives in a fork. */
+export async function fetchPullRequestHead(root: string, prNumber: number, signal?: AbortSignal): Promise<PullRequestHeadRef> {
+  if (!Number.isSafeInteger(prNumber) || prNumber <= 0) throw new Error(`无效的 PR 编号：${prNumber}`)
+  const ref = `refs/remotes/origin/dshw-review/${prNumber}`
+  await retryTransientGitNetworkOperation(
+    () => runOrThrow('git', ['fetch', '--no-tags', 'origin', `+refs/pull/${prNumber}/head:${ref}`], {
+      cwd: root,
+      timeoutMs: 5 * 60 * 1000,
+      signal,
+    }),
+    { signal },
+  )
+  return { ref, oid: await commitOid(root, ref) }
+}
+
 export async function isAncestor(root: string, ref: string, descendant = 'HEAD'): Promise<boolean> {
   const result = await run('git', ['merge-base', '--is-ancestor', ref, descendant], { cwd: root })
   return result.code === 0
@@ -178,6 +198,34 @@ export async function cloneGitStatus(root: string, remoteHeadOid: string): Promi
     run('git', ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'], { cwd: root }),
   ])
   return parseCloneGitStatus(status.stdout, divergence.stdout, mergeHead.code === 0)
+}
+
+export type MergeWorktreeSyncResult =
+  | { mode: 'unchanged', previousHead: string, headOid: string }
+  | { mode: 'fast-forwarded', previousHead: string, headOid: string }
+  | { mode: 'reset', previousHead: string, headOid: string, recoveryRef: string }
+
+/**
+ * Make a managed merge worktree start at GitHub's exact PR head.
+ * Dirty state blocks synchronization; divergent committed state is retained under a recovery ref.
+ */
+export async function synchronizeMergeWorktree(root: string, sourceRef: string): Promise<MergeWorktreeSyncResult> {
+  const headOid = await commitOid(root, sourceRef)
+  const previousHead = await currentHead(root)
+  const status = await cloneGitStatus(root, headOid)
+  if (status.unstaged || status.staged || status.merging) {
+    throw new Error('合并前 worktree 存在未提交改动或未结束的 merge；请先在 Git 状态菜单中处理')
+  }
+  if (previousHead === headOid) return { mode: 'unchanged', previousHead, headOid }
+  if (status.ahead === 0) {
+    await runOrThrow('git', ['merge', '--ff-only', sourceRef], { cwd: root })
+    return { mode: 'fast-forwarded', previousHead, headOid }
+  }
+
+  const recoveryRef = `refs/dshw/recovery/merge-worktree/${previousHead}`
+  await runOrThrow('git', ['update-ref', recoveryRef, previousHead], { cwd: root })
+  await runOrThrow('git', ['reset', '--hard', sourceRef], { cwd: root })
+  return { mode: 'reset', previousHead, headOid, recoveryRef }
 }
 
 /** Run a narrowly scoped maintenance action for a managed PR worktree. */
@@ -297,6 +345,57 @@ export async function addSharedWorktree(
     if (added) await removeSharedWorktree(managedRoot, worktreeBranch, destination)
     throw error
   }
+}
+
+/** Create an untracked-by-upstream worktree at an exact ref (used for review-only PR checkouts). */
+export async function addSharedWorktreeAtRef(
+  managedRoot: string,
+  sourceRef: string,
+  name: string,
+  destination: string,
+): Promise<string> {
+  const worktreeBranch = `dshw/${name}`
+  const existing = await run('git', ['show-ref', '--verify', '--quiet', `refs/heads/${worktreeBranch}`], { cwd: managedRoot })
+  if (existing.code === 0) throw new Error(`托管仓库已存在本地分支 ${worktreeBranch}；请先清理残留 worktree`)
+  await commitOid(managedRoot, sourceRef)
+  await runOrThrow('git', ['config', 'extensions.worktreeConfig', 'true'], { cwd: managedRoot })
+  let added = false
+  try {
+    await runOrThrow('git', ['worktree', 'add', '-b', worktreeBranch, destination, sourceRef], {
+      cwd: managedRoot,
+      timeoutMs: 5 * 60 * 1000,
+    })
+    added = true
+    return worktreeBranch
+  } catch (error) {
+    if (added) await removeSharedWorktree(managedRoot, worktreeBranch, destination)
+    throw error
+  }
+}
+
+export type ReviewWorktreeSyncResult =
+  | { ready: false, dirtySummary: string }
+  | { ready: true, stashed: boolean }
+
+/** Make a review-only worktree exactly match the just-fetched PR ref, preserving dirty files in a stash when approved. */
+export async function synchronizeReviewWorktree(
+  root: string,
+  sourceRef: string,
+  stashDirty: boolean,
+  stashMessage: string,
+): Promise<ReviewWorktreeSyncResult> {
+  await commitOid(root, sourceRef)
+  const status = await runOrThrow('git', ['status', '--short', '--untracked-files=normal'], { cwd: root })
+  const dirtySummary = status.stdout.trim()
+  if (dirtySummary !== '' && !stashDirty) return { ready: false, dirtySummary }
+  if (dirtySummary !== '') {
+    await runOrThrow('git', ['stash', 'push', '--include-untracked', '--message', stashMessage], { cwd: root })
+  }
+  await runOrThrow('git', ['reset', '--hard', sourceRef], { cwd: root })
+  await runOrThrow('git', ['clean', '-fd'], { cwd: root })
+  const remaining = (await runOrThrow('git', ['status', '--short', '--untracked-files=normal'], { cwd: root })).stdout.trim()
+  if (remaining !== '') throw new Error(`Review worktree 同步后仍不干净：${remaining}`)
+  return { ready: true, stashed: dirtySummary !== '' }
 }
 
 export async function removeSharedWorktree(

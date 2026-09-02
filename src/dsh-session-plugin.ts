@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { formatProgressEvent } from './dsh-progress-plugin.ts'
 import type { DshRunRecord } from './types.ts'
+import { isReviewConversation } from './review-conversation.ts'
 import { now, readJson, writeJsonAtomic } from './util.ts'
 import { createWorkerProgressReporter } from './worker-progress.ts'
 
@@ -198,6 +199,10 @@ async function startSessionWorker(ctx: ContextLike, config: Config): Promise<() 
       for (const prompt of queued) steer(prompt)
       return
     }
+    if (isReviewConversation(request.kind)) {
+      setPhase('paused', '等待用户继续 Review 对话')
+      return
+    }
     await finish(false)
   }
   const steer = (prompt: string): void => {
@@ -255,6 +260,9 @@ async function startSessionWorker(ctx: ContextLike, config: Config): Promise<() 
           return { accepted: true, phase }
         case 'runtime.terminate':
           setImmediate(() => { void finish(true) })
+          return { accepted: true }
+        case 'runtime.complete':
+          setImmediate(() => { void finish(false) })
           return { accepted: true }
         default:
           throw new Error(`unknown dshw worker method: ${method}`)

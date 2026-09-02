@@ -2,10 +2,11 @@ import { access, mkdir, readdir, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { CLONES_ROOT, MANAGED_ROOT } from './config.ts'
 import { managedRootFor } from './repos.ts'
-import type { CloneRecord, MyPullRequestSummary } from './types.ts'
+import type { CloneRecord, MyPullRequestSummary, ReviewRequestRecord } from './types.ts'
 import {
   branchName,
   addSharedWorktree,
+  addSharedWorktreeAtRef,
   isInsideDirectory,
   originUrl,
   removeSharedWorktree,
@@ -28,6 +29,19 @@ export function prCloneName(prNumber: number, repoSlug: string): string {
   const candidate = `pr-${owner}-${name}-${prNumber}`
   validateCloneName(candidate)
   return candidate
+}
+
+/** Review-only worktrees are deliberately distinguishable so workspace generation can exclude them. */
+export function reviewCloneName(prNumber: number, repoSlug: string): string {
+  const [owner, name] = repoSlug.split('/')
+  if (owner === undefined || name === undefined) throw new Error(`无效的 GitHub 仓库：${JSON.stringify(repoSlug)}`)
+  const candidate = `review-${owner}-${name}-${prNumber}`
+  validateCloneName(candidate)
+  return candidate
+}
+
+export function isReviewCloneName(name: string): boolean {
+  return name.startsWith('review-')
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -154,6 +168,34 @@ export async function createPrClone(pr: MyPullRequestSummary, repoSlug: string):
     return { name, path: destination, repoSlug, branch: pr.headRefName, worktreeBranch }
   } catch (error) {
     if (worktreeCreated) await removeSharedWorktree(managedRootFor(repoSlug), `dshw/${name}`, destination)
+    await rm(destination, { recursive: true, force: true })
+    throw error
+  }
+}
+
+/** Create or reopen the dedicated worktree for a PR requested for review. */
+export async function createReviewClone(
+  review: ReviewRequestRecord,
+  managedRoot: string,
+  sourceRef: string,
+): Promise<CloneRecord> {
+  const name = reviewCloneName(review.number, review.repoSlug)
+  const existing = (await listClones()).find(clone => clone.name === name)
+  if (existing !== undefined) {
+    if (existing.repoSlug !== review.repoSlug) throw new Error(`${name} 指向了错误的仓库 ${existing.repoSlug}`)
+    return { ...existing, branch: review.headRefName }
+  }
+
+  await mkdir(CLONES_ROOT, { recursive: true })
+  const destination = join(CLONES_ROOT, name)
+  let worktreeCreated = false
+  try {
+    const worktreeBranch = await addSharedWorktreeAtRef(managedRoot, sourceRef, name, destination)
+    worktreeCreated = true
+    invalidateClonesCache()
+    return { name, path: destination, repoSlug: review.repoSlug, branch: review.headRefName, worktreeBranch }
+  } catch (error) {
+    if (worktreeCreated) await removeSharedWorktree(managedRoot, `dshw/${name}`, destination)
     await rm(destination, { recursive: true, force: true })
     throw error
   }

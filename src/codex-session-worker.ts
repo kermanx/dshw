@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { CodexAppServerClient, type JsonObject } from './codex-app-server.ts'
 import type { CodexWorkerRequest } from './codex.ts'
 import { parseDshOutcome } from './dsh.ts'
+import { isReviewConversation } from './review-conversation.ts'
 import type { WorkerProgress, WorkerRunRecord } from './types.ts'
 import { now, readJson, writeJsonAtomic } from './util.ts'
 import { createWorkerProgressReporter } from './worker-progress.ts'
@@ -181,7 +182,8 @@ async function runWorker(request: CodexWorkerRequest): Promise<void> {
         failure = typeof error?.message === 'string' ? error.message : 'Codex turn 失败'
         void finish(false)
       } else if (turn.status === 'completed') {
-        void finish(false)
+        if (isReviewConversation(request.kind)) setPhase('paused', '等待用户继续 Review 对话')
+        else void finish(false)
       }
       return
     }
@@ -257,6 +259,7 @@ async function runWorker(request: CodexWorkerRequest): Promise<void> {
             }
             await finish(true)
           },
+          complete: async () => { await finish(false) },
         })
       }
     })
@@ -284,6 +287,7 @@ async function handleControlLine(
     steer(prompt: string): Promise<void>
     cancel(): Promise<void>
     terminate(): Promise<void>
+    complete(): Promise<void>
   },
 ): Promise<void> {
   let frame: JsonObject
@@ -301,6 +305,9 @@ async function handleControlLine(
       result = { accepted: true }
     } else if (frame.method === 'runtime.terminate') {
       setImmediate(() => { void actions.terminate() })
+      result = { accepted: true }
+    } else if (frame.method === 'runtime.complete') {
+      setImmediate(() => { void actions.complete() })
       result = { accepted: true }
     } else throw new Error(`unknown dshw worker method: ${String(frame.method)}`)
     socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: frame.id, result })}\n`)

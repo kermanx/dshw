@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { findBusyJob, findWorkingAgent } from '../plugin/src/data.ts'
-import type { JobRecord, PrDashboardRecord } from '../src/types.ts'
+import { findBusyJob, findWorkingAgent, findWorkingReview } from '../plugin/src/data.ts'
+import type { JobRecord, PrDashboardRecord, ReviewRequestRecord } from '../src/types.ts'
 
 const pr = {
   cloneName: 'pr-42',
@@ -31,6 +31,15 @@ test('finds a custom Worker task on its PR', () => {
   const working = job({ type: 'custom', dshWorker: {} as JobRecord['dshWorker'] })
   assert.equal(findBusyJob(pr, [working]), working)
   assert.equal(findWorkingAgent(pr, [working]), working)
+})
+
+test('finds an active conversation for a requested Review PR', () => {
+  const review = { repoSlug: pr.repoSlug, number: pr.number } as ReviewRequestRecord
+  const working = job({
+    type: 'review',
+    dshWorker: { sync: { repoSlug: pr.repoSlug, prNumber: pr.number } } as JobRecord['dshWorker'],
+  })
+  assert.equal(findWorkingReview(review, [working]), working)
 })
 
 test('does not treat built-in PR work as a working Agent', () => {

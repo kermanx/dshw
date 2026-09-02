@@ -9,6 +9,7 @@ import { dshWorkerLaunchEnvironmentXml } from './dsh-launch-env.ts'
 import { formatProgressEvent } from './dsh-progress-plugin.ts'
 import { ensureHarnessRuntime, missingTypertRuntimeArtifacts } from './dsh-runtime.ts'
 export { missingTypertRuntimeArtifacts } from './dsh-runtime.ts'
+import { REVIEW_READ_ONLY_REMINDER } from './review-conversation.ts'
 import type { DshRunRecord, DshWorkerHandle, DshWorkerProgress, DshWorkerState, SyncRecord, WorkerExecutionConfig } from './types.ts'
 import { escapeXml, id, now, readJson, run, runOrThrow, writeJsonAtomic } from './util.ts'
 
@@ -42,6 +43,7 @@ export function appendAdditionalInstruction(prompt: string, additionalInstructio
 }
 
 export function renderPeriodicAgentReminder(worker: DshWorkerState): string {
+  if (worker.kind === 'review') return REVIEW_READ_ONLY_REMINDER
   const objective = worker.kind === 'merge-base'
     ? `把 origin/${worker.sync.baseRefName} 合并到 PR #${worker.sync.prNumber} 的当前分支并解决冲突`
     : worker.kind === 'fix-ci'
@@ -98,6 +100,22 @@ export async function loadWorkerPrompt(sync: SyncRecord, kind: DshRunRecord['kin
     const instruction = additionalInstruction?.trim()
     if (instruction === undefined || instruction === '') throw new Error('自定义任务指令不能为空')
     return instruction
+  }
+  if (kind === 'review') {
+    const instruction = additionalInstruction?.trim()
+    if (instruction === undefined || instruction === '') throw new Error('Review 对话指令不能为空')
+    const template = await readFile(join(DSHW_ROOT, 'prompts', 'review.md'), 'utf8')
+    return renderPromptTemplate(template, {
+      repoSlug: sync.repoSlug,
+      prNumber: String(sync.prNumber),
+      prTitle: sync.prTitle ?? '(标题未知)',
+      prUrl: sync.prUrl,
+      clonePath: sync.clonePath,
+      branch: sync.branch,
+      baseRefName: sync.baseRefName,
+      instruction,
+      readOnlyReminder: REVIEW_READ_ONLY_REMINDER,
+    })
   }
   const filename = kind === 'merge-base' ? 'merge-base.md' : kind === 'fix-ci' ? 'fix-ci.md' : 'resolve-comments.md'
   const template = await readFile(join(DSHW_ROOT, 'prompts', filename), 'utf8')
@@ -222,6 +240,10 @@ export async function steerDshWorker(handle: DshWorkerHandle, prompt: string): P
 
 export async function cancelDshWorker(handle: DshWorkerHandle): Promise<void> {
   await requestWorker(handle, 'session.cancel', {})
+}
+
+export async function completeDshWorker(handle: DshWorkerHandle): Promise<void> {
+  await requestWorker(handle, 'runtime.complete', {})
 }
 
 export async function inspectDshWorker(handle: DshWorkerHandle): Promise<DshWorkerProgress> {
