@@ -5,3 +5,5 @@ ui/dist/
 plugin/lib/client.js
 *.log
 .DS_Store
+.ref/
+.pnpm-store/
