@@ -1,8 +1,8 @@
 /** Pull requests view (PullRequestsTable.vue port): table rows, CI / Review /
  *  Merge / Sync cells, hover popovers and the local-git maintenance chip. */
 import { useState } from 'react'
-import type { ReactNode } from 'react'
-import type { CloneGitStatus, JobRecord, PrDashboardRecord, PullRequestReview } from '../../../src/types.ts'
+import type { CSSProperties, ReactNode } from 'react'
+import type { CloneGitStatus, JobRecord, PrDashboardRecord, PullRequestReview, ReviewRequestRecord } from '../../../src/types.ts'
 import { HoverPopover, RepoGroupRow } from '../components.tsx'
 import {
   autoMergeAt, autoMergeMinutes, busyLabel, checkLabel, checkTone, ciLabel, ciTone,
@@ -12,7 +12,7 @@ import {
   type GitAction, type PrAction,
 } from '../data.ts'
 import { orderStackedPrs } from '../stack.ts'
-import { GAlert, StatusDot, StatusIcon } from '../icons.tsx'
+import { GAlert, GReview, StatusDot, StatusIcon } from '../icons.tsx'
 import {
   actionLinkStyle, assignedBadgeStyle, busyRowStyle, cellColumnStyle, cellMainStyle, cellNoteRowStyle,
   cellNoteStyle, cellSubStyle, countStyle, draftBadgeStyle, emptyStateLineStyle,
@@ -27,12 +27,12 @@ import {
   syncKnobStyle, syncSwitchRowStyle, syncSwitchStyle, tableScrollStyle,
   tableStyle, tdStyle, thStyle, titleLinkStyle, titleStyle, trStyle, draftRowStyle,
 } from '../styles.ts'
-import { warn, toneColor, C_SECONDARY } from '../theme.ts'
+import { warn, toneColor, C_BORDER, C_SECONDARY, C_SURFACE } from '../theme.ts'
 import type { ViewProps } from '../workspace.tsx'
 
 /* ── Pull requests view ── */
 
-export function PrsView({ snapshot, connection, pending, showToast, post, refresh, openWorkerPicker, openJob, openReposSettings }: ViewProps): ReactNode {
+export function PrsView({ snapshot, connection, pending, showToast, post, refresh, openWorkerPicker, openJob, openReposSettings, openReviewDetail }: ViewProps): ReactNode {
   const busyByPr = new Map(snapshot?.prs.map(pr => [pr, findBusyJob(pr, snapshot.jobs)]) ?? [])
   const workingAgentByPr = new Map(snapshot?.prs.map(pr => [pr, findWorkingAgent(pr, snapshot.jobs)]) ?? [])
   const prs = snapshot?.prs ?? []
@@ -108,6 +108,7 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
                 <th style={{ ...thStyle, width: 'max-content' }}>Review</th>
                 <th style={{ ...thStyle, width: 'max-content' }}>Merge</th>
                 <th style={{ ...thStyle, width: 'max-content' }}>Sync</th>
+                <th style={reviewEntryThStyle}>Review</th>
               </tr>
             </thead>
             <tbody>
@@ -117,7 +118,7 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
                   repoSlug={group.repoSlug}
                   collapsed={collapsed.has(group.repoSlug)}
                   onToggle={toggleRepo}
-                  colSpan={5}
+                  colSpan={6}
                 >
                   {orderStackedPrs(group.records).map(row => {
                     const pr = row.pr
@@ -137,12 +138,13 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
                         onGitAction={(name, action) => { void post('/api/clone/maintenance', { name, action }, `git-maintenance:${name}`) }}
                         onRefresh={refresh}
                         onOpenJob={openJob}
+                        onOpenReviewDetail={openReviewDetail}
                       />
                     )
                   })}
                   {group.records.length === 0 && prsLoading && (
                     <tr>
-                      <td colSpan={5} style={prLoadingRowStyle}>
+                      <td colSpan={6} style={prLoadingRowStyle}>
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
                           <StatusDot tone="accent" pulse />
                           <span>正在加载 PR…</span>
@@ -165,7 +167,7 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
 /** stack 中非根部（叠在其他 PR 之上）的 PR 统一缩进量；最接近 master 的根部不缩进。 */
 const STACK_CHILD_INDENT = 12
 
-export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, onChooseWorker, onToggleSync, onGitAction, onRefresh, onOpenJob }: {
+export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, onChooseWorker, onToggleSync, onGitAction, onRefresh, onOpenJob, onOpenReviewDetail }: {
   pr: PrDashboardRecord
   /** 所在 stack 的树位置；undefined = 不在 stack 中。 */
   stack?: { depth: number; hasChild: boolean }
@@ -179,6 +181,7 @@ export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, 
   onGitAction: (cloneName: string, action: GitAction) => void
   onRefresh: () => void
   onOpenJob: (job: JobRecord) => void
+  onOpenReviewDetail: (review: ReviewRequestRecord) => void
 }): ReactNode {
   const customJob = workingAgent?.type === 'custom' ? workingAgent : busy?.type === 'custom' ? busy : undefined
   // One <tr> per row — no <tbody> wrapper per row: nested tbodys are invalid
@@ -263,8 +266,72 @@ export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, 
           )}
         </div>
       </td>
+
+      <td style={reviewEntryTdStyle}>
+        <button
+          type="button"
+          data-dshw-kanban="reviewentry"
+          className="dshw-icon"
+          style={reviewEntryButtonStyle}
+          aria-label={`打开 ${pr.title} 的 Review`}
+          title={`${pr.title} · 打开 Review`}
+          onClick={() => { onOpenReviewDetail(toReviewRequest(pr)) }}
+        >
+          <GReview size={15} />
+        </button>
+      </td>
     </tr>
   )
+}
+
+/** Convert a dashboard PR row into the review identity the detail workspace needs. */
+function toReviewRequest(pr: PrDashboardRecord): ReviewRequestRecord {
+  return {
+    repoSlug: pr.repoSlug,
+    number: pr.number,
+    title: pr.title,
+    url: pr.url,
+    isDraft: pr.isDraft,
+    author: pr.author ?? '',
+    headRefName: pr.branch,
+    baseRefName: pr.baseRefName,
+    updatedAt: pr.updatedAt,
+  }
+}
+
+/** Right-side "open Review" icon button on a PR row. */
+const reviewEntryButtonStyle: CSSProperties = {
+  width: 28,
+  height: 28,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  borderRadius: 6,
+  color: C_SECONDARY,
+}
+
+/* The PR table is tableLayout:auto, so the rightmost Review column can overflow
+   horizontally. Pin it to the right edge so it is never squeezed out of view;
+   the white background hides cells scrolled beneath it. */
+const rightStickyBase: CSSProperties = {
+  position: 'sticky',
+  right: 0,
+  background: C_SURFACE,
+  boxShadow: '-1px 0 0 0 ' + C_BORDER,
+}
+
+const reviewEntryThStyle: CSSProperties = {
+  ...thStyle,
+  width: 44,
+  textAlign: 'center',
+  ...rightStickyBase,
+  zIndex: 3,
+}
+
+const reviewEntryTdStyle: CSSProperties = {
+  ...tdStyle,
+  textAlign: 'center',
+  ...rightStickyBase,
 }
 
 

@@ -146,6 +146,7 @@ export const titleLinkStyle: CSSProperties = {
 export const numberStyle: CSSProperties = { flex: 'none', fontFamily: 'monospace', fontSize: 12, color: C_MUTED }
 
 export const titleStyle: CSSProperties = {
+  minWidth: 0,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',

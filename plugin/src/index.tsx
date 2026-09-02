@@ -103,6 +103,11 @@ const STYLE_TEXT = `
 [data-dshw-kanban="root"] .dshw-wprow:hover { background: #f0f0f0; }
 [data-dshw-kanban="root"] .dshw-wpta:focus { border-color: #007acc; }
 [data-dshw-kanban="row"] { transition: background-color 100ms; }
+/* Review detail workspace: file tree hover/selection and diff-row focus outline. */
+[data-dshw-kanban="reviewtree"]:hover { background: #f0f0f0; }
+[data-dshw-kanban="reviewtree"][data-selected] { background: rgba(0, 122, 204, .12); }
+[data-dshw-kanban="reviewrow"]:hover { outline: 1px solid rgba(0, 122, 204, .30); outline-offset: -1px; }
+[data-dshw-kanban="reviewrow"][data-active] { outline: 1px solid rgba(0, 122, 204, .45); outline-offset: -1px; }
 /* While the kanban board is open the sidebar session list shows no current
    selection (visual only — the real session stays current). */
 body[data-dshw-kanban-open] [role="treeitem"][aria-selected="true"] { background: transparent; }

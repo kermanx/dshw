@@ -198,6 +198,11 @@ export const GGithub = ({ size = 13 }: { size?: number }): ReactNode => (
   </svg>
 )
 
+/** Review workspace entry glyph (code brackets: enter the review/diff view). */
+export const GReview = ({ size = 13 }: { size?: number }): ReactNode => (
+  <Lucide size={size}><path d="m8 7-5 5 5 5" /><path d="m16 7 5 5-5 5" /></Lucide>
+)
+
 /** VS Code logo — monochrome version, icon from Octicons by GitHub
  *  (https://github.com/primer/octicons/blob/main/LICENSE). */
 export const GVsCode = ({ size = 14 }: { size?: number }): ReactNode => (

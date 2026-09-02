@@ -7,7 +7,7 @@ import {
   IconBranchOutline16, IconInspectOutline12, IconListPenOutline16, IconSettingsOutline16,
   IconUserOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { JobRecord, WorkerConfig, WorkerTypeAvailability } from '../../src/types.ts'
+import type { JobRecord, ReviewRequestRecord, WorkerConfig, WorkerTypeAvailability } from '../../src/types.ts'
 import { useKanbanData, enabledRepos, type KanbanSnapshot, type PrAction } from './data.ts'
 import { GClose, GGitGraph } from './icons.tsx'
 import {
@@ -28,6 +28,7 @@ import { LogsView } from './views/logs.tsx'
 import { GitView } from './views/git.tsx'
 import { SettingsView } from './views/settings.tsx'
 import { JobDialog } from './views/job-dialog.tsx'
+import { ReviewDetailView } from './views/review-detail.tsx'
 
 /* ── shared view props + the tabbed workspace ── */
 
@@ -42,6 +43,10 @@ export interface ViewProps {
   refresh: () => void
   /** Open the worker picker for a PR action (right-click / unavailable default). */
   openWorkerPicker: (cloneName: string, action: PrAction) => void
+  /** Open the worker picker for a requested Review PR. */
+  openReviewWorkerPicker: (repoSlug: string, prNumber: number) => void
+  /** Open the review-detail workspace for a Review PR (whole view area). */
+  openReviewDetail: (review: ReviewRequestRecord) => void
   /** Open the job detail dialog (busy PR rows / jobs list). */
   openJob: (job: JobRecord) => void
   /** Jump to Settings → Repos (empty-state hint when no repo is monitored). */
@@ -71,9 +76,14 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
   const { snapshot, connection } = useKanbanData(baseUrl, refreshKey)
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set())
   const [toast, setToast] = useState<{ message: string; bad: boolean } | null>(null)
-  const [workerPick, setWorkerPick] = useState<{ cloneName: string; action: PrAction } | null>(null)
+  const [workerPick, setWorkerPick] = useState<
+    | { target: 'pr'; cloneName: string; action: PrAction }
+    | { target: 'review'; repoSlug: string; prNumber: number }
+    | null
+  >(null)
   const [view, setView] = useState<ViewId>('prs')
   const [activeJob, setActiveJob] = useState<JobRecord>()
+  const [activeReview, setActiveReview] = useState<ReviewRequestRecord>()
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('repos')
   const toastTimer = useRef<number | undefined>(undefined)
 
@@ -119,19 +129,75 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
       showToast('请先添加可用的 Worker', true)
       return
     }
-    setWorkerPick({ cloneName, action })
+    setWorkerPick({ target: 'pr', cloneName, action })
+  }
+
+  const openReviewWorkerPicker = (repoSlug: string, prNumber: number): void => {
+    const usable = snapshot?.workers.some(worker => worker.enabled
+      && snapshot.workerTypes.find(status => status.type === worker.type)?.available === true) === true
+    if (!usable) {
+      showToast('请先添加可用的 Worker', true)
+      return
+    }
+    setWorkerPick({ target: 'review', repoSlug, prNumber })
   }
 
   const startWithWorker = (workerConfigId: string, additionalInstruction: string): void => {
     const launch = workerPick
     if (launch === null) return
     setWorkerPick(null)
-    void post('/api/pr-action', {
-      name: launch.cloneName,
-      action: launch.action,
-      workerConfigId,
-      additionalInstruction: additionalInstruction.trim(),
-    }, `${launch.action}:${launch.cloneName}`)
+    if (launch.target === 'pr') {
+      void post('/api/pr-action', {
+        name: launch.cloneName,
+        action: launch.action,
+        workerConfigId,
+        additionalInstruction: additionalInstruction.trim(),
+      }, `${launch.action}:${launch.cloneName}`)
+      return
+    }
+    void startReviewWithWorker(launch.repoSlug, launch.prNumber, workerConfigId, additionalInstruction.trim())
+  }
+
+  const startReviewWithWorker = async (repoSlug: string, prNumber: number, workerConfigId: string, additionalInstruction: string): Promise<void> => {
+    const key = `review:${repoSlug}#${prNumber}`
+    if (pending.has(key)) return
+    setPending(previous => new Set(previous).add(key))
+    try {
+      let stashDirty = false
+      for (;;) {
+        const response = await fetch(`${baseUrl}/api/review-action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ repoSlug, number: prNumber, workerConfigId, additionalInstruction, stashDirty }),
+        })
+        const value = await response.json() as { error?: string; needsStash?: boolean; clonePath?: string; dirtySummary?: string; stashed?: boolean }
+        if (response.status === 409 && value.needsStash === true && !stashDirty) {
+          const detail = value.dirtySummary?.trim()
+          const confirmed = window.confirm([
+            `Review 本地分支存在未提交改动：${value.clonePath ?? ''}`,
+            detail === undefined || detail === '' ? '' : `\n${detail}`,
+            '\n启动对话前会把这些改动（含未跟踪文件）stash，然后同步到远端最新版本。继续？',
+          ].join('\n'))
+          if (!confirmed) {
+            showToast('已取消启动 Review 对话')
+            return
+          }
+          stashDirty = true
+          continue
+        }
+        if (!response.ok) throw new Error(value.error ?? '请求失败')
+        showToast(value.stashed === true ? '本地改动已 stash，Review 对话已启动' : 'Review 对话已启动')
+        return
+      }
+    } catch (error) {
+      showToast(`启动失败：${error instanceof Error ? error.message : String(error)}`, true)
+    } finally {
+      setPending(previous => {
+        const next = new Set(previous)
+        next.delete(key)
+        return next
+      })
+    }
   }
 
   const viewProps: ViewProps = {
@@ -143,6 +209,8 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
     post,
     refresh,
     openWorkerPicker,
+    openReviewWorkerPicker,
+    openReviewDetail: setActiveReview,
     openJob: setActiveJob,
     openReposSettings: () => { setSettingsSection('repos'); setView('settings') },
   }
@@ -162,6 +230,7 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
               aria-selected={active}
               data-selected={active || undefined}
               onClick={() => {
+                setActiveReview(undefined)
                 // Opening Settings from the tab bar always lands on its first page (Repos);
                 // only the "去设置 Repos" empty-state link jumps to a specific section.
                 if (tab.id === 'settings') setSettingsSection('repos')
@@ -177,16 +246,32 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
         })}
       </div>
       <div style={viewAreaStyle}>
-        {view === 'prs' && <PrsView {...viewProps} />}
-        {view === 'reviews' && <ReviewsView {...viewProps} />}
-        {view === 'jobs' && <JobsView {...viewProps} />}
-        {view === 'logs' && <LogsView {...viewProps} />}
-        {view === 'git' && <GitView baseUrl={baseUrl} refreshKey={refreshKey} repos={enabledRepos(snapshot)} openReposSettings={viewProps.openReposSettings} />}
-        {view === 'settings' && <SettingsView {...viewProps} initialSection={settingsSection} />}
+        {activeReview !== undefined ? (
+          <ReviewDetailView
+            baseUrl={baseUrl}
+            review={activeReview}
+            snapshot={snapshot}
+            pending={pending}
+            showToast={showToast}
+            post={post}
+            onBack={() => { setActiveReview(undefined) }}
+            openReviewWorkerPicker={openReviewWorkerPicker}
+            openJob={setActiveJob}
+          />
+        ) : (
+          <>
+            {view === 'prs' && <PrsView {...viewProps} />}
+            {view === 'reviews' && <ReviewsView {...viewProps} />}
+            {view === 'jobs' && <JobsView {...viewProps} />}
+            {view === 'logs' && <LogsView {...viewProps} />}
+            {view === 'git' && <GitView baseUrl={baseUrl} refreshKey={refreshKey} repos={enabledRepos(snapshot)} openReposSettings={viewProps.openReposSettings} />}
+            {view === 'settings' && <SettingsView {...viewProps} initialSection={settingsSection} />}
+          </>
+        )}
       </div>
       {workerPick !== null && snapshot !== undefined && (
         <WorkerPicker
-          action={workerPick.action}
+          action={workerPick.target === 'pr' ? workerPick.action : 'review'}
           workers={snapshot.workers}
           workerTypes={snapshot.workerTypes}
           onClose={() => { setWorkerPick(null) }}
@@ -195,7 +280,7 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
       )}
       {activeJob !== undefined && snapshot !== undefined && (
         <JobDialog
-          job={activeJob}
+          job={snapshot.jobs.find(job => job.id === activeJob.id) ?? activeJob}
           baseUrl={baseUrl}
           snapshot={snapshot}
           pending={pending}
@@ -211,7 +296,7 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
 /* ── worker picker dialog（WorkerLaunchDialog.vue 移植：radio 单选 + 附加指令 + 启动任务） ── */
 
 export function WorkerPicker({ action, workers, workerTypes, onClose, onPick }: {
-  action: PrAction
+  action: PrAction | 'review'
   workers: readonly WorkerConfig[]
   workerTypes: readonly WorkerTypeAvailability[]
   onClose: () => void
@@ -233,8 +318,8 @@ export function WorkerPicker({ action, workers, workerTypes, onClose, onPick }: 
     return () => { document.removeEventListener('keydown', onKeyDown) }
   }, [onClose])
 
-  const custom = action === 'custom'
-  const title = action === 'merge-base' ? '合并 base' : action === 'fix-ci' ? '修复 CI' : action === 'resolve-comments' ? '解决评论' : '自定义任务'
+  const custom = action === 'custom' || action === 'review'
+  const title = action === 'merge-base' ? '合并 base' : action === 'fix-ci' ? '修复 CI' : action === 'resolve-comments' ? '解决评论' : action === 'review' ? 'Review 对话' : '自定义任务'
   const subtitle = (worker: WorkerConfig): string => {
     const type = worker.type === 'dsh' ? 'dsh' : worker.type === 'codex' ? 'Codex' : 'Claude Code'
     return `${type} · ${worker.model || '默认模型'} · ${worker.reasoningEffort || '默认推理'}`
@@ -291,7 +376,7 @@ export function WorkerPicker({ action, workers, workerTypes, onClose, onPick }: 
               style={workerPickerTextareaStyle}
               maxLength={4000}
               autoFocus={custom}
-              placeholder={custom ? '描述希望 Worker 在这个 PR 分支上完成的工作' : '例如：只修改相关文件，不要调整现有 API'}
+              placeholder={action === 'review' ? '输入想让 Worker 检查、解释或分析的内容' : custom ? '描述希望 Worker 在这个 PR 分支上完成的工作' : '例如：只修改相关文件，不要调整现有 API'}
               value={instruction}
               onChange={event => { setInstruction(event.target.value) }}
             />
