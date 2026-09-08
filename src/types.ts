@@ -394,6 +394,8 @@ export interface ReviewDiffManifest {
   /** Currently viewed files (path → fingerprint), reconciled against this diff:
    *  paths whose diff changed since the user read them are dropped. */
   viewed: Record<string, string>
+  /** 分页模式已读页面：页面内容指纹 → true（客户端按视口打包后写入）。 */
+  paged: Record<string, boolean>
   /** Set when the diff could not be captured (e.g. clone preparation failed). */
   error?: string
 }

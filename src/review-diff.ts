@@ -64,7 +64,7 @@ export class ReviewDiffCache {
     const prepared = await prepareReviewClone(review, managedRoot, { refresh: options.refresh })
     if (cached !== undefined && cached.headOid === prepared.headOid && options.refresh !== true) {
       const viewed = this.#reconcileViewed(key, cached.files)
-      return { ...this.#manifest(cached), viewed }
+      return { ...this.#manifest(cached), viewed, paged: this.#viewed.get(key)?.paged ?? {} }
     }
 
     const baseRefName = review.baseRefName || 'master'
@@ -85,7 +85,7 @@ export class ReviewDiffCache {
       this.entries.delete(oldest)
     }
     const viewed = this.#reconcileViewed(key, entry.files)
-    return { ...this.#manifest(entry), viewed }
+    return { ...this.#manifest(entry), viewed, paged: this.#viewed.get(key)?.paged ?? {} }
   }
 
   /**
@@ -111,7 +111,7 @@ export class ReviewDiffCache {
       const current = byPath.get(path)?.fingerprint
       if (current === undefined ? byPath.has(path) : current === fingerprint) viewed[path] = fingerprint
     }
-    this.#viewed.set(key, { total: files.length, viewed })
+    this.#viewed.set(key, { total: files.length, viewed, ...(record?.paged === undefined ? {} : { paged: record.paged }) })
     return viewed
   }
 
@@ -131,6 +131,17 @@ export class ReviewDiffCache {
     return undefined
   }
 
+  /** The review clone hosting `path` for a manifest token, or undefined when the
+   *  token is unknown or the path is not one of the changed files (allowlist). */
+  clonePathFor(token: string, path: string): string | undefined {
+    for (const entry of this.entries.values()) {
+      if (entry.token !== token) continue
+      if (!entry.files.some(file => file.path === path)) return undefined
+      return entry.clonePath
+    }
+    return undefined
+  }
+
   #manifest(entry: ReviewDiffEntry): ReviewDiffManifest {
     return {
       available: true,
@@ -140,6 +151,7 @@ export class ReviewDiffCache {
       headRefName: entry.headRefName,
       clonePath: entry.clonePath,
       viewed: {},
+      paged: {},
     }
   }
 }
@@ -440,4 +452,34 @@ function splitLines(output: string): string[] {
   const lines = output.split('\n')
   if (lines.at(-1) === '') lines.pop()
   return lines
+}
+
+/* ── full-file content at the PR head (continuous browsing) ── */
+
+const MAX_CONTENT_BYTES = 4 * 1024 * 1024
+const MAX_CONTENT_LINES = 15_000
+
+/** Read one changed file's full content at the review clone's HEAD commit.
+ *  `path` must have come from the diff manifest (allowlist checked by the
+ *  caller via {@link ReviewDiffCache.clonePathFor}). */
+export async function readFileAtHead(clonePath: string, path: string): Promise<{ content: string; truncated: boolean }> {
+  const sizeResult = await run('git', ['cat-file', '-s', `HEAD:${path}`], { cwd: clonePath, timeoutMs: 30_000 })
+  if (sizeResult.code !== 0) throw new Error('该文件在 PR head 中不存在（可能已被删除），无法查看完整文件')
+  const bytes = Number(sizeResult.stdout.trim())
+  if (!Number.isSafeInteger(bytes) || bytes > MAX_CONTENT_BYTES) throw new Error('文件过大（超过 4MB），无法完整展示')
+
+  const result = await runOrThrow('git', ['cat-file', 'blob', `HEAD:${path}`], { cwd: clonePath, timeoutMs: 60_000 })
+  // run() 已经把 git 输出按 utf-8 解码；非 UTF-8 内容会出现替换字符 U+FFFD。
+  if (result.stdout.includes('\uFFFD')) throw new Error('该文件不是有效的 UTF-8 文本，无法完整展示')
+  const content = result.stdout
+  let truncated = false
+  let lineCount = 1
+  for (const character of content) {
+    if (character === '\n') lineCount += 1
+    if (lineCount > MAX_CONTENT_LINES) {
+      truncated = true
+      break
+    }
+  }
+  return { content, truncated }
 }

@@ -85,7 +85,7 @@ function compareCharacters(oldText: string, newText: string): { old: readonly In
   if (oldText === newText) return undefined
   if (oldText.length + newText.length > MAX_INTRALINE_TEXT_CODE_UNITS) return undefined
   if (oldText.length * newText.length > MAX_INTRALINE_DP_CELLS) return undefined
-  const changes = boundedDiffChars(oldText, newText)
+  const changes = tokenDiff(oldText, newText)
   if (changes === undefined) return undefined
   const sharedCharacters = changes.reduce((total, change) => total + (!change.added && !change.removed ? change.value.length : 0), 0)
   if (sharedCharacters * 4 < Math.max(oldText.length, newText.length)) return undefined
@@ -105,53 +105,72 @@ interface CharChange {
   removed?: boolean
 }
 
-/** Bounded LCS character diff: returns edit runs, or `undefined` when the
- *  edit distance is unbounded (treated as a full rewrite by the caller). */
-function boundedDiffChars(oldText: string, newText: string): CharChange[] | undefined {
-  const n = oldText.length
-  const m = newText.length
-  // Myers-style banded search capped by edit distance: if the strings share
-  // little, bail and let the caller treat the pair as a full change.
-  const maxDistance = Math.min(1_024, n + m)
+interface DiffToken {
+  text: string
+}
+
+/** 按“词/记号”切分：标识符（含下划线/字母/数字/$）整块、空白整块、其余单字符。 */
+function tokenizeLine(text: string): DiffToken[] {
+  const tokens: DiffToken[] = []
+  const pattern = /[A-Za-z0-9_$]+|\s+|./gu
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text)) !== null) {
+    tokens.push({ text: match[0] })
+  }
+  return tokens
+}
+
+/** VS Code 风格的行内 diff：token 级 LCS，变化以“整词”为高亮单位，而不是
+ *  把一个词内部的每个字符都拆开。返回编辑段，或 undefined（整行近似重写）。 */
+function tokenDiff(oldText: string, newText: string): CharChange[] | undefined {
+  const oldTokens = tokenizeLine(oldText)
+  const newTokens = tokenizeLine(newText)
+  const n = oldTokens.length
+  const m = newTokens.length
+  const maxEdits = Math.min(1_024, n + m)
   const dp = new Int32Array((n + 1) * (m + 1))
   const column = m + 1
   for (let i = 1; i <= n; i += 1) dp[i * column] = 0
   for (let j = 1; j <= m; j += 1) dp[j] = 0
   for (let i = 1; i <= n; i += 1) {
     for (let j = 1; j <= m; j += 1) {
-      dp[i * column + j] = oldText[i - 1] === newText[j - 1]
+      dp[i * column + j] = oldTokens[i - 1]!.text === newTokens[j - 1]!.text
         ? (dp[(i - 1) * column + (j - 1)] ?? 0) + 1
         : Math.max(dp[(i - 1) * column + j] ?? 0, dp[i * column + (j - 1)] ?? 0)
     }
   }
   const edits = (n + m) - 2 * (dp[n * column + m] ?? 0)
-  if (edits > maxDistance) return undefined
+  if (edits > maxEdits) return undefined
 
   const changes: CharChange[] = []
   let i = n
   let j = m
-  let run: CharChange | undefined
-  const push = (value: string, added?: boolean, removed?: boolean): void => {
-    if (run !== undefined && run.added === added && run.removed === removed) {
-      run.value += value
-      return
+  const emitGap = (oldFrom: number, oldTo: number, newFrom: number, newTo: number): void => {
+    if (oldTo > oldFrom) {
+      changes.push({ value: oldTokens.slice(oldFrom, oldTo).map(token => token.text).join(''), removed: true })
     }
-    run = { value, added, removed }
-    changes.push(run)
+    if (newTo > newFrom) {
+      changes.push({ value: newTokens.slice(newFrom, newTo).map(token => token.text).join(''), added: true })
+    }
   }
+  let oldGapEnd = n
+  let newGapEnd = m
   while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && oldText[i - 1] === newText[j - 1]) {
-      push(oldText[i - 1])
+    if (i > 0 && j > 0 && oldTokens[i - 1]!.text === newTokens[j - 1]!.text) {
+      // 回溯到最近匹配 token：其后的空隙按“整词”输出删除/新增。
+      emitGap(i, oldGapEnd, j, newGapEnd)
+      changes.push({ value: oldTokens[i - 1]!.text })
       i -= 1
       j -= 1
+      oldGapEnd = i
+      newGapEnd = j
     } else if (j > 0 && (i === 0 || (dp[i * column + (j - 1)] ?? 0) >= (dp[(i - 1) * column + j] ?? 0))) {
-      push(newText[j - 1], true)
       j -= 1
     } else {
-      push(oldText[i - 1], undefined, true)
       i -= 1
     }
   }
+  emitGap(0, oldGapEnd, 0, newGapEnd)
   changes.reverse()
   return changes
 }

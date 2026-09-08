@@ -41,7 +41,8 @@ import { WorkerConfigStore } from './worker-config.ts'
 import { WorkerRegistry } from './worker-driver.ts'
 import { renderPeriodicAgentReminder } from './dsh.ts'
 import { renderReviewTurnPrompt } from './review-conversation.ts'
-import { ReviewDiffCache } from './review-diff.ts'
+import { readFileAtHead, ReviewDiffCache } from './review-diff.ts'
+import { highlightLines, shikiLangFor } from './syntax.ts'
 import { reviewViewedKey, ReviewViewedStore } from './review-viewed.ts'
 
 const NO_CHECKS_GRACE_MS = 5 * 60 * 1000
@@ -386,6 +387,34 @@ class WorkflowService {
       }
       return
     }
+    if (method === 'POST' && url === '/api/syntax') {
+      const body = await readBody(request)
+      const path = bodyString(body, 'path')
+      const rawLines = body.lines
+      if (path === undefined || path.length > 2_000) throw new Error('syntax.path 无效')
+      if (!Array.isArray(rawLines)) throw new Error('syntax.lines must be an array')
+      if (rawLines.length > 2_000) throw new Error('单次最多着色 2000 行')
+      const lines: string[] = []
+      for (const line of rawLines) {
+        if (typeof line !== 'string' || line.length > 4_000) throw new Error('syntax.lines 内容无效')
+        lines.push(line)
+      }
+      const lang = shikiLangFor(path)
+      // 逐行去重，减小请求与服务端缓存压力。
+      const unique = [...new Set(lines)]
+      const tokenized = lang === undefined
+        ? undefined
+        : await highlightLines(lang, unique)
+      const byText = new Map<string, unknown>()
+      if (tokenized !== undefined) {
+        unique.forEach((text, index) => { byText.set(text, tokenized[index]) })
+      }
+      this.#json(response, 200, {
+        lang: lang?.id ?? null,
+        tokens: lines.map(text => (byText.get(text) ?? null)),
+      })
+      return
+    }
     if (method === 'POST' && url === '/api/worker-progress') {
       const body = await readBody(request)
       this.#acceptWorkerProgress(body)
@@ -595,10 +624,38 @@ class WorkflowService {
           count += 1
           if (count > 5_000) throw new Error('viewed 文件数超过上限')
         }
-        this.#reviewViewed.set(reviewViewedKey(parsed.repoSlug, parsed.prNumber), { total, viewed })
+        // 分页模式已读页面（页面内容指纹 → true），可选。
+        let paged: Record<string, boolean> | undefined
+        if (body.paged !== undefined) {
+          const rawPaged = body.paged
+          if (typeof rawPaged !== 'object' || rawPaged === null || Array.isArray(rawPaged)) throw new Error('viewed.paged must be an object')
+          paged = {}
+          let pagedCount = 0
+          for (const [fingerprint, marked] of Object.entries(rawPaged as Record<string, unknown>)) {
+            if (typeof fingerprint !== 'string' || fingerprint.length === 0 || fingerprint.length > 2_000) throw new Error('viewed.paged 键无效')
+            if (marked !== true) throw new Error('viewed.paged 值必须为 true')
+            paged[fingerprint] = true
+            pagedCount += 1
+            if (pagedCount > 20_000) throw new Error('viewed.paged 页数超过上限')
+          }
+        }
+        this.#reviewViewed.set(reviewViewedKey(parsed.repoSlug, parsed.prNumber), {
+          total,
+          viewed,
+          ...(paged === undefined ? {} : { paged }),
+        })
         // Push the updated read-status summary to the lists immediately.
         this.#broadcast()
         this.#json(response, 200, { accepted: true })
+        return
+      }
+      if (method === 'GET' && parsed.action === 'content') {
+        const token = requestUrl.searchParams.get('token') ?? ''
+        const path = requestUrl.searchParams.get('path') ?? ''
+        if (path === '') throw new Error('缺少文件路径')
+        const clonePath = this.#reviewDiffCache.clonePathFor(token, path)
+        if (clonePath === undefined) throw new Error('该 diff 已失效，请重新打开 Review')
+        this.#json(response, 200, await readFileAtHead(clonePath, path))
         return
       }
       throw new Error(`未知的 review 请求：${method} ${parsed.action}`)
@@ -2342,7 +2399,7 @@ function bodyString(body: Record<string, unknown>, key: string): string | undefi
 }
 
 /** Parse `/api/reviews/<owner>/<name>/<number>/<diff|viewed>` into its review identity. */
-function parseReviewPath(pathname: string): { repoSlug: string; prNumber: number; action: 'diff' | 'viewed' } | undefined {
+function parseReviewPath(pathname: string): { repoSlug: string; prNumber: number; action: 'diff' | 'viewed' | 'content' } | undefined {
   const prefix = '/api/reviews/'
   if (!pathname.startsWith(prefix)) return undefined
   const parts = pathname.slice(prefix.length).split('/')
@@ -2351,7 +2408,7 @@ function parseReviewPath(pathname: string): { repoSlug: string; prNumber: number
   const prNumber = Number(parts[2])
   const action = parts[3]
   if (parts[0] === '' || parts[1] === '' || !Number.isSafeInteger(prNumber) || prNumber <= 0) return undefined
-  if (action !== 'diff' && action !== 'viewed') return undefined
+  if (action !== 'diff' && action !== 'viewed' && action !== 'content') return undefined
   return { repoSlug, prNumber, action }
 }
 

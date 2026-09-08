@@ -52,6 +52,7 @@
     "@dreamcatcher-tech/commit-graph": "2.2.9",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "shiki": "^3.23.0",
     "vue": "^3.5.41"
   }
 }

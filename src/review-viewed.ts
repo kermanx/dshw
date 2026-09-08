@@ -14,6 +14,8 @@ export interface ViewedRecord {
   total: number
   /** Changed-file path → fingerprint of the diff the user last read. */
   viewed: Record<string, string>
+  /** 分页浏览模式：已读页面的内容指纹（页面由客户端按视口打包，服务端只存不校验）。 */
+  paged?: Record<string, boolean>
 }
 
 interface ViewedDocument {
@@ -47,12 +49,18 @@ export class ReviewViewedStore {
   /** Return a copy of one record (undefined when nothing stored yet). */
   get(key: string): ViewedRecord | undefined {
     const record = this.#records[key]
-    return record === undefined ? undefined : { total: record.total, viewed: { ...record.viewed } }
+    return record === undefined
+      ? undefined
+      : { total: record.total, viewed: { ...record.viewed }, ...(record.paged === undefined ? {} : { paged: { ...record.paged } }) }
   }
 
   /** Replace one record; persisted atomically behind earlier writes. */
   set(key: string, record: ViewedRecord): void {
-    this.#records[key] = { total: record.total, viewed: { ...record.viewed } }
+    this.#records[key] = {
+      total: record.total,
+      viewed: { ...record.viewed },
+      ...(record.paged === undefined ? {} : { paged: { ...record.paged } }),
+    }
     this.#writes = this.#writes
       .then(() => writeJsonAtomic(this.#file, { version: 1 as const, records: this.#records }))
       .catch((error: unknown) => {

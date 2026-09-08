@@ -203,10 +203,99 @@ export const GReview = ({ size = 13 }: { size?: number }): ReactNode => (
   <Lucide size={size}><path d="m8 7-5 5 5 5" /><path d="m16 7 5 5-5 5" /></Lucide>
 )
 
+/** Arrow-left (返回). */
+export const GArrowLeft = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}><path d="m12 19-7-7 7-7" /><path d="M19 12H5" /></Lucide>
+)
+
+/** External link (在新窗口打开). */
+export const GExternalLink = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></Lucide>
+)
+
+/** Message-circle (AI 对话). */
+export const GComment = ({ size = 15 }: { size?: number }): ReactNode => (
+  <Lucide size={size}><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" /></Lucide>
+)
+
+/** Document (单文件浏览模式). */
+export const GFileSingle = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></Lucide>
+)
+
+/** Rows/list (连续浏览模式). */
+export const GRows = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></Lucide>
+)
+
+/** Maximize (查看完整文件). */
+export const GMaximize = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <polyline points="15 3 21 3 21 9" />
+    <polyline points="9 21 3 21 3 15" />
+    <line x1="21" y1="3" x2="14" y2="10" />
+    <line x1="3" y1="21" x2="10" y2="14" />
+  </Lucide>
+)
+
+/** Minimize (收起完整文件). */
+export const GMinimize = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <polyline points="4 14 10 14 10 20" />
+    <polyline points="20 10 14 10 14 4" />
+    <line x1="14" y1="10" x2="21" y2="3" />
+    <line x1="3" y1="21" x2="10" y2="14" />
+  </Lucide>
+)
+
+/** File-stack (分页浏览模式). */
+export const GPages = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M21 7h-3a2 2 0 0 1-2-2V2" />
+    <path d="M21 6v6.5c0 .8-.7 1.5-1.5 1.5h-7c-.8 0-1.5-.7-1.5-1.5v-9c0-.8.7-1.5 1.5-1.5H17Z" />
+    <path d="M7 8v8.8c0 .3.2.6.4.8.2.2.5.4.8.4H15" />
+    <path d="M3 12v8.8c0 .3.2.6.4.8.2.2.5.4.8.4H11" />
+  </Lucide>
+)
+
 /** VS Code logo — monochrome version, icon from Octicons by GitHub
  *  (https://github.com/primer/octicons/blob/main/LICENSE). */
 export const GVsCode = ({ size = 14 }: { size?: number }): ReactNode => (
   <svg width={size} height={size} viewBox="0 0 48 48" fill="currentColor" aria-hidden="true">
     <path d="M32.59 41.758a2.41 2.41 0 0 1-2.77-.474L14.448 27.188l-6.695 5.109a1.62 1.62 0 0 1-2.074-.093l-2.147-1.963a1.64 1.64 0 0 1-.002-2.416L9.336 22.5L3.53 17.175a1.64 1.64 0 0 1 .002-2.416l2.147-1.963a1.62 1.62 0 0 1 2.074-.093l6.695 5.109L29.82 3.716a2.42 2.42 0 0 1 2.77-.475l8.03 3.884A2.45 2.45 0 0 1 42 9.333V24h-9.744V13.601L20.593 22.5l11.663 8.899V24H42v11.667c0 .941-.537 1.8-1.38 2.208z" />
   </svg>
+)
+
+/** Undo（撤销，rotate-ccw）。 */
+export const GUndo = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+    <path d="M3 3v5h5" />
+  </Lucide>
+)
+
+/** Redo（重做，rotate-cw）。 */
+export const GRedo = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+    <path d="M21 3v5h-5" />
+  </Lucide>
+)
+
+/** 眼睛（可见）。 */
+export const GEye = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" />
+    <circle cx="12" cy="12" r="3" />
+  </Lucide>
+)
+
+/** 眼睛加斜杠（隐藏）。 */
+export const GEyeOff = ({ size = 14 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49" />
+    <path d="M14.084 14.158a3 3 0 0 1-4.242-4.242" />
+    <path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143" />
+    <path d="m2 2 20 20" />
+  </Lucide>
 )

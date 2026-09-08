@@ -109,9 +109,8 @@ const STYLE_TEXT = `
 [data-dshw-kanban="row"] { transition: background-color 100ms; }
 /* Review detail workspace: file tree hover/selection and diff-row focus outline. */
 [data-dshw-kanban="reviewtree"]:hover { background: #f0f0f0; }
-[data-dshw-kanban="reviewtree"][data-selected] { background: rgba(0, 122, 204, .12); }
-[data-dshw-kanban="reviewrow"]:hover { outline: 1px solid rgba(0, 122, 204, .30); outline-offset: -1px; }
-[data-dshw-kanban="reviewrow"][data-active] { outline: 1px solid rgba(0, 122, 204, .45); outline-offset: -1px; }
+[data-dshw-kanban="reviewtree"][data-selected] { background: rgba(0, 122, 204, .16); box-shadow: inset 2px 0 0 #007acc; }
+[data-dshw-kanban="modebtn"]:not([data-selected]):hover { background: #f0f0f0; }
 /* While the kanban board is open the sidebar session list shows no current
    selection (visual only — the real session stays current). */
 body[data-dshw-kanban-open] [role="treeitem"][aria-selected="true"] { background: transparent; }
@@ -188,7 +187,12 @@ export function KanbanFooterAction({ wide, t }: KanbanFooterActionProps): ReactN
     if (!open) return
     const onDocumentClick = (event: MouseEvent): void => {
       const target = event.target
-      if (target instanceof Element && target.closest('[role="treeitem"][aria-selected]') !== null) {
+      // 侧栏会话行（aria-selected 的 treeitem）在面板之外；面板内部自己的
+      // 文件树行同样带 role=treeitem + aria-selected，必须排除，否则点文件
+      // 会误关整个看板。
+      if (target instanceof Element
+        && target.closest('[data-dshw-kanban="root"]') === null
+        && target.closest('[role="treeitem"][aria-selected]') !== null) {
         setOpen(false)
       }
     }
