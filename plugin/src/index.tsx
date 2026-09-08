@@ -70,6 +70,10 @@ const STYLE_TEXT = `
 @keyframes dshw-dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 [data-dshw-kanban="pulse"] { animation: dshw-dot-pulse 1.2s ease-in-out infinite; }
 [data-dshw-kanban="row"]:hover td { background: #f0f0f0; }
+/* Row hover tints every cell, the review-entry column included; the icon
+   button's own hover then steps one shade darker (same step as repo-header
+   hover) so it stays visible on the tinted row. */
+[data-dshw-kanban="row"]:hover td[data-dshw-kanban="reviewentrycell"] .dshw-icon:hover { background: #e3e3e3; }
 [data-dshw-kanban="repogroup"]:hover { background: #e3e3e3; }
 [data-dshw-kanban="repogroup"] a:hover { color: #006ab1; }
 [data-dshw-kanban="gitrow"]:hover { background: #f0f0f0; }

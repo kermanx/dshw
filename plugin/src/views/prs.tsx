@@ -27,7 +27,7 @@ import {
   syncKnobStyle, syncSwitchRowStyle, syncSwitchStyle, tableScrollStyle,
   tableStyle, tdStyle, thStyle, titleLinkStyle, titleStyle, trStyle, draftRowStyle,
 } from '../styles.ts'
-import { warn, toneColor, C_BORDER, C_SECONDARY, C_SURFACE } from '../theme.ts'
+import { warn, toneColor, C_SECONDARY } from '../theme.ts'
 import type { ViewProps } from '../workspace.tsx'
 
 /* ── Pull requests view ── */
@@ -102,13 +102,13 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
             <thead>
               <tr>
                 <th style={thStyle}>Pull request</th>
-                {/* CI / Review / Merge / Sync: content-sized columns (max-content),
-                    first column absorbs all remaining width */}
+                {/* CI / Review / Merge / Sync / Review: content-sized columns
+                    (max-content), first column absorbs all remaining width */}
                 <th style={{ ...thStyle, width: 'max-content' }}>CI</th>
                 <th style={{ ...thStyle, width: 'max-content' }}>Review</th>
                 <th style={{ ...thStyle, width: 'max-content' }}>Merge</th>
                 <th style={{ ...thStyle, width: 'max-content' }}>Sync</th>
-                <th style={reviewEntryThStyle}>Review</th>
+                <th style={{ ...thStyle, width: 'max-content' }}>Review</th>
               </tr>
             </thead>
             <tbody>
@@ -267,7 +267,7 @@ export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, 
         </div>
       </td>
 
-      <td style={reviewEntryTdStyle}>
+      <td data-dshw-kanban="reviewentrycell" style={tdStyle}>
         <button
           type="button"
           data-dshw-kanban="reviewentry"
@@ -299,7 +299,7 @@ function toReviewRequest(pr: PrDashboardRecord): ReviewRequestRecord {
   }
 }
 
-/** Right-side "open Review" icon button on a PR row. */
+/** "Open Review" icon button on a PR row (ordinary cell, like Sync). */
 const reviewEntryButtonStyle: CSSProperties = {
   width: 28,
   height: 28,
@@ -309,31 +309,6 @@ const reviewEntryButtonStyle: CSSProperties = {
   borderRadius: 6,
   color: C_SECONDARY,
 }
-
-/* The PR table is tableLayout:auto, so the rightmost Review column can overflow
-   horizontally. Pin it to the right edge so it is never squeezed out of view;
-   the white background hides cells scrolled beneath it. */
-const rightStickyBase: CSSProperties = {
-  position: 'sticky',
-  right: 0,
-  background: C_SURFACE,
-  boxShadow: '-1px 0 0 0 ' + C_BORDER,
-}
-
-const reviewEntryThStyle: CSSProperties = {
-  ...thStyle,
-  width: 44,
-  textAlign: 'center',
-  ...rightStickyBase,
-  zIndex: 3,
-}
-
-const reviewEntryTdStyle: CSSProperties = {
-  ...tdStyle,
-  textAlign: 'center',
-  ...rightStickyBase,
-}
-
 
 /* ── column cells ── */
 
