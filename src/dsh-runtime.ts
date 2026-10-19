@@ -76,7 +76,7 @@ async function prepareHarnessRuntime(): Promise<HarnessRuntimeRecord> {
 async function ensureRuntimeBuilt(runtimeRoot: string): Promise<void> {
   const readyPath = join(runtimeRoot, '.dshw-runtime-ready')
   const head = (await runOrThrow('git', ['rev-parse', 'HEAD'], { cwd: runtimeRoot })).stdout.trim()
-  const marker = `runtime-v2 ${head}`
+  const marker = `runtime-v3 ${head}`
   try {
     if ((await readFile(readyPath, 'utf8')).trim() === marker
       && (await missingRuntimeArtifacts(runtimeRoot)).length === 0) return
@@ -84,6 +84,8 @@ async function ensureRuntimeBuilt(runtimeRoot: string): Promise<void> {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
   await runOrThrow('pnpm', ['install', '--frozen-lockfile'], { cwd: runtimeRoot, timeoutMs: 10 * 60 * 1000 })
+  // Session persistence uses the host's native flock addon in current Harness.
+  await runOrThrow('pnpm', ['run', 'build:native-system'], { cwd: runtimeRoot, timeoutMs: 5 * 60 * 1000 })
   // The headless composition still contains a small number of dual-face
   // packages (for example the TypeRT registry). Build both library faces so
   // every package referenced by the profile has its declared runtime entry.
@@ -96,6 +98,7 @@ async function missingRuntimeArtifacts(runtimeRoot: string): Promise<string[]> {
     join(runtimeRoot, 'apps', 'cli', 'lib', 'bin.js'),
     join(runtimeRoot, 'packages', 'typert', 'registry', 'lib', 'index.js'),
     join(runtimeRoot, 'packages', 'api', 'gateway', 'lib', 'index.js'),
+    ...nativeSystemArtifacts(runtimeRoot),
     ...await missingTypertRuntimeArtifacts(runtimeRoot),
   ]
   const missing: string[] = []
@@ -108,6 +111,14 @@ async function missingRuntimeArtifacts(runtimeRoot: string): Promise<string[]> {
     }
   }))
   return missing.sort()
+}
+
+function nativeSystemArtifacts(runtimeRoot: string): string[] {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') return []
+  const hostRoot = join(runtimeRoot, 'native', 'system', 'packages', `${process.platform}-${process.arch}`, 'bin')
+  if (process.platform === 'darwin') return [join(hostRoot, 'system.node')]
+  const report = process.report.getReport() as { header: { glibcVersionRuntime?: string } }
+  return [join(hostRoot, report.header.glibcVersionRuntime ? 'glibc' : 'musl', 'system.node')]
 }
 
 async function validateRuntime(record: HarnessRuntimeRecord, installationId: string): Promise<void> {

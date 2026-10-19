@@ -5,6 +5,7 @@ import { createServer, type Socket } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { formatProgressEvent } from './dsh-progress-plugin.ts'
+import { updateSessionOutcome, type SessionOutcome } from './dsh-session-outcome.ts'
 import type { DshRunRecord } from './types.ts'
 import { isReviewConversation } from './review-conversation.ts'
 import { now, readJson, writeJsonAtomic } from './util.ts'
@@ -45,7 +46,7 @@ interface RuntimeModules {
 
 interface AgentLike {
   status: 'idle' | 'running'
-  session: { id: unknown; seq: number; events: SessionEventLike[] }
+  session: { id: unknown }
   steer(message: unknown): void
   cancel(cause: { kind: 'user' }): void
   whenIdle(): Promise<void>
@@ -130,7 +131,7 @@ async function startSessionWorker(ctx: ContextLike, config: Config): Promise<() 
   })
   const agent = handle.agent
   await agent.whenIdle()
-  const firstSeq = agent.session.seq
+  let outcome: SessionOutcome = { text: '' }
 
   const notify = (method: string, params: object): void => {
     for (const transport of transports) {
@@ -151,7 +152,6 @@ async function startSessionWorker(ctx: ContextLike, config: Config): Promise<() 
       await withTimeout(ctx.sessions.flush(agent.session), 5_000, '保存 Harness session 超时').catch(error => {
         progress.line(`[stderr] ${error instanceof Error ? error.message : String(error)}`)
       })
-      const outcome = summarize(agent.session.events, firstSeq)
       const parsed = parseOutcome(outcome.text)
       const status: DshRunRecord['status'] = forced
         ? 'cancelled'
@@ -234,6 +234,7 @@ async function startSessionWorker(ctx: ContextLike, config: Config): Promise<() 
 
   const removeEventListener = ctx.on('session/event', (session, event) => {
     if (session !== agent.session) return
+    outcome = updateSessionOutcome(outcome, event)
     eventStream.write(`${JSON.stringify(event)}\n`)
     notify('session.event', { event })
     const text = formatProgressEvent(event)
@@ -345,42 +346,10 @@ async function resolveRuntimePackage(runtimeRoot: string, name: string): Promise
   throw new Error(`pinned Harness runtime 缺少 package ${name}`)
 }
 
-function summarize(events: SessionEventLike[], firstSeq: number): { text: string; reason?: string; error?: string } {
-  let text = ''
-  let reason: string | undefined
-  let error: string | undefined
-  for (const event of events) {
-    if (event.seq < firstSeq) continue
-    if (event.type === 'assistant/message') {
-      const next = extractText(event.data.message).join('').trim()
-      if (next !== '') text = next
-    }
-    if (event.type === 'turn/end') {
-      const value = asRecord(event.data.reason)
-      reason = typeof value?.kind === 'string' ? value.kind : undefined
-      const detail = asRecord(value?.error)
-      if (typeof detail?.message === 'string') error = detail.message
-    }
-  }
-  return { text, reason, error }
-}
-
 function parseOutcome(output: string): { blocked: false } | { blocked: true; reason: string } {
   if (!/^DSHW_RESULT:\s*blocked\s*$/imu.test(output)) return { blocked: false }
   const reason = output.match(/^DSHW_REASON:\s*(.+?)\s*$/imu)?.[1]?.trim()
   return { blocked: true, reason: reason || 'dsh 未提供无法完成的具体原因' }
-}
-
-function extractText(value: unknown): string[] {
-  if (Array.isArray(value)) return value.flatMap(extractText)
-  const item = asRecord(value)
-  if (item === undefined) return []
-  if (item.type === 'text' && typeof item.text === 'string') return [item.text]
-  return extractText(item.content)
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 }
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {

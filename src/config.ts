@@ -11,7 +11,7 @@ export const HARNESS_REPO_SLUG = 'deepseek-harness/deepseek-harness'
 /** 每个被监控 repo 的托管 clone 根目录（<slug> 展开为 managed/<owner>/<name>）。 */
 export const MANAGED_ROOT = resolve(process.env.DSHW_MANAGED_ROOT ?? join(DATA_ROOT, 'managed'))
 /** dshw's tested Harness control-plane ABI. Upgrading it is an explicit source change. */
-export const HARNESS_RUNTIME_COMMIT = process.env.DSHW_HARNESS_RUNTIME_COMMIT ?? '694dd8d08725f10d31db56486f7f7477a7bd8b6a'
+export const HARNESS_RUNTIME_COMMIT = process.env.DSHW_HARNESS_RUNTIME_COMMIT ?? 'fd59afe1a2a6f38245ba53e3f9d9a51e409d80a4'
 export const HARNESS_RUNTIME_ROOT = resolve(
   process.env.DSHW_HARNESS_RUNTIME_ROOT ?? join(DATA_ROOT, 'runtime', 'deepseek-harness', HARNESS_RUNTIME_COMMIT),
 )
