@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DSHW 工作看板",
+    "description": "在 Harness 中查看 PR、CI、Review 与工作任务；需单独运行本机 dshw 服务。"
+  }
+}

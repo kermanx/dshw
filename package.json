@@ -1,7 +1,6 @@
 {
   "name": "dshw",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
   "type": "module",
   "bin": {
     "dshw": "src/cli.ts"
@@ -12,7 +11,8 @@
       "types": "./plugin/lib/client.d.ts",
       "default": "./plugin/lib/client.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "dsh": {
     "bundle": {
@@ -46,7 +46,8 @@
   },
   "engines": {
     "node": ">=24.0.0",
-    "pnpm": ">=11.0.0"
+    "pnpm": ">=11.0.0",
+    "dsh": "0.2.1-rc.2"
   },
   "packageManager": "pnpm@11.17.0",
   "dependencies": {
@@ -55,5 +56,12 @@
     "react-dom": "18.3.1",
     "shiki": "^3.23.0",
     "vue": "^3.5.41"
-  }
+  },
+  "author": "kermanx",
+  "homepage": "https://github.com/kermanx/dshw#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kermanx/dshw.git"
+  },
+  "description": "PR, CI, review, and worker dashboard for Harness. Requires a separately running local dshw service."
 }

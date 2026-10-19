@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DSHW",
+    "description": "PR, CI, review, and worker dashboard for Harness. Requires a separately running local dshw service."
+  }
+}
