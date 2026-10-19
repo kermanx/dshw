@@ -1,3 +1,11 @@
+/*
+ * UI reference skill: vscode-ui
+ * Reference revision: 4378eb0b965339a354d357fcb5ae33d2e10bf20e
+ * Reference components: Pane, List, ActionBar.
+ * Adaptation: Compact PR summaries with a native disclosure for existing
+ * workflow actions; the wide table and its business callbacks are retained.
+ * Copyright (c) Microsoft Corporation. MIT; see ../../LICENSE.vscode-ui.txt.
+ */
 /** Pull requests view (PullRequestsTable.vue port): table rows, CI / Review /
  *  Merge / Sync cells, hover popovers and the local-git maintenance chip. */
 import { useState } from 'react'
@@ -12,7 +20,7 @@ import {
   type GitAction, type PrAction,
 } from '../data.ts'
 import { orderStackedPrs } from '../stack.ts'
-import { GAlert, GReview, StatusDot, StatusIcon } from '../icons.tsx'
+import { GAlert, GCaretDown, GReview, StatusDot, StatusIcon } from '../icons.tsx'
 import {
   actionLinkStyle, assignedBadgeStyle, busyRowStyle, cellColumnStyle, cellMainStyle, cellNoteRowStyle,
   cellNoteStyle, cellSubStyle, countStyle, draftBadgeStyle, emptyStateLineStyle,
@@ -98,7 +106,7 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
           </div>
         )}
         {snapshot !== undefined && enabledRepos(snapshot).length > 0 && (
-          <table style={{ ...tableStyle, tableLayout: 'auto' }}>
+          <table data-dshw-table="prs" style={{ ...tableStyle, tableLayout: 'auto' }}>
             <thead>
               <tr>
                 <th style={thStyle}>Pull request</th>
@@ -184,102 +192,111 @@ export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, 
   onOpenReviewDetail: (review: ReviewRequestRecord) => void
 }): ReactNode {
   const customJob = workingAgent?.type === 'custom' ? workingAgent : busy?.type === 'custom' ? busy : undefined
-  // One <tr> per row — no <tbody> wrapper per row: nested tbodys are invalid
-  // markup and the engine drops the row from the fixed column model, which
-  // drifts the header/body columns apart. Draft dimming rides the row itself.
-  return (
-    <tr data-dshw-kanban="row" style={pr.isDraft ? draftRowStyle : trStyle}>
-      <td style={{
-        ...tdStyle,
-        ...(stack === undefined ? {} : { paddingLeft: 12 + (stack.depth > 0 ? STACK_CHILD_INDENT : 0) }),
-      }}>
-        <div style={cellMainStyle}>
-          <a
-            style={titleLinkStyle}
-            data-dshw-kanban="titlelink"
-            href={pr.url}
-            title={workingAgent !== undefined || busy !== undefined ? '该 PR 已有任务执行中' : `${pr.title} · 右键启动自定义任务`}
-            target="_blank"
-            rel="noreferrer"
-            onContextMenu={(event) => {
-              event.preventDefault()
-              if (workingAgent === undefined && busy === undefined) onChooseWorker(pr.cloneName, 'custom')
-            }}
+  const titleContent = (
+    <>
+      <div style={cellMainStyle}>
+        <a
+          style={titleLinkStyle}
+          data-dshw-kanban="titlelink"
+          href={pr.url}
+          title={workingAgent !== undefined || busy !== undefined ? '该 PR 已有任务执行中' : `${pr.title} · 右键启动自定义任务`}
+          target="_blank"
+          rel="noreferrer"
+          onContextMenu={(event) => {
+            event.preventDefault()
+            if (workingAgent === undefined && busy === undefined) onChooseWorker(pr.cloneName, 'custom')
+          }}
+        >
+          <span style={numberStyle}>#{pr.number}</span>
+          <span style={{ ...titleStyle, ...(pr.isDraft ? { color: C_SECONDARY } : {}) }}>{pr.title}</span>
+        </a>
+        {pr.isDraft && <span style={draftBadgeStyle}>草稿</span>}
+      </div>
+      <div style={cellSubStyle}>
+        {hasLocalGitStatus(pr) && pr.localGitStatus !== undefined && (
+          <LocalGitChip status={pr.localGitStatus} pending={pending.has(`git-maintenance:${pr.cloneName}`)} onAction={action => onGitAction(pr.cloneName, action)} />
+        )}
+        {pr.assignedToMe === true && pr.author !== undefined && (
+          <span style={assignedBadgeStyle} title={`assign 给你的 PR，作者 @${pr.author}`}>by @{pr.author}</span>
+        )}
+        <span style={subTextStyle} title={pr.branch}>{pr.branch} → {pr.baseRefName}</span>
+        {customJob !== undefined && (
+          <button
+            type="button"
+            className="dshw-link"
+            style={{ ...busyRowStyle, flex: 'none', marginLeft: 6, fontFamily: 'var(--dsw-font-family)' }}
+            onClick={() => { onOpenJob(customJob) }}
           >
-            <span style={numberStyle}>#{pr.number}</span>
-            <span style={{ ...titleStyle, ...(pr.isDraft ? { color: C_SECONDARY } : {}) }}>{pr.title}</span>
-          </a>
-          {pr.isDraft && <span style={draftBadgeStyle}>草稿</span>}
-        </div>
-        <div style={cellSubStyle}>
-          {hasLocalGitStatus(pr) && pr.localGitStatus !== undefined && (
-            <LocalGitChip status={pr.localGitStatus} pending={pending.has(`git-maintenance:${pr.cloneName}`)} onAction={action => onGitAction(pr.cloneName, action)} />
-          )}
-          {pr.assignedToMe === true && pr.author !== undefined && (
-            <span style={assignedBadgeStyle} title={`assign 给你的 PR，作者 @${pr.author}`}>by @{pr.author}</span>
-          )}
-          <span style={subTextStyle} title={pr.branch}>{pr.branch} → {pr.baseRefName}</span>
-          {customJob !== undefined && (
-            <button
-              type="button"
-              className="dshw-link"
-              style={{ ...busyRowStyle, flex: 'none', marginLeft: 6, fontFamily: 'var(--dsw-font-family)' }}
-              onClick={() => { onOpenJob(customJob) }}
-            >
-              <StatusDot tone="accent" pulse />工作中 · 查看
-            </button>
-          )}
-        </div>
-      </td>
-
-      <td style={tdStyle}>
-        <CiCell pr={pr} busy={busy} workingAgent={workingAgent} pending={pending} onAction={onAction} onChooseWorker={onChooseWorker} onOpenJob={onOpenJob} />
-      </td>
-
-      <td style={tdStyle}>
-        <ReviewCell pr={pr} busy={busy} workingAgent={workingAgent} pending={pending} onAction={onAction} onChooseWorker={onChooseWorker} onOpenJob={onOpenJob} />
-      </td>
-
-      <td style={tdStyle}>
-        <MergeCell pr={pr} busy={busy} workingAgent={workingAgent} pending={pending} jobs={jobs} onAction={onAction} onChooseWorker={onChooseWorker} onRefresh={onRefresh} onOpenJob={onOpenJob} />
-      </td>
-
-      <td style={tdStyle}>
-        <div style={syncCellStyle}>
-          <span style={syncSwitchRowStyle}>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={pr.syncEnabled === true}
-              aria-label={`PR #${pr.number} 自动 sync`}
-              disabled={pending.has(`sync-toggle:${pr.cloneName}`)}
-              onClick={() => { onToggleSync(pr.cloneName, pr.syncEnabled !== true) }}
-              style={syncSwitchStyle(pr.syncEnabled === true)}
-            >
-              <span style={syncKnobStyle(pr.syncEnabled === true)} />
-            </button>
-          </span>
-          {pr.agentPausedReason !== undefined && (
-            <button type="button" className="dshw-link" style={pausedButtonStyle} title={pr.agentPausedReason} onClick={onRefresh}>
-              自动任务已暂停 · 查看原因
-            </button>
-          )}
-        </div>
-      </td>
-
-      <td data-dshw-kanban="reviewentrycell" style={tdStyle}>
+            <StatusDot tone="accent" pulse />工作中 · 查看
+          </button>
+        )}
+      </div>
+    </>
+  )
+  const ci = <CiCell pr={pr} busy={busy} workingAgent={workingAgent} pending={pending} onAction={onAction} onChooseWorker={onChooseWorker} onOpenJob={onOpenJob} />
+  const review = <ReviewCell pr={pr} busy={busy} workingAgent={workingAgent} pending={pending} onAction={onAction} onChooseWorker={onChooseWorker} onOpenJob={onOpenJob} />
+  const merge = <MergeCell pr={pr} busy={busy} workingAgent={workingAgent} pending={pending} jobs={jobs} onAction={onAction} onChooseWorker={onChooseWorker} onRefresh={onRefresh} onOpenJob={onOpenJob} />
+  const sync = (
+    <div style={syncCellStyle}>
+      <span style={syncSwitchRowStyle}>
         <button
           type="button"
-          data-dshw-kanban="reviewentry"
-          className="dshw-icon"
-          style={reviewEntryButtonStyle}
-          aria-label={`打开 ${pr.title} 的 Review`}
-          title={`${pr.title} · 打开 Review`}
-          onClick={() => { onOpenReviewDetail(toReviewRequest(pr)) }}
+          role="switch"
+          aria-checked={pr.syncEnabled === true}
+          aria-label={`PR #${pr.number} 自动 sync`}
+          disabled={pending.has(`sync-toggle:${pr.cloneName}`)}
+          onClick={() => { onToggleSync(pr.cloneName, pr.syncEnabled !== true) }}
+          style={syncSwitchStyle(pr.syncEnabled === true)}
         >
-          <GReview size={15} />
+          <span style={syncKnobStyle(pr.syncEnabled === true)} />
         </button>
+      </span>
+      {pr.agentPausedReason !== undefined && (
+        <button type="button" className="dshw-link" style={pausedButtonStyle} title={pr.agentPausedReason} onClick={onRefresh}>
+          自动任务已暂停 · 查看原因
+        </button>
+      )}
+    </div>
+  )
+  const diff = (
+    <button
+      type="button"
+      data-dshw-kanban="reviewentry"
+      className="dshw-icon"
+      style={reviewEntryButtonStyle}
+      aria-label={`打开 ${pr.title} 的 Review`}
+      title={`${pr.title} · 打开 Review`}
+      onClick={() => { onOpenReviewDetail(toReviewRequest(pr)) }}
+    >
+      <GReview size={15} />
+    </button>
+  )
+  return (
+    <tr data-dshw-kanban="row" style={pr.isDraft ? draftRowStyle : trStyle}>
+      <td className="dshw-pr-compact" colSpan={6}>
+        <div className="dshw-pr-title">{titleContent}</div>
+        <details className="dshw-pr-details">
+          <summary aria-label={`PR #${pr.number} 状态与操作`}>
+            <span title={`CI：${ciLabel(pr.ciStatus)}`}><StatusIcon tone={ciTone(pr.ciStatus)} size={11} />{ciLabel(pr.ciStatus)}</span>
+            <span title={`Review：${reviewLabel(pr.reviewDecision)}`}><StatusIcon tone={reviewTone(pr.reviewDecision)} size={11} />{reviewLabel(pr.reviewDecision)}</span>
+            <span title={`Merge：${mergeLabel(pr.mergeable)}`}><StatusIcon tone={mergeTone(pr.mergeable)} size={11} />{mergeLabel(pr.mergeable)}</span>
+            <span className="dshw-disclosure"><GCaretDown size={12} /></span>
+          </summary>
+          <div className="dshw-pr-actions">
+            <div><span>CI</span>{ci}</div>
+            <div><span>Review</span>{review}</div>
+            <div><span>Merge</span>{merge}</div>
+            <div><span>Sync</span>{sync}</div>
+          </div>
+        </details>
+        <span className="dshw-pr-diff">{diff}</span>
       </td>
+      <td style={{ ...tdStyle, paddingLeft: 12 + (stack !== undefined && stack.depth > 0 ? STACK_CHILD_INDENT : 0) }}>{titleContent}</td>
+      <td style={tdStyle}>{ci}</td>
+      <td style={tdStyle}>{review}</td>
+      <td style={tdStyle}>{merge}</td>
+      <td style={tdStyle}>{sync}</td>
+      <td data-dshw-kanban="reviewentrycell" style={tdStyle}>{diff}</td>
     </tr>
   )
 }

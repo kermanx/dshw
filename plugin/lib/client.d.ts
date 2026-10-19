@@ -7,5 +7,5 @@
 /** Services required before the entry activates. */
 export declare const inject: string[]
 
-/** Register the kanban footer action. */
+/** Register the standard sidebar entry and its main panel. */
 export declare function apply(ctx: unknown): void

@@ -65,7 +65,7 @@ export function ReviewsView({ snapshot, connection, pending, openReviewWorkerPic
           /* Fixed column model; the Pull request column absorbs the rest, so
              the table fits any panel width and the rightmost Review entry
              column is never pushed out of view. */
-          <table style={{ ...tableStyle, minWidth: 0 }}>
+          <table data-dshw-table="reviews" style={{ ...tableStyle, minWidth: 0 }}>
             <thead>
               <tr>
                 <th style={thStyle}>Pull request</th>

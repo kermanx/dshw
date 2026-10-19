@@ -145,7 +145,7 @@ export function ReposSection({ baseUrl, repos, showToast }: {
 
   return (
     <section style={settingsSectionStyle}>
-      <div style={settingsSectionHeaderStyle}>
+      <div className="dshw-section-header" style={settingsSectionHeaderStyle}>
         <span style={settingsSectionTitleStyle}>Repos</span>
         <span style={settingsSectionSubStyle}>勾选要展示的仓库 · 拖动排序（顺序即各面板展示顺序）</span>
       </div>
@@ -161,7 +161,7 @@ export function ReposSection({ baseUrl, repos, showToast }: {
             {displayed.map(repoSlug => row(repoSlug, true, true))}
             {unmonitoredTotal > 0 && (
               <>
-                <div style={reposDividerStyle}>
+                <div className="dshw-repos-divider" style={reposDividerStyle}>
                   <span>可选择的仓库</span>
                   <input
                     type="text"

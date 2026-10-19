@@ -98,7 +98,7 @@ export function LogsView({ baseUrl, snapshot, connection }: ViewProps): ReactNod
       )}
       {records.length > 0 && (
         <div ref={scroller} style={jobsScrollStyle} onScroll={onScroll}>
-          <table style={{ ...tableStyle, minWidth: 760 }}>
+          <table data-dshw-table="logs" style={{ ...tableStyle, minWidth: 760 }}>
             <thead>
               <tr>
                 <th style={{ ...thStyle, width: 110 }}>级别</th>

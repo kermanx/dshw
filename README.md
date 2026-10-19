@@ -20,6 +20,8 @@
 
 支持同时监控多个仓库；新增仓库后，它的 PR 会被自动发现并展示。
 
+看板会跟随所在面板的宽度排版：窄侧栏将视图选择和工具按钮收在一行，PR 以标题、分支和状态摘要呈现，点击状态行展开具体操作；宽面板保留多列表格。“展开看板”可临时放大整个工作区；在窄侧栏打开 Review diff 时也会自动展开，返回后恢复原列表与滚动位置。样式尺寸参考 VS Code Classic 的 SidebarTitle、ActionBar、SelectBox 和 Pane。
+
 ## 安装
 
 ### 前置条件
@@ -48,7 +50,7 @@ pnpm dshw start          # 初始化并后台启动服务
 dsh plugin --profile web add "$PWD"
 ```
 
-重启你的 dsh Web 服务（停掉后重新运行 `dsh web`），刷新页面即可在左侧栏看到看板入口。插件列表在启动时组装，新增插件必须重启 dsh web 才会生效。
+重启你的 dsh Web 服务（停掉后重新运行 `dsh web`），刷新页面即可在左侧栏的标准面板列表看到看板入口。需要支持 `sidebar.panellist` 与 `main` 面板接口的新版 Harness。插件列表在启动时组装，新增插件必须重启 dsh web 才会生效。
 
 ## 使用要点
 

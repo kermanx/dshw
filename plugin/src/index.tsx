@@ -1,30 +1,37 @@
+/*
+ * UI reference skill: vscode-ui
+ * Reference revision: 4378eb0b965339a354d357fcb5ae33d2e10bf20e
+ * Reference components: SidebarTitle, ActionBar.
+ * Adaptation: Compact dashboard actions and an optional expanded workspace.
+ * Copyright (c) Microsoft Corporation. MIT; see ../LICENSE.vscode-ui.txt.
+ */
 /**
  * dshw kanban — browser half.
  *
- * Registers the kanban dashboard as a `sidebar.footer.action` entry (the
- * sidebar foot, above Settings) and opens it in a panel spanning everything
- * right of the sidebar. The Pull requests view renders natively (no iframe),
- * talking to the local dshw daemon API (CORS-enabled) over fetch + SSE; the
- * remaining dshw views stay reachable via the panel's open-in-browser action.
+ * Registers a standard `sidebar.panellist` entry and its `main` panel. The
+ * shell owns navigation, selection and geometry; the dashboard talks to the
+ * local dshw daemon API (CORS-enabled) over fetch + SSE.
  *
  * The daemon origin defaults to the dshw loopback port (7849) and can be
  * overridden per browser via localStorage (set in the panel's unreachable
  * state). Reachability is probed with a no-cors fetch, which rejects on
  * network failure without needing CORS headers from the daemon.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { createPortal } from 'react-dom'
 import {
-  IconBranchOutline16, IconCloseOutline16, IconRefreshOutline16, Tooltip,
+  IconBranchOutlineRegular, IconCloseOutlineRegular, IconRefreshOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { GVsCode } from './icons.tsx'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { en, zh } from './locales.ts'
 import { KanbanWorkspace } from './workspace.tsx'
+import { RESPONSIVE_STYLES } from './responsive.ts'
 
 /** Locale namespace owned by this plugin. */
 const NS = 'kanban'
+/** Shared identity of the sidebar entry and its main panel. */
+const PANEL_ID = 'dshw-kanban'
 
 /** dshw daemon default origin (src/config.ts PORT default 7849, loopback). */
 const DEFAULT_BASE_URL = 'http://127.0.0.1:7849'
@@ -56,7 +63,6 @@ const STYLE_TEXT = `
 [data-dshw-kanban="trigger"],
 [data-dshw-kanban="icon"] { background: transparent; }
 [data-dshw-kanban="trigger"]:hover,
-[data-dshw-kanban="trigger"][data-selected],
 [data-dshw-kanban="icon"]:hover { background: var(--dsw-alias-interactive-bg-hover); }
 [data-dshw-kanban="input"]:focus { border-color: var(--dsw-alias-state-business-primary); }
 /* CommitGraph internals (Git view): keep only the graph surface, sized
@@ -111,34 +117,44 @@ const STYLE_TEXT = `
 [data-dshw-kanban="reviewtree"]:hover { background: #f0f0f0; }
 [data-dshw-kanban="reviewtree"][data-selected] { background: rgba(0, 122, 204, .16); box-shadow: inset 2px 0 0 #007acc; }
 [data-dshw-kanban="modebtn"]:not([data-selected]):hover { background: #f0f0f0; }
-/* While the kanban board is open the sidebar session list shows no current
-   selection (visual only — the real session stays current). */
-body[data-dshw-kanban-open] [role="treeitem"][aria-selected="true"] { background: transparent; }
+${RESPONSIVE_STYLES}
 `
 
 /** The framework-injected locale seat type (entry `locale` option). */
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
-/** Composed props of the footer action entry (owner share + locale seat). */
-export interface KanbanFooterActionProps {
-  /** Whether the sidebar renders wide content (false = 56px rail). */
-  wide: boolean
+/** Main-panel props supplied by the locale seat and registration inject. */
+interface KanbanPanelProps {
   /** Standard locale seat bound by the entry's `locale` option. */
   t: Translate
+  /** Return to the current conversation through the layout service. */
+  onClose: () => void
 }
 
 /** Services required before the entry activates. */
-export const inject = ['slots', 'locale']
+export const inject = ['slots', 'locale', 'layout']
 
-/** Register the footer action once its slot declaration is on the ledger. */
+/** Register the dashboard and let the sidebar render its standard button. */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dshw-kanban: dictionaries')
-  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-    name: 'sidebar.footer.action',
-    id: 'dshw-kanban',
-    order: 0,
+  const t = ctx.locale.bind(NS)
+  ctx.slots.inject('main', () => ctx.slots.register({
+    name: 'main',
+    key: PANEL_ID,
     locale: NS,
-  }, KanbanFooterAction))
+    inject: () => ({ onClose: () => { ctx.layout.selectPanel(null) } }),
+  }, KanbanPanel))
+  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+    name: 'sidebar.panellist',
+    id: PANEL_ID,
+    order: 10,
+    label: () => t('action.label'),
+  }, KanbanPanelIcon))
+}
+
+/** The shell supplies icon size and owns the surrounding button. */
+function KanbanPanelIcon({ size }: { size: number }): ReactNode {
+  return <IconBranchOutlineRegular size={size} />
 }
 
 /** Read the daemon origin override, falling back to the default. */
@@ -162,92 +178,49 @@ function useKanbanStyles(): void {
   }, [])
 }
 
-/** The sidebar-foot trigger (wide row / rail icon) plus the fullscreen panel.
- *  Geometry and chrome mirror the settings trigger row (ui-settings-general
- *  SettingsRoot.module.css .trigger) so both footer entries look identical. */
-export function KanbanFooterAction({ wide, t }: KanbanFooterActionProps): ReactNode {
-  const [open, setOpen] = useState(false)
-  useKanbanStyles()
-
-  // Closing the panel when a session is opened: the workspace list rows are
-  // `role=treeitem` with aria-selected (session rows and search results; the
-  // workspace group headers lack aria-selected). A document-level capture
-  // listener fires for clicks anywhere, including the sidebar, and closes the
-  // board — no core changes needed.
-  // While the board is open the current session's selected highlight in the
-  // sidebar is suppressed (visual only): a body marker + the scoped rule
-  // below. Removing the marker on close restores the normal selected state.
-  useEffect(() => {
-    if (open) document.body.setAttribute('data-dshw-kanban-open', '')
-    else document.body.removeAttribute('data-dshw-kanban-open')
-    return () => { document.body.removeAttribute('data-dshw-kanban-open') }
-  }, [open])
-
-  useEffect(() => {
-    if (!open) return
-    const onDocumentClick = (event: MouseEvent): void => {
-      const target = event.target
-      // 侧栏会话行（aria-selected 的 treeitem）在面板之外；面板内部自己的
-      // 文件树行同样带 role=treeitem + aria-selected，必须排除，否则点文件
-      // 会误关整个看板。
-      if (target instanceof Element
-        && target.closest('[data-dshw-kanban="root"]') === null
-        && target.closest('[role="treeitem"][aria-selected]') !== null) {
-        setOpen(false)
-      }
-    }
-    document.addEventListener('click', onDocumentClick, true)
-    return () => { document.removeEventListener('click', onDocumentClick, true) }
-  }, [open])
-
-  return (
-    <>
-      <Tooltip label={t('action.aria')} side="top" delayMs={500}>
-        <button
-          type="button"
-          data-dshw-kanban="trigger"
-          data-selected={open || undefined}
-          aria-label={t('action.aria')}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          onClick={() => { setOpen(value => !value) }}
-          style={triggerStyle(wide)}
-        >
-          <IconBranchOutline16 size={wide ? 16 : 18} />
-          {wide && <span style={labelStyle}>{t('action.label')}</span>}
-        </button>
-      </Tooltip>
-      <KanbanPanel t={t} onClose={() => { setOpen(false) }} open={open} />
-      {/* The panel stays mounted while closed (display:none) so the data channel
-          and view state survive; reopening shows the last data instantly. */}
-    </>
-  )
-}
-
 /** Panel state: probing the daemon, embedded dashboard, or an unreachable form. */
 type PanelStatus = 'checking' | 'ready' | 'down'
 
-/**
- * Right edge of the left sidebar column: the AppFrame grid's first track
- * (the `sidebarCol` element, identified through the frame's shell-overlay
- * seat). The kanban panel spans everything to the right of it, leaving the
- * sidebar visible and interactive.
- */
-function measureSidebarRight(): number {
-  const frame = document.querySelector('[data-shell-overlay]')?.parentElement
-  const column = frame?.firstElementChild
-  return column instanceof HTMLElement ? column.getBoundingClientRect().right : 0
-}
-
 /** Panel: header chrome plus the native PR kanban (no iframe). */
-function KanbanPanel({ t, onClose, open }: { t: Translate; onClose: () => void; open: boolean }): ReactNode {
+function KanbanPanel({ t, onClose }: KanbanPanelProps): ReactNode {
+  useKanbanStyles()
   const [baseUrl, setBaseUrl] = useState(readBaseUrl)
   const [draft, setDraft] = useState(baseUrl)
   const [status, setStatus] = useState<PanelStatus>('checking')
   const [refreshKey, setRefreshKey] = useState(0)
   const [codeNotice, setCodeNotice] = useState<string>()
   const codeNoticeTimer = useRef<number | undefined>(undefined)
-  const [left, setLeft] = useState(measureSidebarRight)
+  const panelRef = useRef<HTMLElement>(null)
+  const expandButton = useRef<HTMLButtonElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const scrollPositions = useRef<Array<{ node: HTMLElement; top: number; left: number }>>([])
+  const expand = (): void => {
+    scrollPositions.current = Array.from(panelRef.current?.querySelectorAll<HTMLElement>('*') ?? [])
+      .filter(node => node.scrollTop !== 0 || node.scrollLeft !== 0)
+      .map(node => ({ node, top: node.scrollTop, left: node.scrollLeft }))
+    setExpanded(true)
+  }
+  const expandForDetail = (): boolean => {
+    if (expanded || (panelRef.current?.clientWidth ?? 0) > 600) return false
+    expand()
+    return true
+  }
+  const collapse = (): void => {
+    setExpanded(false)
+    expandButton.current?.focus()
+  }
+  useLayoutEffect(() => {
+    if (expanded) return
+    // Wide tables can become shorter than their viewport and clamp scrollTop
+    // to zero. Restore only surviving lists, after a diff has closed as well.
+    const frame = requestAnimationFrame(() => {
+      for (const { node, top, left } of scrollPositions.current) {
+        if (node.isConnected) node.scrollTo({ top, left })
+      }
+      scrollPositions.current = []
+    })
+    return () => { cancelAnimationFrame(frame) }
+  }, [expanded])
 
   const openCodeWorkspace = (): void => {
     fetch(`${baseUrl}/api/open-code`, { method: 'POST' })
@@ -263,32 +236,6 @@ function KanbanPanel({ t, onClose, open }: { t: Translate; onClose: () => void; 
       })
   }
   useEffect(() => () => { if (codeNoticeTimer.current !== undefined) window.clearTimeout(codeNoticeTimer.current) }, [])
-
-  // Follow the sidebar's right edge while open (drag-resize, collapse, narrow
-  // auto-collapse) so the panel always fills exactly the space beside it.
-  useEffect(() => {
-    const frame = document.querySelector('[data-shell-overlay]')?.parentElement
-    const column = frame?.firstElementChild
-    if (!(column instanceof HTMLElement)) return
-    const update = (): void => { setLeft(measureSidebarRight()) }
-    const observer = new ResizeObserver(update)
-    observer.observe(column)
-    window.addEventListener('resize', update)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', update)
-    }
-  }, [])
-
-  // Close on Escape while the panel is open.
-  useEffect(() => {
-    if (!open) return
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => { document.removeEventListener('keydown', onKeyDown) }
-  }, [onClose, open])
 
   // Probe the daemon whenever the target changes: reachable → native kanban,
   // unreachable → the URL editor.
@@ -322,131 +269,102 @@ function KanbanPanel({ t, onClose, open }: { t: Translate; onClose: () => void; 
     setBaseUrl(next)
   }
 
-  return createPortal(
-    <div style={{ ...overlayStyle(left), ...(open ? {} : { display: 'none' }) }} role="presentation" aria-hidden={!open}>
-      <section style={panelStyle} role="dialog" aria-modal="true" aria-label={t('panel.title')} data-dshw-kanban="root">
-        <header style={headerStyle}>
-          <span style={titleGroupStyle}>
-            <span style={logoStyle}>dw</span>
-            <span style={titleStyle}>dshw</span>
-            <span style={subtitleStyle}>DeepSeek Harness workflow</span>
-          </span>
-          {codeNotice !== null && <span style={codeNoticeStyle}>{codeNotice}</span>}
-          <span style={actionsStyle}>
-            <button
-              type="button"
-              data-dshw-kanban="icon"
-              className="dshw-icon"
-              aria-label={t('panel.code')}
-              title={t('panel.code')}
-              onClick={openCodeWorkspace}
-              style={iconButtonStyle}
-            >
-              <GVsCode size={17.5} />
-            </button>
-            <button
-              type="button"
-              data-dshw-kanban="icon"
-              className="dshw-icon"
-              aria-label={t('panel.refresh')}
-              onClick={refresh}
-              style={iconButtonStyle}
-            >
-              <IconRefreshOutline16 size={14} />
-            </button>
-            <button
-              type="button"
-              data-dshw-kanban="icon"
-              className="dshw-icon"
-              aria-label={t('panel.close')}
-              onClick={onClose}
-              style={iconButtonStyle}
-            >
-              <IconCloseOutline16 size={14} />
-            </button>
-          </span>
-        </header>
-        {status === 'checking' && <div style={loadingStyle}>{t('panel.loading')}</div>}
-        {status === 'ready' && (
-          <KanbanWorkspace
-            baseUrl={baseUrl}
-            refreshKey={refreshKey}
-            t={t}
+  return (
+    <section ref={panelRef} className="dshw-panel" data-expanded={expanded || undefined} style={panelStyle} aria-label={t('panel.title')} data-dshw-kanban="root">
+      <header className="dshw-panel-header" style={headerStyle}>
+        <span className="dshw-title-group" style={titleGroupStyle}>
+          <span className="dshw-logo" style={logoStyle}>dw</span>
+          <span style={titleStyle}>dshw</span>
+          <span className="dshw-subtitle" style={subtitleStyle}>DeepSeek Harness workflow</span>
+        </span>
+        <span style={actionsStyle}>
+          <button
+            ref={expandButton}
+            type="button"
+            className="dshw-icon dshw-expand-control"
+            aria-label={t(expanded ? 'panel.collapse' : 'panel.expand')}
+            title={t(expanded ? 'panel.collapse' : 'panel.expand')}
+            aria-pressed={expanded}
+            onClick={() => { if (expanded) collapse(); else expand() }}
+            style={iconButtonStyle}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
+              <path d={expanded ? 'M2 6h4V2m8 8h-4v4M6 6 1 1m9 9 5 5' : 'M1 6V1h5m9 9v5h-5M1 1l5 5m9 9-5-5'} />
+            </svg>
+          </button>
+          <button
+            type="button"
+            data-dshw-kanban="icon"
+            className="dshw-icon"
+            aria-label={t('panel.code')}
+            title={t('panel.code')}
+            onClick={openCodeWorkspace}
+            style={iconButtonStyle}
+          >
+            <GVsCode size={17.5} />
+          </button>
+          <button
+            type="button"
+            data-dshw-kanban="icon"
+            className="dshw-icon"
+            aria-label={t('panel.refresh')}
+            onClick={refresh}
+            style={iconButtonStyle}
+          >
+            <IconRefreshOutlineRegular size={14} />
+          </button>
+          <button
+            type="button"
+            data-dshw-kanban="icon"
+            className="dshw-icon"
+            aria-label={t('panel.close')}
+            data-panel-action="close"
+            onClick={onClose}
+            style={iconButtonStyle}
+          >
+            <IconCloseOutlineRegular size={14} />
+          </button>
+        </span>
+      </header>
+      {codeNotice !== undefined && <div role="status" style={codeNoticeStyle}>{codeNotice}</div>}
+      {status === 'checking' && <div style={loadingStyle}>{t('panel.loading')}</div>}
+      {status === 'ready' && (
+        <KanbanWorkspace
+          baseUrl={baseUrl}
+          refreshKey={refreshKey}
+          t={t}
             onRefresh={refresh}
-          />
-        )}
-        {status === 'down' && (
-          <div style={unreachableStyle}>
-            <p style={unreachableTitleStyle}>{t('panel.unreachable.title')}</p>
-            <p style={unreachableDetailStyle}>{t('panel.unreachable.detail', { url: baseUrl })}</p>
-            <label style={urlFieldStyle}>
-              <span style={urlLabelStyle}>{t('panel.url.label')}</span>
-              <input
-                data-dshw-kanban="input"
-                style={urlInputStyle}
-                value={draft}
-                onChange={(event) => { setDraft(event.target.value) }}
-                onKeyDown={(event) => { if (event.key === 'Enter') save() }}
-              />
-            </label>
-            <button type="button" data-dshw-kanban="trigger" style={saveButtonStyle} onClick={save}>
-              {t('panel.url.save')}
-            </button>
-          </div>
-        )}
-      </section>
-    </div>,
-    document.body,
+            expanded={expanded}
+            expandForDetail={expandForDetail}
+            onCollapse={collapse}
+        />
+      )}
+      {status === 'down' && (
+        <div style={unreachableStyle}>
+          <p style={unreachableTitleStyle}>{t('panel.unreachable.title')}</p>
+          <p style={unreachableDetailStyle}>{t('panel.unreachable.detail', { url: baseUrl })}</p>
+          <label className="dshw-url-field" style={urlFieldStyle}>
+            <span style={urlLabelStyle}>{t('panel.url.label')}</span>
+            <input
+              data-dshw-kanban="input"
+              style={urlInputStyle}
+              value={draft}
+              onChange={(event) => { setDraft(event.target.value) }}
+              onKeyDown={(event) => { if (event.key === 'Enter') save() }}
+            />
+          </label>
+          <button type="button" data-dshw-kanban="trigger" style={saveButtonStyle} onClick={save}>
+            {t('panel.url.save')}
+          </button>
+        </div>
+      )}
+    </section>
   )
 }
 
 /* ── inline styles (tokens from the harness ui-theme variables) ─────────── */
 
-/* The trigger mirrors the settings row exactly (ui-settings-general
-   SettingsRoot.module.css .trigger): same geometry, radius, inset, hover and
-   rail variants, so the two footer entries look identical. The base
-   transparent background lives in the stylesheet (not inline) so the
-   :hover/[data-selected] rules can paint over it. */
-const triggerStyle = (wide: boolean): CSSProperties => ({
-  flex: 'none',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: wide ? 'flex-start' : 'center',
-  gap: wide ? 8 : 0,
-  width: wide ? 'calc(100% + 4px)' : 36,
-  height: wide ? 42 : 36,
-  /* bottom -2px pulls the settings row up: net gap to it is 2px
-     (the settings trigger keeps its own 4px top margin — core, untouched). */
-  margin: wide ? '4px -2px -2px' : '8px 0 10px',
-  padding: wide ? '0 10px 0 8px' : 0,
-  boxSizing: 'border-box',
-  border: 'none',
-  borderRadius: wide ? 12 : '50%',
-  color: 'var(--dsw-alias-label-primary)',
-  fontFamily: 'inherit',
-  fontSize: 14,
-  lineHeight: '22px',
-  cursor: 'pointer',
-  overflow: 'hidden',
-})
-
-const labelStyle: CSSProperties = {
-  overflow: 'hidden',
-  whiteSpace: 'nowrap',
-}
-
-/** Fixed overlay spanning everything to the right of the sidebar column. */
-const overlayStyle = (left: number): CSSProperties => ({
-  position: 'fixed',
-  top: 0,
-  right: 0,
-  bottom: 0,
-  left,
-  zIndex: 100,
-  display: 'flex',
-})
-
-/** The panel fills the overlay edge to edge; the frame's own sidebar seam separates it. */
+/** Fill the shell-owned main column. */
 const panelStyle: CSSProperties = {
   flex: 1,
   minWidth: 0,
@@ -464,7 +382,7 @@ const headerStyle: CSSProperties = {
   justifyContent: 'space-between',
   gap: 12,
   minHeight: 36,
-  padding: '0 8px 0 12px',
+  padding: '0 8px 0 max(12px, var(--dsh-frame-leading-clearance, 0px))',
   boxSizing: 'border-box',
   borderBottom: '1px solid #e7e7e7',
   background: '#dddddd',
@@ -510,9 +428,8 @@ const subtitleStyle: CSSProperties = {
 
 const codeNoticeStyle: CSSProperties = {
   minWidth: 0,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
+  padding: '6px 12px',
+  overflowWrap: 'anywhere',
   fontSize: 11.5,
   color: '#a1260d',
 }

@@ -1,11 +1,19 @@
+/*
+ * UI reference skill: vscode-ui
+ * Reference revision: 4378eb0b965339a354d357fcb5ae33d2e10bf20e
+ * Reference components: SelectBox, WorkbenchLayout.
+ * Adaptation: Native compact view picker; preserve the list and return focus
+ * when leaving an expanded review. Business views remain dshw components.
+ * Copyright (c) Microsoft Corporation. MIT; see ../LICENSE.vscode-ui.txt.
+ */
 /** Kanban workspace: owns the data channel, action plumbing, the tab bar and
  *  the shared job dialog; every view is presentational over {@link ViewProps}. */
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  IconBranchOutline16, IconInspectOutline12, IconListPenOutline16, IconSettingsOutline16,
-  IconUserOutline16,
+  IconBranchOutlineRegular, IconInspectOutlineRegular, IconListPenOutlineRegular, IconSettingsOutlineRegular,
+  IconUserOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { JobRecord, ReviewRequestRecord, WorkerConfig, WorkerTypeAvailability } from '../../src/types.ts'
 import { useKanbanData, enabledRepos, type KanbanSnapshot, type PrAction } from './data.ts'
@@ -57,21 +65,24 @@ export type ViewId = 'prs' | 'reviews' | 'git' | 'jobs' | 'logs' | 'settings'
 export type SettingsSection = 'repository' | 'workers' | 'repos'
 
 export const VIEW_TABS: ReadonlyArray<{ id: ViewId; icon: (p: { size?: number }) => ReactNode; label: string; count: (s: KanbanSnapshot) => number }> = [
-  { id: 'prs', icon: IconBranchOutline16, label: 'Pull requests', count: s => s.prs.length },
-  { id: 'reviews', icon: IconUserOutline16, label: 'Reviews', count: s => s.reviewRequests.length },
+  { id: 'prs', icon: IconBranchOutlineRegular, label: 'Pull requests', count: s => s.prs.length },
+  { id: 'reviews', icon: IconUserOutlineRegular, label: 'Reviews', count: s => s.reviewRequests.length },
   { id: 'git', icon: GGitGraph, label: 'Git', count: () => 0 },
-  { id: 'jobs', icon: IconListPenOutline16, label: 'Jobs', count: s => s.service.activeJobs },
-  { id: 'logs', icon: IconInspectOutline12, label: 'Logs', count: () => 0 },
-  { id: 'settings', icon: IconSettingsOutline16, label: 'Settings', count: () => 0 },
+  { id: 'jobs', icon: IconListPenOutlineRegular, label: 'Jobs', count: s => s.service.activeJobs },
+  { id: 'logs', icon: IconInspectOutlineRegular, label: 'Logs', count: () => 0 },
+  { id: 'settings', icon: IconSettingsOutlineRegular, label: 'Settings', count: () => 0 },
 ]
 
 /** Tabbed workspace: owns the data channel, action plumbing and the tab bar;
  *  every view is presentational over {@link ViewProps}. */
-export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
+export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh, expanded, expandForDetail, onCollapse }: {
   baseUrl: string
   refreshKey: number
   t: (key: string, params?: Record<string, string | number>) => string
   onRefresh?: () => void
+  expanded: boolean
+  expandForDetail: () => boolean
+  onCollapse: () => void
 }): ReactNode {
   const { snapshot, connection } = useKanbanData(baseUrl, refreshKey)
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set())
@@ -86,6 +97,26 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
   const [activeReview, setActiveReview] = useState<ReviewRequestRecord>()
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('repos')
   const toastTimer = useRef<number | undefined>(undefined)
+  const detailOpenedCompact = useRef(false)
+  const detailTrigger = useRef<HTMLElement | null>(null)
+  const openReviewDetail = (review: ReviewRequestRecord): void => {
+    detailTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    detailOpenedCompact.current = expandForDetail()
+    setActiveReview(review)
+  }
+  const closeReviewDetail = (): void => {
+    setActiveReview(undefined)
+    if (detailOpenedCompact.current) onCollapse()
+    requestAnimationFrame(() => { detailTrigger.current?.focus() })
+  }
+  // The panel's collapse command also leaves a wide diff. Keep the underlying
+  // list mounted so its scroll position and the triggering row survive.
+  useEffect(() => { if (!expanded) setActiveReview(undefined) }, [expanded])
+  const selectView = (id: ViewId): void => {
+    setActiveReview(undefined)
+    if (id === 'settings') setSettingsSection('repos')
+    setView(id)
+  }
 
   const showToast = (message: string, bad = false): void => {
     setToast({ message, bad })
@@ -210,14 +241,22 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
     refresh,
     openWorkerPicker,
     openReviewWorkerPicker,
-    openReviewDetail: setActiveReview,
+    openReviewDetail,
     openJob: setActiveJob,
     openReposSettings: () => { setSettingsSection('repos'); setView('settings') },
   }
 
   return (
-    <div style={rootStyle} data-dshw-kanban="root">
-      <div style={tabbarStyle} role="tablist" aria-label="dshw views">
+    <div className="dshw-workspace" style={rootStyle} data-dshw-kanban="root">
+      <div className="dshw-view-picker">
+        <select aria-label={t('panel.view')} value={view} onChange={event => { selectView(event.target.value as ViewId) }}>
+          {VIEW_TABS.map(tab => {
+            const count = snapshot === undefined ? 0 : tab.count(snapshot)
+            return <option key={tab.id} value={tab.id}>{tab.label}{count > 0 ? ` (${count})` : ''}</option>
+          })}
+        </select>
+      </div>
+      <div className="dshw-view-tabs" style={tabbarStyle} role="tablist" aria-label="dshw views">
         {VIEW_TABS.map(tab => {
           const active = view === tab.id
           const count = snapshot === undefined ? 0 : tab.count(snapshot)
@@ -229,13 +268,7 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
               role="tab"
               aria-selected={active}
               data-selected={active || undefined}
-              onClick={() => {
-                setActiveReview(undefined)
-                // Opening Settings from the tab bar always lands on its first page (Repos);
-                // only the "去设置 Repos" empty-state link jumps to a specific section.
-                if (tab.id === 'settings') setSettingsSection('repos')
-                setView(tab.id)
-              }}
+              onClick={() => { selectView(tab.id) }}
               style={tabStyle(active)}
             >
               <Icon size={14} />
@@ -245,8 +278,8 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
           )
         })}
       </div>
-      <div style={viewAreaStyle}>
-        {activeReview !== undefined ? (
+      <div className="dshw-view-area" style={viewAreaStyle}>
+        {activeReview !== undefined && (
           <ReviewDetailView
             baseUrl={baseUrl}
             review={activeReview}
@@ -254,20 +287,19 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh }: {
             pending={pending}
             showToast={showToast}
             post={post}
-            onBack={() => { setActiveReview(undefined) }}
+            onBack={closeReviewDetail}
             openReviewWorkerPicker={openReviewWorkerPicker}
             openJob={setActiveJob}
           />
-        ) : (
-          <>
-            {view === 'prs' && <PrsView {...viewProps} />}
-            {view === 'reviews' && <ReviewsView {...viewProps} />}
-            {view === 'jobs' && <JobsView {...viewProps} />}
-            {view === 'logs' && <LogsView {...viewProps} />}
-            {view === 'git' && <GitView baseUrl={baseUrl} refreshKey={refreshKey} repos={enabledRepos(snapshot)} openReposSettings={viewProps.openReposSettings} />}
-            {view === 'settings' && <SettingsView {...viewProps} initialSection={settingsSection} />}
-          </>
         )}
+        <div className="dshw-view-body" style={{ ...viewAreaStyle, display: activeReview === undefined ? 'flex' : 'none' }}>
+          {view === 'prs' && <PrsView {...viewProps} />}
+          {view === 'reviews' && <ReviewsView {...viewProps} />}
+          {view === 'jobs' && <JobsView {...viewProps} />}
+          {view === 'logs' && <LogsView {...viewProps} />}
+          {view === 'git' && <GitView baseUrl={baseUrl} refreshKey={refreshKey} repos={enabledRepos(snapshot)} openReposSettings={viewProps.openReposSettings} />}
+          {view === 'settings' && <SettingsView {...viewProps} initialSection={settingsSection} />}
+        </div>
       </div>
       {workerPick !== null && snapshot !== undefined && (
         <WorkerPicker

@@ -297,7 +297,7 @@ export function SettingsView({ baseUrl, snapshot, showToast, post, initialSectio
   return (
     <>
       <div style={settingsHeaderStyle}>设置</div>
-      <div style={settingsLayoutStyle}>
+      <div className="dshw-settings-layout" style={settingsLayoutStyle}>
         <aside style={settingsNavStyle}>
           <button type="button" className="dshw-nav" style={section === 'repos' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('repos') }}>
             <GFolderGit size={12} />Repos
@@ -316,7 +316,7 @@ export function SettingsView({ baseUrl, snapshot, showToast, post, initialSectio
 
         {section === 'repository' && (
           <section style={settingsSectionStyle}>
-            <div style={settingsSectionHeaderStyle}>
+            <div className="dshw-section-header" style={settingsSectionHeaderStyle}>
               <span style={settingsSectionTitleStyle}>System</span>
               <span style={settingsSectionSubStyle}>dshw、主仓库与 Worktree</span>
               <button
@@ -332,7 +332,7 @@ export function SettingsView({ baseUrl, snapshot, showToast, post, initialSectio
               </button>
             </div>
             <div style={settingsBodyStyle}>
-              <div style={settingsCardStyle}>
+              <div className="dshw-settings-card" style={settingsCardStyle}>
               <div style={repoCardStyle}>
                 <RepoRow
                   first
@@ -383,7 +383,7 @@ export function SettingsView({ baseUrl, snapshot, showToast, post, initialSectio
 
         {section === 'workers' && (
           <section style={settingsSectionStyle}>
-            <div style={settingsSectionHeaderStyle}>
+            <div className="dshw-section-header" style={settingsSectionHeaderStyle}>
               <span style={settingsSectionTitleStyle}>Workers</span>
               <span style={settingsSectionSubStyle}>拖动排序 · 第一项为默认</span>
               <button type="button" style={addButtonStyle} onClick={openCreate}><GPlus size={12} />添加</button>
@@ -395,7 +395,7 @@ export function SettingsView({ baseUrl, snapshot, showToast, post, initialSectio
               </div>
             ) : (
               <div style={jobsScrollStyle}>
-                <table style={{ ...tableStyle, minWidth: 900 }}>
+                <table data-dshw-table="settings" style={{ ...tableStyle, minWidth: 900 }}>
                   <thead>
                     <tr>
                       <th style={{ ...thStyle, width: 34 }} />
@@ -447,29 +447,29 @@ export function SettingsView({ baseUrl, snapshot, showToast, post, initialSectio
                           setDisplayedWorkers([...workers])
                         }}
                       >
-                        <td style={tdCompactStyle}><span style={{ display: 'inline-flex', color: worker.enabled ? C_MUTED : C_FAINT, cursor: worker.enabled ? 'grab' : 'default' }}><GGrip size={13} /></span></td>
-                        <td style={tdCompactStyle}>
+                        <td data-label="" style={tdCompactStyle}><span style={{ display: 'inline-flex', color: worker.enabled ? C_MUTED : C_FAINT, cursor: worker.enabled ? 'grab' : 'default' }}><GGrip size={13} /></span></td>
+                        <td data-label="状态" style={tdCompactStyle}>
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: workerAvailable(worker) ? ok : C_MUTED }}>
                             <StatusDot tone={workerAvailable(worker) ? 'ok' : 'neutral'} />{workerStatus(worker)}
                           </span>
                         </td>
-                        <td style={tdCompactStyle}>
+                        <td data-label="名称" style={tdCompactStyle}>
                           <span style={workerNameStyle}>{worker.name}</span>
                           {index === 0 && worker.enabled && <span style={defaultBadgeStyle}>默认</span>}
                         </td>
-                        <td style={tdCompactStyle}>
+                        <td data-label="类型" style={tdCompactStyle}>
                           <span style={{ fontSize: 12, color: C_SECONDARY }}>{typeLabel(worker.type)}</span>
                           {worker.type === 'claude-code' && <span style={{ fontSize: 10.5, color: C_MUTED }}>未支持</span>}
                         </td>
-                        <td style={tdCompactStyle}><span style={cellBlockStyle} title={worker.model}>{worker.model || '—'}</span></td>
-                        <td style={tdCompactStyle}><span style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: C_SECONDARY }}>{worker.reasoningEffort || '默认'}</span></td>
-                        <td style={tdCompactStyle}><span style={cellBlockStyle} title={worker.baseUrl}>{worker.type === 'dsh' ? worker.baseUrl || '默认' : '—'}</span></td>
-                        <td style={tdCompactStyle}>
+                        <td data-label="模型" style={tdCompactStyle}><span style={cellBlockStyle} title={worker.model}>{worker.model || '—'}</span></td>
+                        <td data-label="推理" style={tdCompactStyle}><span style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: C_SECONDARY }}>{worker.reasoningEffort || '默认'}</span></td>
+                        <td data-label="地址" style={tdCompactStyle}><span style={cellBlockStyle} title={worker.baseUrl}>{worker.type === 'dsh' ? worker.baseUrl || '默认' : '—'}</span></td>
+                        <td data-label="凭据" style={tdCompactStyle}>
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: worker.hasApiKey ? C_SECONDARY : warn }}>
                             <GKey size={11} />{credentialLabel(worker)}
                           </span>
                         </td>
-                        <td style={tdCompactStyle}>
+                        <td data-label="" style={tdCompactStyle}>
                           <span style={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
                             <button type="button" className="dshw-icon" style={smallIconButtonStyle} aria-label="编辑" onClick={() => { openEdit(worker) }}><GPencil size={12} /></button>
                             <button type="button" className="dshw-icon dshw-danger" style={{ ...smallIconButtonStyle, color: C_DANGER }} aria-label="删除" disabled={removing === worker.id} onClick={() => { void remove(worker) }}><GTrash size={12} /></button>
@@ -539,7 +539,7 @@ export function RepoRow({ first = false, icon, title, detail, note, warn, button
   onClick: () => void
 }): ReactNode {
   return (
-    <div style={first ? { ...repoRowStyle, borderTop: 'none' } : repoRowStyle}>
+    <div className="dshw-system-row" style={first ? { ...repoRowStyle, borderTop: 'none' } : repoRowStyle}>
       <span style={repoIconStyle}>{icon}</span>
       <div style={repoTextStyle}>
         <div style={repoTitleStyle}>

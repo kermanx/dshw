@@ -207,7 +207,7 @@ export function GitView({ baseUrl, refreshKey, repos, openReposSettings }: { bas
     .map(branch => ({ name: branch.label, commit: { sha: branch.oid }, link: branch.url }))
 
   return (
-    <div style={gitLayoutStyle}>
+    <div className="dshw-git-layout" style={gitLayoutStyle}>
       <aside style={gitSidebarStyle}>
         <div style={gitSidebarHeaderStyle}>
           <div style={gitSidebarTitleStyle}>

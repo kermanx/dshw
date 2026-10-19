@@ -87,7 +87,7 @@ export function JobsView({ baseUrl, snapshot, pending, post, openJob }: ViewProp
       )}
       {records.length > 0 && (
         <div ref={scroller} style={jobsScrollStyle} onScroll={onScroll}>
-          <table style={{ ...tableStyle, tableLayout: 'auto' }}>
+          <table data-dshw-table="jobs" style={{ ...tableStyle, tableLayout: 'auto' }}>
             <thead>
               <tr>
                 <th style={{ ...thStyle, width: 110 }}>状态</th>
