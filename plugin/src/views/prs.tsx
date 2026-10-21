@@ -219,7 +219,7 @@ export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, 
         {pr.assignedToMe === true && pr.author !== undefined && (
           <span style={assignedBadgeStyle} title={`assign 给你的 PR，作者 @${pr.author}`}>by @{pr.author}</span>
         )}
-        <span style={subTextStyle} title={pr.branch}>{pr.branch} → {pr.baseRefName}</span>
+        <span style={subTextStyle} title={pr.branch}>{pr.baseRefName} ← {pr.branch}</span>
         {customJob !== undefined && (
           <button
             type="button"
