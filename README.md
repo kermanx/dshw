@@ -29,11 +29,11 @@
 ### 前置条件
 
 - macOS
-- Node.js 24+
+- Node.js 24.9+
 - pnpm
 - Git
 - GitHub CLI，并已运行 `gh auth login`
-- DeepSeek Harness
+- DeepSeek Harness 0.2.1-rc.3 及以上（当前支持 0.2.x 系列）
 
 ### 步骤
 
@@ -52,7 +52,7 @@ pnpm dshw start          # 初始化并后台启动服务
 dsh plugin --profile web add "$PWD"
 ```
 
-重启你的 dsh Web 服务（停掉后重新运行 `dsh web`），刷新页面即可在左侧栏的标准面板列表看到看板入口。需要支持 `sidebar.panellist` 与 `main` 面板接口的新版 Harness。插件列表在启动时组装，新增插件必须重启 dsh web 才会生效。
+重启你的 dsh Web 服务（停掉后重新运行 `dsh web`），刷新页面即可在左侧栏的标准面板列表看到看板入口。看板使用 Harness 的 `sidebar.panellist` 与 `main` 面板接口，因此要求 dsh 0.2.1-rc.3 以上；插件的 `engines.dsh` 声明为 `>=0.2.1-rc.3 <0.3.0`，版本不匹配时 Harness 会跳过整个看板。插件列表在启动时组装，新增插件必须重启 dsh web 才会生效。
 
 ## 使用要点
 

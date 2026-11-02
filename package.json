@@ -1,6 +1,6 @@
 {
   "name": "dshw",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "bin": {
     "dshw": "src/cli.ts"
@@ -45,9 +45,9 @@
     "vite": "^8.2.1"
   },
   "engines": {
-    "node": ">=24.0.0",
+    "node": ">=24.9.0",
     "pnpm": ">=11.0.0",
-    "dsh": "0.2.1-rc.3"
+    "dsh": ">=0.2.1-rc.3 <0.3.0"
   },
   "packageManager": "pnpm@11.17.0",
   "dependencies": {
