@@ -34,7 +34,7 @@ interface WorkerRequest {
 interface RuntimeModules {
   createUserMessage(options: object): unknown
   SessionId(value: string): unknown
-  installModelSelection(ctx: unknown, selection: object): void
+  installModelSelection(ctx: unknown): void
   JsonRpcLineTransport: new(input: Socket, output: Socket) => {
     start(): void
     close(): void
@@ -126,7 +126,9 @@ async function startSessionWorker(ctx: ContextLike, config: Config): Promise<() 
     meta: { cwd: request.sync.clonePath },
     agentOptions: selection,
     setup: (agentCtx: unknown) => {
-      modules.installModelSelection(agentCtx, { current: selection, assembled: undefined })
+      // The route itself travels in `agentOptions`; this installs only the
+      // runtime's own model-switch bookkeeping in the agent scope.
+      modules.installModelSelection(agentCtx)
     },
   })
   const agent = handle.agent
