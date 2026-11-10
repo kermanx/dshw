@@ -1298,6 +1298,8 @@ class WorkflowService {
         } catch (error) {
           this.#noteGhFailure(error)
           recordRefreshError(`${repoSlug}: ${messageOf(error)}`)
+          // 单次网络抖动或 GraphQL 超时不该清空整张看板：沿用该仓库上一次成功刷新的记录
+          matched.push(...[...previousByClone.values()].filter(record => record.repoSlug === repoSlug))
           continue
         }
         const byBranch = new Map(openPrs.map(pr => [pr.headRefName, pr]))
