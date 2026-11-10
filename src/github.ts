@@ -1,11 +1,39 @@
 import type { CiCheck, CiStatus, MyPullRequestSummary, PullRequestCheck, PullRequestInfo, ReviewerCommentProgress, ReviewRequestRecord } from './types.ts'
-import { run, runOrThrow } from './util.ts'
+import { run, runOrThrow, waitForRetry } from './util.ts'
 
 const PR_FIELDS = [
   'number', 'title', 'url', 'state', 'isDraft', 'author', 'mergeable', 'mergeStateStatus',
   'baseRefName', 'baseRefOid', 'headRefName', 'headRefOid',
   'reviewDecision', 'reviewRequests', 'latestReviews', 'statusCheckRollup',
 ].join(',')
+
+/** GitHub 返回较大的 GraphQL 响应时偶发 502/504 或中途断开连接，重试通常就能成功。 */
+const TRANSIENT_GH_NETWORK_RETRY_DELAYS_MS = [1_000, 3_000] as const
+
+export function isTransientGhNetworkError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /HTTP 5\d\d/u.test(message)
+    || /unexpected end of JSON input/iu.test(message)
+    || /\bEOF\b/u.test(message)
+    || /error connecting to api\.github\.com/iu.test(message)
+    || /(?:i\/o timeout|connection reset|TLS handshake timeout)/iu.test(message)
+}
+
+export async function retryTransientGhOperation<T>(
+  operation: () => Promise<T>,
+  options: { signal?: AbortSignal, retryDelaysMs?: readonly number[] } = {},
+): Promise<T> {
+  const retryDelaysMs = options.retryDelaysMs ?? TRANSIENT_GH_NETWORK_RETRY_DELAYS_MS
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      const retryDelayMs = retryDelaysMs[attempt]
+      if (retryDelayMs === undefined || !isTransientGhNetworkError(error)) throw error
+      await waitForRetry(retryDelayMs, options.signal)
+    }
+  }
+}
 
 async function listOpenPullRequests(
   cwd: string,
@@ -14,12 +42,14 @@ async function listOpenPullRequests(
   fields: string,
   signal?: AbortSignal,
 ): Promise<PullRequestInfo[]> {
-  const result = await runOrThrow(
-    'gh',
-    ['pr', 'list', '--repo', repoSlug, ...flags, '--state', 'open', '--limit', '100', '--json', fields],
-    { cwd, timeoutMs: 30_000, signal },
-  )
-  const parsed = JSON.parse(result.stdout) as PullRequestInfo[]
+  const parsed = await retryTransientGhOperation(async () => {
+    const result = await runOrThrow(
+      'gh',
+      ['pr', 'list', '--repo', repoSlug, ...flags, '--state', 'open', '--limit', '100', '--json', fields],
+      { cwd, timeoutMs: 30_000, signal },
+    )
+    return JSON.parse(result.stdout) as PullRequestInfo[]
+  }, { signal })
   for (const pr of parsed) {
     pr.latestReviews ??= []
     pr.reviewRequests ??= []
@@ -127,15 +157,17 @@ export async function trackedOpenPullRequests(cwd: string, repoSlug: string, sig
 }
 
 export async function reviewRequestedPullRequests(cwd: string, repoSlug: string, signal?: AbortSignal): Promise<ReviewRequestRecord[]> {
-  const result = await runOrThrow(
-    'gh',
-    [
-      'pr', 'list', '--repo', repoSlug, '--search', 'review-requested:@me', '--state', 'open', '--limit', '100',
-      '--json', 'number,title,url,isDraft,author,headRefName,baseRefName,updatedAt',
-    ],
-    { cwd, timeoutMs: 30_000, signal },
-  )
-  const parsed = JSON.parse(result.stdout) as Array<Omit<ReviewRequestRecord, 'repoSlug' | 'author'> & { author?: { login?: string } }>
+  const parsed = await retryTransientGhOperation(async () => {
+    const result = await runOrThrow(
+      'gh',
+      [
+        'pr', 'list', '--repo', repoSlug, '--search', 'review-requested:@me', '--state', 'open', '--limit', '100',
+        '--json', 'number,title,url,isDraft,author,headRefName,baseRefName,updatedAt',
+      ],
+      { cwd, timeoutMs: 30_000, signal },
+    )
+    return JSON.parse(result.stdout) as Array<Omit<ReviewRequestRecord, 'repoSlug' | 'author'> & { author?: { login?: string } }>
+  }, { signal })
   return parsed.map(pr => ({ ...pr, repoSlug, author: pr.author?.login ?? 'unknown' }))
 }
 

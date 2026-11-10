@@ -30,6 +30,24 @@ export function isTaskCancelled(error: unknown): error is TaskCancelledError {
   return error instanceof TaskCancelledError
 }
 
+/** Sleep before a retry, aborting promptly when the owning task is cancelled. */
+export async function waitForRetry(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted === true) throw new TaskCancelledError()
+  await new Promise<void>((resolvePromise, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', cancel)
+      resolvePromise()
+    }, milliseconds)
+    const cancel = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', cancel)
+      reject(new TaskCancelledError())
+    }
+    signal?.addEventListener('abort', cancel, { once: true })
+    if (signal?.aborted === true) cancel()
+  })
+}
+
 export async function run(
   command: string,
   args: readonly string[],
