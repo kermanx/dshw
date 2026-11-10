@@ -203,6 +203,24 @@ export const GReview = ({ size = 13 }: { size?: number }): ReactNode => (
   <Lucide size={size}><path d="m8 7-5 5 5 5" /><path d="m16 7 5 5-5 5" /></Lucide>
 )
 
+/** Bot (PR Auto Reviewer entry: the agent reviews commits for you). */
+export const GBot = ({ size = 15 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="M12 8V4H8" />
+    <rect width="16" height="12" x="4" y="8" rx="2" />
+    <path d="M2 14h2" /><path d="M20 14h2" />
+    <path d="M15 13v2" /><path d="M9 13v2" />
+  </Lucide>
+)
+
+/** Sparkles (自动评审状态 / 立即评审). */
+export const GSparkles = ({ size = 13 }: { size?: number }): ReactNode => (
+  <Lucide size={size}>
+    <path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" />
+    <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z" />
+  </Lucide>
+)
+
 /** Arrow-left (返回). */
 export const GArrowLeft = ({ size = 14 }: { size?: number }): ReactNode => (
   <Lucide size={size}><path d="m12 19-7-7 7-7" /><path d="M19 12H5" /></Lucide>

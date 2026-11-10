@@ -33,6 +33,13 @@ export const RESPONSIVE_STYLES = `
   color: var(--vscode-dropdown-foreground, #333);
   background: var(--vscode-dropdown-background, #fff);
 }
+@container dshw-panel (max-width: 760px) {
+  /* Auto review detail: findings stack above the diff instead of sitting left. */
+  .dshw-ar-detail-body { flex-direction: column !important; }
+  .dshw-ar-comments { width: auto !important; max-height: 42%; border-right: none !important; border-bottom: 1px solid #e7e7e7; }
+  .dshw-ar-files { width: 180px !important; }
+  .dshw-ar-detail .dshw-ar-diff { flex-direction: column !important; }
+}
 @container dshw-panel (max-width: 600px) {
   .dshw-panel .dshw-panel-header { min-height: 35px !important; height: 35px; gap: 8px !important; background: var(--vscode-sideBar-background, #f3f3f3) !important; }
   .dshw-panel .dshw-panel-header button { width: 22px !important; height: 22px !important; border-radius: 4px !important; flex: none; }

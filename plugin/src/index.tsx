@@ -33,8 +33,10 @@ const NS = 'kanban'
 /** Shared identity of the sidebar entry and its main panel. */
 const PANEL_ID = 'dshw-kanban'
 
-/** dshw daemon default origin (src/config.ts PORT default 7849, loopback). */
-const DEFAULT_BASE_URL = 'http://127.0.0.1:7849'
+/** Same-origin daemon proxy mounted by this plugin's node half (index.cjs). */
+const PROXY_BASE_URL = '/api/dshw'
+/** Direct loopback origin, used when the proxy is not mounted (local desktop). */
+const LOOPBACK_BASE_URL = 'http://127.0.0.1:7849'
 /** localStorage key holding a user-supplied dshw origin override. */
 const URL_STORAGE_KEY = 'dshw.kanban.baseUrl'
 /** Unique style-tag id so repeated mounts (HMR) never duplicate rules. */
@@ -157,12 +159,26 @@ function KanbanPanelIcon({ size }: { size: number }): ReactNode {
   return <IconBranchOutlineRegular size={size} />
 }
 
-/** Read the daemon origin override, falling back to the default. */
-function readBaseUrl(): string {
+/** Read the explicit origin override, if the user ever saved one. */
+function readStoredBaseUrl(): string | undefined {
   try {
-    return localStorage.getItem(URL_STORAGE_KEY) ?? DEFAULT_BASE_URL
+    const stored = localStorage.getItem(URL_STORAGE_KEY)
+    return stored === null || stored === '' ? undefined : stored
   } catch {
-    return DEFAULT_BASE_URL
+    return undefined
+  }
+}
+
+/**
+ * Probe one origin with no-cors (a network failure rejects without needing CORS
+ * headers from the daemon; an opaque response still resolves).
+ */
+async function probeDaemon(base: string): Promise<boolean> {
+  try {
+    await fetch(`${base}/api/identity`, { mode: 'no-cors', cache: 'no-store', signal: AbortSignal.timeout(8000) })
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -184,8 +200,8 @@ type PanelStatus = 'checking' | 'ready' | 'down'
 /** Panel: header chrome plus the native PR kanban (no iframe). */
 function KanbanPanel({ t, onClose }: KanbanPanelProps): ReactNode {
   useKanbanStyles()
-  const [baseUrl, setBaseUrl] = useState(readBaseUrl)
-  const [draft, setDraft] = useState(baseUrl)
+  const [baseUrl, setBaseUrl] = useState<string>()
+  const [draft, setDraft] = useState(() => readStoredBaseUrl() ?? PROXY_BASE_URL)
   const [status, setStatus] = useState<PanelStatus>('checking')
   const [refreshKey, setRefreshKey] = useState(0)
   const [codeNotice, setCodeNotice] = useState<string>()
@@ -223,6 +239,7 @@ function KanbanPanel({ t, onClose }: KanbanPanelProps): ReactNode {
   }, [expanded])
 
   const openCodeWorkspace = (): void => {
+    if (baseUrl === undefined) return
     fetch(`${baseUrl}/api/open-code`, { method: 'POST' })
       .then(async (response) => {
         const value = await response.json() as { error?: string }
@@ -237,19 +254,46 @@ function KanbanPanel({ t, onClose }: KanbanPanelProps): ReactNode {
   }
   useEffect(() => () => { if (codeNoticeTimer.current !== undefined) window.clearTimeout(codeNoticeTimer.current) }, [])
 
-  // Probe the daemon whenever the target changes: reachable → native kanban,
+  // Resolve the daemon origin once: an explicit override wins, then the
+  // same-origin proxy, then the loopback port. This is what makes the panel
+  // work through a forwarded web port without forwarding the daemon port too.
+  useEffect(() => {
+    if (baseUrl !== undefined) return
+    let cancelled = false
+    void (async () => {
+      const stored = readStoredBaseUrl()
+      for (const candidate of stored === undefined ? [PROXY_BASE_URL, LOOPBACK_BASE_URL] : [stored]) {
+        if (!await probeDaemon(candidate)) continue
+        if (cancelled) return
+        setBaseUrl(candidate)
+        setDraft(candidate)
+        setStatus('ready')
+        return
+      }
+      if (!cancelled) {
+        setBaseUrl(PROXY_BASE_URL)
+        setDraft(stored ?? PROXY_BASE_URL)
+        setStatus('down')
+      }
+    })()
+    return () => { cancelled = true }
+  }, [baseUrl])
+
+  // Probe the resolved origin whenever it changes: reachable → native kanban,
   // unreachable → the URL editor.
   useEffect(() => {
+    if (baseUrl === undefined) return
     let cancelled = false
     setStatus('checking')
-    fetch(`${baseUrl}/api/state`, { mode: 'no-cors', signal: AbortSignal.timeout(8000) })
-      .then(() => { if (!cancelled) setStatus('ready') })
-      .catch(() => { if (!cancelled) setStatus('down') })
+    void probeDaemon(baseUrl).then((reachable) => {
+      if (!cancelled) setStatus(reachable ? 'ready' : 'down')
+    })
     return () => { cancelled = true }
   }, [baseUrl])
 
   const refresh = (): void => {
     setRefreshKey(value => value + 1)
+    if (baseUrl === undefined) return
     // Ask the daemon to re-sync PRs; the snapshot then arrives over SSE.
     void fetch(`${baseUrl}/api/prs/refresh`, {
       method: 'POST',
@@ -267,6 +311,17 @@ function KanbanPanel({ t, onClose }: KanbanPanelProps): ReactNode {
       // Storage unavailable (private mode): keep the in-session override.
     }
     setBaseUrl(next)
+  }
+
+  /** Drop the override and go back to proxy-then-loopback resolution. */
+  const resetBaseUrl = (): void => {
+    try {
+      localStorage.removeItem(URL_STORAGE_KEY)
+    } catch {
+      // Storage unavailable: resolution still re-runs below.
+    }
+    setDraft(PROXY_BASE_URL)
+    setBaseUrl(undefined)
   }
 
   return (
@@ -328,7 +383,7 @@ function KanbanPanel({ t, onClose }: KanbanPanelProps): ReactNode {
       </header>
       {codeNotice !== undefined && <div role="status" style={codeNoticeStyle}>{codeNotice}</div>}
       {status === 'checking' && <div style={loadingStyle}>{t('panel.loading')}</div>}
-      {status === 'ready' && (
+      {status === 'ready' && baseUrl !== undefined && (
         <KanbanWorkspace
           baseUrl={baseUrl}
           refreshKey={refreshKey}
@@ -342,7 +397,8 @@ function KanbanPanel({ t, onClose }: KanbanPanelProps): ReactNode {
       {status === 'down' && (
         <div style={unreachableStyle}>
           <p style={unreachableTitleStyle}>{t('panel.unreachable.title')}</p>
-          <p style={unreachableDetailStyle}>{t('panel.unreachable.detail', { url: baseUrl })}</p>
+          <p style={unreachableDetailStyle}>{t('panel.unreachable.detail', { url: baseUrl ?? PROXY_BASE_URL })}</p>
+          <p style={unreachableDetailStyle}>{t('panel.unreachable.hint')}</p>
           <label className="dshw-url-field" style={urlFieldStyle}>
             <span style={urlLabelStyle}>{t('panel.url.label')}</span>
             <input
@@ -353,9 +409,14 @@ function KanbanPanel({ t, onClose }: KanbanPanelProps): ReactNode {
               onKeyDown={(event) => { if (event.key === 'Enter') save() }}
             />
           </label>
-          <button type="button" data-dshw-kanban="trigger" style={saveButtonStyle} onClick={save}>
-            {t('panel.url.save')}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button type="button" data-dshw-kanban="trigger" style={saveButtonStyle} onClick={save}>
+              {t('panel.url.save')}
+            </button>
+            <button type="button" data-dshw-kanban="trigger" style={saveButtonStyle} onClick={resetBaseUrl}>
+              {t('panel.url.reset')}
+            </button>
+          </div>
         </div>
       )}
     </section>

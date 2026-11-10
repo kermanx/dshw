@@ -16,8 +16,8 @@ import {
   IconUserOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { JobRecord, ReviewRequestRecord, WorkerConfig, WorkerTypeAvailability } from '../../src/types.ts'
-import { useKanbanData, enabledRepos, type KanbanSnapshot, type PrAction } from './data.ts'
-import { GClose, GGitGraph } from './icons.tsx'
+import { useKanbanData, enabledRepos, autoReviewAttentionCount, type KanbanSnapshot, type PrAction } from './data.ts'
+import { GBot, GClose, GGitGraph } from './icons.tsx'
 import {
   draftBadgeStyle, primaryButtonStyle,
   rootStyle, tabCountStyle, tabStyle, tabbarStyle, toastStyle, viewAreaStyle,
@@ -37,6 +37,8 @@ import { GitView } from './views/git.tsx'
 import { SettingsView } from './views/settings.tsx'
 import { JobDialog } from './views/job-dialog.tsx'
 import { ReviewDetailView } from './views/review-detail.tsx'
+import { AutoReviewView } from './views/auto-review.tsx'
+import { AutoReviewDetailView } from './views/auto-review-detail.tsx'
 
 /* ── shared view props + the tabbed workspace ── */
 
@@ -55,18 +57,23 @@ export interface ViewProps {
   openReviewWorkerPicker: (repoSlug: string, prNumber: number) => void
   /** Open the review-detail workspace for a Review PR (whole view area). */
   openReviewDetail: (review: ReviewRequestRecord) => void
+  /** Open the auto review detail panel for one record (whole view area). */
+  openAutoReview: (reviewId: string) => void
+  /** Jump to Settings → Auto review. */
+  openAutoReviewSettings: () => void
   /** Open the job detail dialog (busy PR rows / jobs list). */
   openJob: (job: JobRecord) => void
   /** Jump to Settings → Repos (empty-state hint when no repo is monitored). */
   openReposSettings: () => void
 }
 
-export type ViewId = 'prs' | 'reviews' | 'git' | 'jobs' | 'logs' | 'settings'
-export type SettingsSection = 'repository' | 'workers' | 'repos'
+export type ViewId = 'prs' | 'reviews' | 'auto-review' | 'git' | 'jobs' | 'logs' | 'settings'
+export type SettingsSection = 'repository' | 'workers' | 'repos' | 'auto-review' | 'feishu'
 
 export const VIEW_TABS: ReadonlyArray<{ id: ViewId; icon: (p: { size?: number }) => ReactNode; label: string; count: (s: KanbanSnapshot) => number }> = [
   { id: 'prs', icon: IconBranchOutlineRegular, label: 'Pull requests', count: s => s.prs.length },
   { id: 'reviews', icon: IconUserOutlineRegular, label: 'Reviews', count: s => s.reviewRequests.length },
+  { id: 'auto-review', icon: GBot, label: 'Auto review', count: s => autoReviewAttentionCount(s) },
   { id: 'git', icon: GGitGraph, label: 'Git', count: () => 0 },
   { id: 'jobs', icon: IconListPenOutlineRegular, label: 'Jobs', count: s => s.service.activeJobs },
   { id: 'logs', icon: IconInspectOutlineRegular, label: 'Logs', count: () => 0 },
@@ -95,6 +102,7 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh, expanded, e
   const [view, setView] = useState<ViewId>('prs')
   const [activeJob, setActiveJob] = useState<JobRecord>()
   const [activeReview, setActiveReview] = useState<ReviewRequestRecord>()
+  const [activeAutoReview, setActiveAutoReview] = useState<string>()
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('repos')
   const toastTimer = useRef<number | undefined>(undefined)
   const detailOpenedCompact = useRef(false)
@@ -102,6 +110,7 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh, expanded, e
   const openReviewDetail = (review: ReviewRequestRecord): void => {
     detailTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     detailOpenedCompact.current = expandForDetail()
+    setActiveAutoReview(undefined)
     setActiveReview(review)
   }
   const closeReviewDetail = (): void => {
@@ -109,11 +118,24 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh, expanded, e
     if (detailOpenedCompact.current) onCollapse()
     requestAnimationFrame(() => { detailTrigger.current?.focus() })
   }
+  const openAutoReview = (reviewId: string): void => {
+    detailTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    detailOpenedCompact.current = expandForDetail()
+    setActiveReview(undefined)
+    setActiveAutoReview(reviewId)
+  }
+  const closeAutoReview = (): void => {
+    setActiveAutoReview(undefined)
+    if (detailOpenedCompact.current) onCollapse()
+    requestAnimationFrame(() => { detailTrigger.current?.focus() })
+  }
   // The panel's collapse command also leaves a wide diff. Keep the underlying
   // list mounted so its scroll position and the triggering row survive.
   useEffect(() => { if (!expanded) setActiveReview(undefined) }, [expanded])
+  useEffect(() => { if (!expanded) setActiveAutoReview(undefined) }, [expanded])
   const selectView = (id: ViewId): void => {
     setActiveReview(undefined)
+    setActiveAutoReview(undefined)
     if (id === 'settings') setSettingsSection('repos')
     setView(id)
   }
@@ -147,6 +169,19 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh, expanded, e
       })
     }
   }
+
+  // Report the origin this panel is actually served from, so Feishu links
+  // point at the URL the user really opens (a forwarded port, not 3080).
+  useEffect(() => {
+    const origin = window.location.origin
+    if (!/^https?:/u.test(origin) || snapshot === undefined) return
+    if (snapshot.feishu.config.webBaseUrl === origin) return
+    void fetch(`${baseUrl}/api/feishu/origin`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ origin }),
+    }).catch(() => { /* the settings panel can still set it by hand */ })
+  }, [baseUrl, snapshot?.feishu.config.webBaseUrl])
 
   const refresh = (): void => {
     onRefresh?.()
@@ -242,6 +277,8 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh, expanded, e
     openWorkerPicker,
     openReviewWorkerPicker,
     openReviewDetail,
+    openAutoReview,
+    openAutoReviewSettings: () => { setSettingsSection('auto-review'); setView('settings') },
     openJob: setActiveJob,
     openReposSettings: () => { setSettingsSection('repos'); setView('settings') },
   }
@@ -292,9 +329,22 @@ export function KanbanWorkspace({ baseUrl, refreshKey, t, onRefresh, expanded, e
             openJob={setActiveJob}
           />
         )}
-        <div className="dshw-view-body" style={{ ...viewAreaStyle, display: activeReview === undefined ? 'flex' : 'none' }}>
+        {activeAutoReview !== undefined && (
+          <AutoReviewDetailView
+            baseUrl={baseUrl}
+            reviewId={activeAutoReview}
+            snapshot={snapshot}
+            pending={pending}
+            post={post}
+            showToast={showToast}
+            onBack={closeAutoReview}
+            openJob={setActiveJob}
+          />
+        )}
+        <div className="dshw-view-body" style={{ ...viewAreaStyle, display: activeReview === undefined && activeAutoReview === undefined ? 'flex' : 'none' }}>
           {view === 'prs' && <PrsView {...viewProps} />}
           {view === 'reviews' && <ReviewsView {...viewProps} />}
+          {view === 'auto-review' && <AutoReviewView {...viewProps} />}
           {view === 'jobs' && <JobsView {...viewProps} />}
           {view === 'logs' && <LogsView {...viewProps} />}
           {view === 'git' && <GitView baseUrl={baseUrl} refreshKey={refreshKey} repos={enabledRepos(snapshot)} openReposSettings={viewProps.openReposSettings} />}

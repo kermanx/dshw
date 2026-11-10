@@ -2,8 +2,8 @@
  *  /api/state + SSE data channel, and streaming-output merging. */
 import { useEffect, useState } from 'react'
 import type {
-  CiCheck, CloneRecord, DshWorkerProgress, EventRecord, HarnessRepositoryStatus,
-  DshwRepositoryStatus, JobRecord, MonitoredRepo, PrDashboardRecord, PrDashboardStatus,
+  AutoReviewConfig, AutoReviewSeverity, AutoReviewSummary, CiCheck, CloneRecord, DshWorkerProgress, EventRecord, FeishuConfig,
+  HarnessRepositoryStatus, DshwRepositoryStatus, JobRecord, MonitoredRepo, PrDashboardRecord, PrDashboardStatus,
   PullRequestReview, ReviewRequestRecord, ServiceState, WorkerConfig,
   WorkerTypeAvailability,
 } from '../../src/types.ts'
@@ -24,6 +24,17 @@ export interface KanbanSnapshot extends Omit<ServiceState, 'prDashboardCache'> {
   clones: CloneRecord[]
   worktreeCleanupCount?: number
   prs: PrDashboardRecord[]
+  /** PR Auto Reviewer settings, per-PR records (comments fetched on demand) and running ids. */
+  autoReview: {
+    config: AutoReviewConfig
+    records: AutoReviewSummary[]
+    running: string[]
+  }
+  /** Feishu bot settings and the PR topics it owns. */
+  feishu: {
+    config: FeishuConfig
+    threads: Array<{ key: string, title: string, threadId: string, updatedAt: string }>
+  }
   prDashboard: PrDashboardStatus
   reviewRequests: ReviewRequestRecord[]
   reviewRequestsStatus: PrDashboardStatus
@@ -121,7 +132,7 @@ export function useKanbanData(baseUrl: string, refreshKey: number): { snapshot?:
         const response = await fetch(`${baseUrl}/api/state`)
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const value = await response.json() as KanbanSnapshot
-        if (!cancelled) setSnapshot(value)
+        if (!cancelled) setSnapshot(withSnapshotDefaults(value))
       } catch {
         if (!cancelled) setConnection('reconnecting')
       }
@@ -132,7 +143,7 @@ export function useKanbanData(baseUrl: string, refreshKey: number): { snapshot?:
     events.onopen = () => { if (!cancelled) setConnection('live') }
     events.onmessage = (event) => {
       if (cancelled) return
-      try { setSnapshot(JSON.parse((event as MessageEvent<string>).data) as KanbanSnapshot) } catch { /* malformed frame: keep last snapshot */ }
+      try { setSnapshot(withSnapshotDefaults(JSON.parse((event as MessageEvent<string>).data) as KanbanSnapshot)) } catch { /* malformed frame: keep last snapshot */ }
     }
     events.addEventListener('progress', (event) => {
       if (cancelled) return
@@ -150,6 +161,28 @@ export function useKanbanData(baseUrl: string, refreshKey: number): { snapshot?:
   }, [baseUrl, refreshKey])
   return { snapshot, connection }
 }
+/** Fill fields a newer client expects when the daemon predates them. */
+function withSnapshotDefaults(snapshot: KanbanSnapshot): KanbanSnapshot {
+  const base = snapshot.feishu === undefined || snapshot.feishu === null
+    ? { ...snapshot, feishu: { config: { enabled: false, command: 'lark-cli', pollSeconds: 10, notify: { review: true, fix: true, failure: true } } as FeishuConfig, threads: [] } }
+    : snapshot
+  if (base.autoReview !== undefined && base.autoReview !== null) return base
+  return {
+    ...base,
+    autoReview: {
+      config: {
+        enabled: false, scope: 'mine', debounceSeconds: 90, debounceMaxSeconds: 900,
+        models: ['anthropic/claude-opus-5.5', 'openai/gpt-6-astra', 'deepseek-flash'],
+        model: 'anthropic/claude-opus-5.5', baseUrl: '', apiKeyMode: 'environment', hasApiKey: false,
+        credentialSource: 'missing', engineVersion: '0.85.1', timeoutSeconds: 900,
+        autoFix: false, fixSeverity: 'warning', instructions: '',
+      },
+      records: [],
+      running: [],
+    },
+  }
+}
+
 /* ── shared list helpers ── */
 
 /** 被监控（enabled）的仓库，按展示顺序。 */
@@ -204,7 +237,7 @@ export const jobLabel = (value: string): string =>
 export const jobTone = (value: string): Tone =>
   value === 'succeeded' ? 'ok' : value === 'failed' || value === 'blocked' ? 'bad' : value === 'running' ? 'warn' : 'neutral'
 export const kindLabel = (value: string): string =>
-  ({ 'merge-base': '合并 base', 'fix-ci': '修 CI', 'resolve-comments': '解决评论', custom: '自定义任务', review: 'Review 对话', 'update-dshw': '更新 dshw', 'update-harness': '更新 Harness', 'reconfigure-harness': '从头配置 Harness', 'sync-check': '状态检查' })[value] ?? value
+  ({ 'merge-base': '合并 base', 'fix-ci': '修 CI', 'resolve-comments': '解决评论', custom: '自定义任务', review: 'Review 对话', 'auto-review-fix': '评审修复', 'update-dshw': '更新 dshw', 'update-harness': '更新 Harness', 'reconfigure-harness': '从头配置 Harness', 'sync-check': '状态检查' })[value] ?? value
 
 export function jobExecutor(job: JobRecord): string {
   if (job.executor !== undefined) return job.executor
@@ -378,4 +411,88 @@ export function previewOf(body: string): string | undefined {
     .find(candidate => candidate !== '' && !['{', '}', '[', ']', '},', '],'].includes(candidate))
   if (line === undefined || line === '') return undefined
   return line.length <= 110 ? line : `${line.slice(0, 110)}…`
+}
+
+/* ── PR Auto Reviewer ─────────────────────────────────────────────────────── */
+
+/** Record fields every presentation helper reads (summary and detail agree here). */
+export type AutoReviewState = Pick<AutoReviewSummary, 'status' | 'counts' | 'dueAt' | 'fix' | 'error' | 'skippedReason' | 'updatedAt'> & { commentCount?: number }
+
+/** One-line state of a record, used by the list, the PR badge and the detail header. */
+export function autoReviewLabel(record: AutoReviewState): string {
+  if (record.status === 'running') return '评审中'
+  if (record.status === 'pending') return '等待评审'
+  if (record.status === 'failed') return '评审失败'
+  if (record.status === 'reviewed') {
+    if (record.counts.critical > 0) return `${record.counts.critical} 个必须修复`
+    if (record.counts.warning > 0) return `${record.counts.warning} 个建议修复`
+    if (record.counts.suggestion > 0) return `${record.counts.suggestion} 条建议`
+    return '未发现问题'
+  }
+  return '尚未评审'
+}
+
+/** Tone of a record row: failures and criticals are bad, pending/running is in flight. */
+export function autoReviewTone(record: AutoReviewState): Tone {
+  if (record.status === 'failed') return 'bad'
+  if (record.status === 'running') return 'accent'
+  if (record.status === 'pending') return 'warn'
+  if (record.status === 'reviewed') {
+    if (record.counts.critical > 0) return 'bad'
+    if (record.counts.warning > 0 || record.counts.suggestion > 0) return 'warn'
+    return 'ok'
+  }
+  return 'neutral'
+}
+
+export const severityLabel = (severity: AutoReviewSeverity): string =>
+  severity === 'critical' ? '必须修复' : severity === 'warning' ? '建议修复' : '建议'
+
+export const severityTone = (severity: AutoReviewSeverity): Tone =>
+  severity === 'critical' ? 'bad' : severity === 'warning' ? 'warn' : 'neutral'
+
+/** Compact severity summary: `1 必须 · 3 建议 · 2 建议项`. */
+export function severitySummary(counts: AutoReviewState['counts']): string {
+  const parts: string[] = []
+  if (counts.critical > 0) parts.push(`${counts.critical} 必须修复`)
+  if (counts.warning > 0) parts.push(`${counts.warning} 建议修复`)
+  if (counts.suggestion > 0) parts.push(`${counts.suggestion} 条建议`)
+  return parts.length === 0 ? '未发现问题' : parts.join(' · ')
+}
+
+/** Seconds left in a debounce cycle (rounded up), or undefined when not pending. */
+export function autoReviewCountdown(record: AutoReviewState, now = Date.now()): number | undefined {
+  if (record.status !== 'pending' || record.dueAt === undefined) return undefined
+  const due = Date.parse(record.dueAt)
+  if (Number.isNaN(due)) return undefined
+  return Math.max(1, Math.ceil((due - now) / 1000))
+}
+
+/** The record that owns a dashboard PR row, if auto review has seen it. */
+export function autoReviewForPr(snapshot: KanbanSnapshot | undefined, pr: PrDashboardRecord): AutoReviewSummary | undefined {
+  return snapshot?.autoReview.records.find(record => record.repoSlug === pr.repoSlug && record.number === pr.number)
+}
+
+/** Number shown on the sidebar/tab badge: work in flight plus reviews waiting for a fix. */
+export function autoReviewAttentionCount(snapshot: KanbanSnapshot | undefined): number {
+  return (snapshot?.autoReview.records ?? []).filter(record => (
+    record.status === 'running'
+    || record.status === 'pending'
+    || (record.status === 'reviewed' && record.counts.critical + record.counts.warning > 0)
+    || record.status === 'failed'
+  )).length
+}
+
+/** Job backing a record's fix session, resolved against the live job list. */
+export function autoReviewFixJob(snapshot: KanbanSnapshot | undefined, record: AutoReviewState): JobRecord | undefined {
+  const jobId = record.fix?.jobId
+  if (jobId === undefined) return undefined
+  return snapshot?.jobs.find(job => job.id === jobId)
+}
+
+/** Label of the fix session state (falls back to the record when the job aged out). */
+export function autoReviewFixLabel(record: AutoReviewState, job?: JobRecord): string {
+  if (record.fix === undefined) return '未启动'
+  const status = job?.status ?? record.fix.status
+  return jobLabel(status)
 }

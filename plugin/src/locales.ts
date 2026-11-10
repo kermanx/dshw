@@ -17,6 +17,8 @@ export const zh = {
   'panel.unreachable.detail': '在 {url} 没有检测到运行中的 dshw daemon。请先启动 dshw（pnpm dshw start），或者修改服务地址后重试。',
   'panel.url.label': '服务地址',
   'panel.url.save': '保存并重试',
+  'panel.url.reset': '使用默认地址',
+  'panel.unreachable.hint': '面板默认通过当前 dsh 的同源代理访问 daemon（/api/dshw）；只有在没有代理或 daemon 不在本机时，才需要改成 http://127.0.0.1:7849。',
 } satisfies Record<string, string>
 
 /** The kanban namespace key union. */
@@ -38,5 +40,7 @@ export const en = {
   'panel.unreachable.title': 'Cannot reach the dshw service',
   'panel.unreachable.detail': 'No running dshw daemon was found at {url}. Start dshw first (pnpm dshw start), or change the service address and retry.',
   'panel.url.label': 'Service URL',
+  'panel.url.reset': 'Use default address',
+  'panel.unreachable.hint': 'The panel normally reaches the daemon through this dsh origin (/api/dshw). Only set http://127.0.0.1:7849 when the proxy is missing or the daemon runs elsewhere.',
   'panel.url.save': 'Save and retry',
 } satisfies Record<KanbanKey, string>

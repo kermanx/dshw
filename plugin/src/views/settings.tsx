@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import type { WorkerConfig, WorkerModelCatalog, WorktreeCleanupPreview } from '../../../src/types.ts'
 import {
-  GDownload, GFolderGit, GGrip, GKey, GPencil, GPlus, GReset, GSettings, GSliders, GSync, GTrash,
+  GBot, GDownload, GFolderGit, GGrip, GKey, GPencil, GPlus, GReset, GSettings, GSliders, GSync, GTrash,
   GWorktree, StatusDot,
 } from '../icons.tsx'
 import {
@@ -17,6 +17,8 @@ import type { SettingsSection, ViewProps } from '../workspace.tsx'
 import { WorkerFormDialog, type WorkerForm } from './worker-form-dialog.tsx'
 import { WorktreeCleanupDialog } from './worktree-cleanup-dialog.tsx'
 import { ReposSection } from './repos-settings.tsx'
+import { AutoReviewSection } from './auto-review-settings.tsx'
+import { FeishuSection } from './feishu-settings.tsx'
 
 /* ── Settings view (WorkerSettings.vue port) ── */
 
@@ -305,6 +307,12 @@ export function SettingsView({ baseUrl, snapshot, showToast, post, initialSectio
           <button type="button" className="dshw-nav" style={section === 'workers' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('workers') }}>
             <GSettings size={12} />Workers
           </button>
+          <button type="button" className="dshw-nav" style={section === 'auto-review' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('auto-review') }}>
+            <GBot size={12} />Auto review
+          </button>
+          <button type="button" className="dshw-nav" style={section === 'feishu' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('feishu') }}>
+            <GBot size={12} />Feishu
+          </button>
           <button type="button" className="dshw-nav" style={section === 'repository' ? settingsNavActiveStyle : settingsNavItemStyle} onClick={() => { setSection('repository') }}>
             <GSliders size={12} />System
           </button>
@@ -312,6 +320,24 @@ export function SettingsView({ baseUrl, snapshot, showToast, post, initialSectio
 
         {section === 'repos' && (
           <ReposSection baseUrl={baseUrl} repos={snapshot?.repos ?? []} showToast={showToast} />
+        )}
+
+        {section === 'auto-review' && (
+          <AutoReviewSection
+            baseUrl={baseUrl}
+            config={snapshot?.autoReview.config}
+            workers={workers}
+            showToast={showToast}
+          />
+        )}
+
+        {section === 'feishu' && (
+          <FeishuSection
+            baseUrl={baseUrl}
+            config={snapshot?.feishu.config}
+            threads={snapshot?.feishu.threads ?? []}
+            showToast={showToast}
+          />
         )}
 
         {section === 'repository' && (

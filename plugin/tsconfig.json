@@ -13,7 +13,10 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "noUnusedLocals": true,
-    "types": ["react"]
+    "types": ["react"],
+    "paths": {
+      "@dreamcatcher-tech/commit-graph": ["./src/vendor/commit-graph.tsx"]
+    }
   },
   "include": ["src", "dsh-env.d.ts"]
 }

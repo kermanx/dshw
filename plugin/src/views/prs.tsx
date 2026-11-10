@@ -10,8 +10,9 @@
  *  Merge / Sync cells, hover popovers and the local-git maintenance chip. */
 import { useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import type { CloneGitStatus, JobRecord, PrDashboardRecord, PullRequestReview, ReviewRequestRecord } from '../../../src/types.ts'
+import type { AutoReviewSummary, CloneGitStatus, JobRecord, PrDashboardRecord, PullRequestReview, ReviewRequestRecord } from '../../../src/types.ts'
 import { HoverPopover, RepoGroupRow } from '../components.tsx'
+import { AutoReviewBadge } from './auto-review.tsx'
 import {
   autoMergeAt, autoMergeMinutes, busyLabel, checkLabel, checkTone, ciLabel, ciTone,
   enabledRepos, findBusyJob, findWorkingAgent, groupByRepo, hasLocalGitStatus,
@@ -40,7 +41,8 @@ import type { ViewProps } from '../workspace.tsx'
 
 /* ── Pull requests view ── */
 
-export function PrsView({ snapshot, connection, pending, showToast, post, refresh, openWorkerPicker, openJob, openReposSettings, openReviewDetail }: ViewProps): ReactNode {
+export function PrsView({ snapshot, connection, pending, showToast, post, refresh, openWorkerPicker, openJob, openReposSettings, openReviewDetail, openAutoReview }: ViewProps): ReactNode {
+  const autoReviewByPr = new Map((snapshot?.autoReview.records ?? []).map(record => [`${record.repoSlug}#${String(record.number)}`, record]))
   const busyByPr = new Map(snapshot?.prs.map(pr => [pr, findBusyJob(pr, snapshot.jobs)]) ?? [])
   const workingAgentByPr = new Map(snapshot?.prs.map(pr => [pr, findWorkingAgent(pr, snapshot.jobs)]) ?? [])
   const prs = snapshot?.prs ?? []
@@ -147,6 +149,8 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
                         onRefresh={refresh}
                         onOpenJob={openJob}
                         onOpenReviewDetail={openReviewDetail}
+                        autoReview={autoReviewByPr.get(`${pr.repoSlug}#${String(pr.number)}`)}
+                        onOpenAutoReview={openAutoReview}
                       />
                     )
                   })}
@@ -175,7 +179,7 @@ export function PrsView({ snapshot, connection, pending, showToast, post, refres
 /** stack 中非根部（叠在其他 PR 之上）的 PR 统一缩进量；最接近 master 的根部不缩进。 */
 const STACK_CHILD_INDENT = 12
 
-export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, onChooseWorker, onToggleSync, onGitAction, onRefresh, onOpenJob, onOpenReviewDetail }: {
+export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, onChooseWorker, onToggleSync, onGitAction, onRefresh, onOpenJob, onOpenReviewDetail, autoReview, onOpenAutoReview }: {
   pr: PrDashboardRecord
   /** 所在 stack 的树位置；undefined = 不在 stack 中。 */
   stack?: { depth: number; hasChild: boolean }
@@ -190,6 +194,9 @@ export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, 
   onRefresh: () => void
   onOpenJob: (job: JobRecord) => void
   onOpenReviewDetail: (review: ReviewRequestRecord) => void
+  /** Auto review state of this PR, when the feature has seen it. */
+  autoReview?: AutoReviewSummary
+  onOpenAutoReview: (reviewId: string) => void
 }): ReactNode {
   const customJob = workingAgent?.type === 'custom' ? workingAgent : busy?.type === 'custom' ? busy : undefined
   const titleContent = (
@@ -220,6 +227,9 @@ export function PrRow({ pr, stack, jobs, busy, workingAgent, pending, onAction, 
           <span style={assignedBadgeStyle} title={`assign 给你的 PR，作者 @${pr.author}`}>by @{pr.author}</span>
         )}
         <span style={subTextStyle} title={pr.branch}>{pr.baseRefName} ← {pr.branch}</span>
+        {autoReview !== undefined && (
+          <AutoReviewBadge record={autoReview} onOpen={() => { onOpenAutoReview(autoReview.id) }} />
+        )}
         {customJob !== undefined && (
           <button
             type="button"
