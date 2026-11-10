@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  check:
+    # The suite creates Unix domain sockets (tests/core.test.ts), so it cannot run on Windows;
+    # macos-latest is also the platform the daemon targets.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          # package.json declares engines.node >= 24.0.0
+          node-version: 24
+          cache: pnpm
+
+      - name: Check
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm check
