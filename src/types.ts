@@ -164,7 +164,7 @@ export interface SyncRecord {
 
 export interface JobRecord {
   id: string
-  type: 'update-dshw' | 'update-harness' | 'reconfigure-harness' | 'sync-check' | 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom' | 'review'
+  type: 'update-dshw' | 'update-harness' | 'reconfigure-harness' | 'sync-check' | 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom' | 'review' | 'auto-review-fix'
   status: JobStatus
   syncId?: string
   /** Worker configuration name captured when the job starts. Missing for built-in and legacy jobs. */
@@ -214,12 +214,14 @@ export interface WorkerState {
   sync: SyncRecord
   oldHead: string
   label: string
+  /** Set when this run is the user-approved push of an auto-review fix. */
+  push?: boolean
 }
 
 export interface WorkerRunRecord {
   id: string
   syncId: string
-  kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom' | 'review'
+  kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom' | 'review' | 'auto-review-fix'
   clonePath: string
   startedAt: string
   finishedAt: string
@@ -514,4 +516,264 @@ export interface PrDashboardStatus {
   error?: string
   /** Exact event-log record containing the reason for the current error. */
   errorEventId?: string
+}
+
+/* ── PR Auto Reviewer ──────────────────────────────────────────────────────
+ * Per-PR automatic AI review of the commits a PR branch gains. One record per
+ * PR mirrors the dashboard identity plus the latest review outcome and the fix
+ * session started for it. */
+
+/** Where one PR stands in the auto-review cycle. */
+export type AutoReviewStatus = 'idle' | 'pending' | 'running' | 'reviewed' | 'failed'
+export type AutoReviewSeverity = 'critical' | 'warning' | 'suggestion'
+/** Which commits a PR gains trigger a review. */
+export type AutoReviewScope = 'mine' | 'assigned' | 'all'
+
+/** One actionable finding anchored to the reviewed diff. */
+export interface AutoReviewComment {
+  file: string
+  line?: number
+  lineStart?: number
+  lineEnd?: number
+  lineType: 'old' | 'new'
+  severity: AutoReviewSeverity
+  message: string
+  /** Most representative line inside the range. */
+  fallbackLine?: number
+  /** False when the model picked a line outside the diff; the comment stays visible. */
+  locationValid: boolean
+  /** Models that reported this finding (parallel review attribution). */
+  models?: string[]
+}
+
+/** The dsh session started to fix a review's findings. */
+export interface AutoReviewFix {
+  jobId: string
+  /**
+   * `ready` = changes sit in the working tree, not pushed (the default flow);
+   * `pushed` = the user asked for a push and it happened.
+   */
+  status: JobStatus | 'ready' | 'pushed'
+  startedAt: string
+  finishedAt?: string
+  /** PR head the fix session started from. */
+  headOid: string
+  /** Reason the worker reported when it stopped without completing. */
+  blockedReason?: string
+  /** Commits the fix session produced, once it finished. */
+  producedHeadOid?: string
+  /** Un-pushed working-tree changes, refreshed after every turn. */
+  diff?: ReviewFixDiff
+  /** Two-to-four sentence explanation produced by the summary turn. */
+  summary?: string
+  /** Points the author should look at, produced by the summary turn. */
+  notes?: string[]
+}
+
+/** Snapshot of `git diff` in the PR clone (see auto-review-fix.ts). */
+export interface ReviewFixDiff {
+  stat: string
+  patch: string
+  files: string[]
+  additions: number
+  deletions: number
+  truncated: boolean
+  capturedAt: string
+}
+
+export interface AutoReviewRecord {
+  /** `${repoSlug}#${number}` — one record per PR. */
+  id: string
+  repoSlug: string
+  number: number
+  title: string
+  url: string
+  branch: string
+  baseRefName: string
+  author?: string
+  /** PR head reviewed (or about to be reviewed). */
+  headOid: string
+  /** Base commit for the reviewed diff (merge base of baseRefName and head). */
+  baseOid: string
+  /** Newest PR head observed, even while a review is still pending. */
+  observedHeadOid: string
+  /** Head of the most recent completed review. */
+  reviewedHeadOid?: string
+  status: AutoReviewStatus
+  /** Debounce deadline while `status` is pending. */
+  dueAt?: string
+  /** First commit of the current debounce cycle; caps repeated postponement. */
+  pendingSince?: string
+  trigger: 'auto' | 'manual'
+  summary: string
+  comments: AutoReviewComment[]
+  counts: { critical: number, warning: number, suggestion: number }
+  model?: string
+  /** Models that produced this review (parallel runs merged into `comments`). */
+  models?: string[]
+  engine?: string
+  /** Token usage / estimated cost of the latest review. */
+  usage?: AutoReviewUsage
+  error?: string
+  startedAt?: string
+  finishedAt?: string
+  fix?: AutoReviewFix
+  /** Automatic fix sessions already started for this PR. */
+  fixRounds?: number
+  /** Why the last cycle stopped without starting a review. */
+  skippedReason?: string
+  updatedAt: string
+}
+
+/** Token usage and estimated cost of one review run. */
+export interface AutoReviewUsage {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  totalTokens: number
+  costUsd: number
+  steps: number
+}
+
+/** Snapshot row for the list view: the record without its comments. */
+export interface AutoReviewSummary extends Omit<AutoReviewRecord, 'comments'> {
+  /** Comments kept in the full record (fetched on demand). */
+  commentCount: number
+}
+
+/** Model families the review bot knows how to configure for the gateway. */
+export type AutoReviewModelProfile = 'deepseek' | 'anthropic' | 'openai' | 'glm'
+
+/** Stored (non-secret) auto-review settings. */
+export interface AutoReviewConfig {
+  enabled: boolean
+  scope: AutoReviewScope
+  /** Quiet period after the newest commit before the review starts. */
+  debounceSeconds: number
+  /** Upper bound on one debounce cycle, so a busy branch still gets reviewed. */
+  debounceMaxSeconds: number
+  /** Models reviewed in parallel (cc_bot's default runs three). */
+  models: string[]
+  /** Primary model (first of `models`); kept for display and legacy configs. */
+  model: string
+  /** Gateway preset for `model`; inferred from the model id when absent. */
+  modelProfile?: AutoReviewModelProfile
+  baseUrl: string
+  apiKeyMode: ApiKeyMode
+  apiKeyEnv?: string
+  hasApiKey: boolean
+  credentialSource: CredentialSource
+  /** Pinned Pi engine version used to run the reviewer. */
+  engineVersion: string
+  timeoutSeconds: number
+  /** Start a dsh session to fix the findings after a review completes. */
+  autoFix: boolean
+  /** Lowest severity that triggers an automatic fix session. */
+  fixSeverity: 'critical' | 'warning'
+  /** Worker configuration used for the fix session; absent = default worker. */
+  workerConfigId?: string
+  /** Extra instructions appended to the review prompt. */
+  instructions: string
+}
+
+/** User-editable subset of {@link AutoReviewConfig}. */
+export interface AutoReviewConfigInput {
+  enabled?: boolean
+  scope?: AutoReviewScope
+  debounceSeconds?: number
+  debounceMaxSeconds?: number
+  /** Parallel review models; `model` is accepted as a single-model shorthand. */
+  models?: string[]
+  model?: string
+  /** `'auto'` clears an explicit preset so the model id decides again. */
+  modelProfile?: AutoReviewModelProfile | 'auto'
+  baseUrl?: string
+  apiKeyMode?: ApiKeyMode
+  apiKeyEnv?: string
+  apiKey?: string
+  engineVersion?: string
+  timeoutSeconds?: number
+  autoFix?: boolean
+  fixSeverity?: 'critical' | 'warning'
+  workerConfigId?: string
+  instructions?: string
+}
+
+/* ── Feishu bot ────────────────────────────────────────────────────────────
+ * dshw reports PR progress into one Feishu topic chat. Each tracked PR owns a
+ * topic thread: notifications are replies in it, and the user's replies there
+ * become instructions for dshw. */
+
+/** lark-cli availability, probed on demand from the settings panel. */
+export interface FeishuCliStatus {
+  available: boolean
+  version?: string
+  botReady?: boolean
+  userReady?: boolean
+  userNeedsRefresh?: boolean
+  /** open_id of the authorized user, used to invite them into a new topic chat. */
+  userOpenId?: string
+  error?: string
+  checkedAt: string
+}
+
+/** Which progress events are announced in Feishu. */
+export interface FeishuNotifyConfig {
+  /** Automatic review finished (with findings). */
+  review: boolean
+  /** Fix session finished (succeeded / blocked / failed / cancelled). */
+  fix: boolean
+  /** Review or fix failed outright. */
+  failure: boolean
+}
+
+export interface FeishuConfig {
+  enabled: boolean
+  /** Executable that speaks the Feishu OpenAPI (lark-cli). */
+  command: string
+  /** Optional HTTPS proxy for lark-cli (e.g. an intranet gateway). */
+  proxy?: string
+  /** Topic chat (话题群) receiving the notifications. */
+  chatId?: string
+  chatName?: string
+  /** GUI base URL used in message links; auto-filled from the browser origin. */
+  webBaseUrl?: string
+  /** How often topic replies are polled, in seconds. */
+  pollSeconds: number
+  notify: FeishuNotifyConfig
+  /** Last lark-cli probe (read-only, refreshed by the daemon). */
+  status?: FeishuCliStatus
+  /** Read-only view of whether a proxy is configured (the value is never returned). */
+  hasProxy?: boolean
+}
+
+export interface FeishuConfigInput {
+  enabled?: boolean
+  command?: string
+  proxy?: string
+  chatId?: string
+  chatName?: string
+  webBaseUrl?: string
+  pollSeconds?: number
+  notify?: Partial<FeishuNotifyConfig>
+}
+
+/** One Feishu topic thread owned by a tracked PR. */
+export interface FeishuThread {
+  /** `repoSlug#number` — the same identity the auto-review record uses. */
+  key: string
+  title: string
+  /** Root message that opened the topic. */
+  rootMessageId: string
+  threadId: string
+  /** Card that carries the review result (patched when the fix state changes). */
+  reviewCardId?: string
+  /** Card that carries the fix session progress (patched while it runs). */
+  fixCardId?: string
+  /** Message ids already handled (bounded). */
+  seenMessageIds: string[]
+  createdAt: string
+  updatedAt: string
+  lastError?: string
 }

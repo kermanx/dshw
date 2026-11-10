@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { formatProgressEvent } from './dsh-progress-plugin.ts'
 import { updateSessionOutcome, type SessionOutcome } from './dsh-session-outcome.ts'
 import type { DshRunRecord } from './types.ts'
-import { isReviewConversation } from './review-conversation.ts'
+import { isReviewConversation, keepsSessionAlive } from './review-conversation.ts'
 import { now, readJson, writeJsonAtomic } from './util.ts'
 import { createWorkerProgressReporter } from './worker-progress.ts'
 
@@ -203,6 +203,10 @@ async function startSessionWorker(ctx: ContextLike, config: Config): Promise<() 
     }
     if (isReviewConversation(request.kind)) {
       setPhase('paused', '等待用户继续 Review 对话')
+      return
+    }
+    if (keepsSessionAlive(request.kind)) {
+      setPhase('paused', '本轮完成，等待下一条指令')
       return
     }
     await finish(false)

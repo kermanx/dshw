@@ -1,8 +1,9 @@
-import { createServer, type Server, type ServerResponse } from 'node:http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { appendFile, mkdir, open, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   AGENT_STEER_INTERVAL_MS,
+  AUTO_REVIEW_ROOT,
   BASE_DEBOUNCE_MS,
   BASE_DEBOUNCE_MAX_MS,
   CI_WATCH_INTERVAL_MS,
@@ -32,18 +33,31 @@ import { readHarnessRepositoryStatus } from './harness-repository.ts'
 import { mergePrDashboardSyncState } from './pr-dashboard.ts'
 import { readGitGraph } from './git-graph.ts'
 import { StateStore } from './state.ts'
+import { AutoReviewDiffCache } from './auto-review-diff.ts'
+import { AutoReviewStore, countSeverities, dueReviews, formatFindings, MAX_AUTO_FIX_ROUNDS, observePrCommits, RECOMMENDED_REVIEW_MODELS, shouldAutoFix, withLiveFixStatus } from './auto-review.ts'
+import { runReviews } from './review/engine.ts'
+import { captureFixDiff, parseFixSummary } from './auto-review-fix.ts'
+import { parseRoute, routePrompt, type FeishuRoute } from './feishu-route.ts'
+import { estimatePricing } from './review/pricing.ts'
+import { renderReviewPage, renderReviewPageMissing, type ReviewPageDiff } from './review-page.ts'
+import { FeishuService, FeishuStore } from './feishu.ts'
+import type { FeishuConfigInput } from './types.ts'
 import { ensureManagedRoot } from './repos.ts'
-import type { CiCheck, CloneGitStatus, CloneRecord, DshwRepositoryStatus, DshWorkerProgress, HarnessRepositoryStatus, JobRecord, MonitoredRepo, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, ReviewDiffManifest, SyncRecord, WorkerConfigInput, WorkerExecutionConfig, WorktreeCleanupCandidate, WorktreeCleanupPreview } from './types.ts'
+import type { AutoReviewConfig, DshWorkerHandle, AutoReviewConfigInput, AutoReviewRecord, AutoReviewSummary, CiCheck, CloneGitStatus, CloneRecord, DshwRepositoryStatus, DshWorkerProgress, HarnessRepositoryStatus, JobRecord, MonitoredRepo, PrDashboardRecord, PrDashboardStatus, PullRequestInfo, ReviewRequestRecord, ReviewDiffManifest, SyncRecord, WorkerConfigInput, WorkerExecutionConfig, WorktreeCleanupCandidate, WorktreeCleanupPreview } from './types.ts'
 import { after, id, isTaskCancelled, messageOf, now, run, runOrThrow, TaskCancelledError } from './util.ts'
 import { refreshCodeWorkspace } from './workspace.ts'
+import { seedDemoScenarios } from './dev-demo.ts'
 import { assertManagedHarnessOwned, ensureInstallation, ensureManagedHarness, requireDaemonInstallation, type InstallationRecord } from './install.ts'
 import { WorkerConfigStore } from './worker-config.ts'
 import { WorkerRegistry } from './worker-driver.ts'
-import { renderPeriodicAgentReminder } from './dsh.ts'
+import { renderPeriodicAgentReminder, renderPromptTemplate, steerDshWorker, completeDshWorker, inspectDshWorker } from './dsh.ts'
 import { renderReviewTurnPrompt } from './review-conversation.ts'
 import { readFileAtHead, ReviewDiffCache } from './review-diff.ts'
 import { highlightLines, shikiLangFor } from './syntax.ts'
 import { reviewViewedKey, ReviewViewedStore } from './review-viewed.ts'
+
+/** Cheap model used to route natural-language Feishu messages. */
+const INTERPRET_MODEL = 'deepseek-flash'
 
 const NO_CHECKS_GRACE_MS = 5 * 60 * 1000
 const HISTORY_PAGE_SIZE = 35
@@ -137,16 +151,20 @@ function clearPendingBaseCheck(sync: SyncRecord): void {
 
 export async function runService(): Promise<void> {
   const installation = DEV_MODE ? await ensureInstallation() : await requireDaemonInstallation()
-  if (DEV_MODE) await ensureManagedHarness(installation)
+  // Offline development: the managed Harness clone is only needed by dsh
+  // workers, so a UI-only run can skip the clone (and the network it needs).
+  if (DEV_MODE && process.env.DSHW_DEV_SKIP_MANAGED_HARNESS !== '1') await ensureManagedHarness(installation)
   await mkdir(CLONES_ROOT, { recursive: true })
   const store = await StateStore.open()
   const workers = await WorkerConfigStore.open()
   const workerRegistry = await WorkerRegistry.create()
   const reviewViewed = await ReviewViewedStore.open()
+  const autoReview = await AutoReviewStore.open()
+  const feishu = await FeishuStore.open()
   store.state.serviceStartedAt = now()
   store.event('info', 'service', `后台服务已启动，监听 http://${HOST}:${PORT}`)
   await store.changed()
-  const service = new WorkflowService(store, installation, workers, workerRegistry, reviewViewed)
+  const service = new WorkflowService(store, installation, workers, workerRegistry, reviewViewed, autoReview, feishu)
   await service.start()
 }
 
@@ -164,6 +182,12 @@ class WorkflowService {
   readonly #reviewActionsInFlight = new Set<string>()
   readonly #reviewViewed: ReviewViewedStore
   readonly #reviewDiffCache: ReviewDiffCache
+  readonly #autoReview: AutoReviewStore
+  readonly #autoReviewDiff = new AutoReviewDiffCache()
+  /** Records whose review is running right now (one run per PR). */
+  readonly #autoReviewRunning = new Set<string>()
+  readonly #autoReviewControllers = new Map<string, AbortController>()
+  readonly #feishu: FeishuService
   readonly #conflictPathsCache = new Map<string, Promise<string[]>>()
   #server: Server | undefined
   #timer: NodeJS.Timeout | undefined
@@ -196,13 +220,32 @@ class WorkflowService {
   /** 用户有权限的仓库列表缓存（gh 分页拉取较慢，避免每次进入设置面板都等十几秒）。 */
   #userReposCache: { repos: string[]; fetchedAt: number } | undefined
 
-  constructor(store: StateStore, installation: InstallationRecord, workers: WorkerConfigStore, workerRegistry: WorkerRegistry, reviewViewed: ReviewViewedStore) {
+  constructor(store: StateStore, installation: InstallationRecord, workers: WorkerConfigStore, workerRegistry: WorkerRegistry, reviewViewed: ReviewViewedStore, autoReview: AutoReviewStore, feishu: FeishuStore) {
     this.#store = store
     this.#installation = installation
     this.#workers = workers
     this.#workerRegistry = workerRegistry
     this.#reviewViewed = reviewViewed
     this.#reviewDiffCache = new ReviewDiffCache(reviewViewed)
+    this.#autoReview = autoReview
+    this.#feishu = new FeishuService(feishu, {
+      record: key => this.#autoReview.record(key),
+      runReview: async (key) => { await this.#enqueueAutoReview(key) },
+      startFix: async (key, instruction) => {
+        const record = this.#autoReview.record(key)
+        if (record === undefined) throw new Error('找不到这条自动评审记录')
+        await this.#startAutoReviewFix(record, { automatic: false, ...(instruction === undefined ? {} : { instruction }) })
+      },
+      steerFix: async (key, instruction) => await this.#steerAutoReviewFix(key, instruction),
+      interpret: async (key, message) => await this.#interpretFeishuMessage(key, message),
+      pushFix: async (key: string) => {
+        const record = this.#autoReview.record(key)
+        if (record === undefined) throw new Error('找不到这条自动评审记录')
+        await this.#pushAutoReviewFix(record)
+      },
+      fixHint: record => this.#autoReviewFixHint(record),
+      event: (level, message) => { this.#store.event(level, 'feishu', message) },
+    })
     this.#monitoredRepos = store.state.repos
     const cached = store.state.prDashboardCache
     this.#prDashboard = cached?.records ?? []
@@ -226,6 +269,9 @@ class WorkflowService {
   }
 
   async start(): Promise<void> {
+    // Offline development: show the reviewer with real local commits instead of
+    // empty states. Both flags are required and never set by the launcher.
+    if (DEV_MODE && process.env.DSHW_DEMO === '1') await this.#loadDemoScenario()
     this.#harnessRepository = await readHarnessRepositoryStatus()
     this.#dshwRepository = await readDshwRepositoryStatus(false)
     this.#server = createServer((request, response) => {
@@ -241,6 +287,7 @@ class WorkflowService {
     process.on('SIGTERM', () => void this.#drainAndExit())
     process.on('SIGINT', () => void this.#drainAndExit())
     this.#resumeDshJobs()
+    this.#feishu.start()
     await this.#tick()
     await this.#refreshHarnessRepository()
     // 预热用户仓库列表缓存（gh 分页较慢），避免首次打开设置面板等待
@@ -251,7 +298,7 @@ class WorkflowService {
   async #route(
     method: string,
     url: string,
-    request: NodeJS.ReadableStream,
+    request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
     // Cross-origin API access for the Harness Web plugin: the native kanban
@@ -588,6 +635,177 @@ class WorkflowService {
       this.#json(response, 202, { accepted: true, syncId: sync.id })
       return
     }
+
+
+    if (url.startsWith('/api/feishu')) {
+      const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
+      const path = requestUrl.pathname
+      if (method === 'GET' && path === '/api/feishu') {
+        this.#json(response, 200, {
+          config: this.#feishu.publicConfig(),
+          threads: this.#feishu.threads(),
+        })
+        return
+      }
+      if (method === 'PUT' && path === '/api/feishu/config') {
+        const input = await readBody(request) as unknown as FeishuConfigInput
+        const config = await this.#feishu.updateConfig(input)
+        this.#store.event('info', 'feishu', `飞书通知设置已更新：${config.enabled ? '已开启' : '已关闭'}`)
+        await this.#store.changed()
+        this.#json(response, 200, { config: this.#feishu.publicConfig() })
+        return
+      }
+      if (method === 'POST' && path === '/api/feishu/check') {
+        const status = await this.#feishu.check()
+        await this.#store.changed()
+        this.#json(response, 200, { status })
+        return
+      }
+      if (method === 'POST' && path === '/api/feishu/chat') {
+        const body = await readBody(request)
+        const name = bodyString(body, 'name')?.trim() ?? ''
+        if (name === '' || name.length > 60) throw new Error('话题群名称需要在 1 到 60 个字符之间')
+        const status = await this.#feishu.check()
+        if (status.botReady !== true) throw new Error(status.error ?? 'lark-cli 的机器人身份不可用，请先登录')
+        const created = await this.#feishu.createTopicChat(name)
+        this.#store.event('info', 'feishu', `已创建飞书话题群「${created.chatName}」`)
+        await this.#store.changed()
+        this.#json(response, 200, created)
+        return
+      }
+      if (method === 'POST' && path === '/api/feishu/test') {
+        const body = await readBody(request)
+        const text = bodyString(body, 'text')?.trim() === undefined || bodyString(body, 'text')?.trim() === ''
+          ? '**dshw 测试消息**\n\n飞书机器人已连通；之后每个 PR 的进展都会发在这里。'
+          : bodyString(body, 'text')!.trim()
+        await this.#feishu.sendTest(text)
+        this.#store.event('info', 'feishu', '已发送一条飞书测试消息')
+        await this.#store.changed()
+        this.#json(response, 200, { sent: true })
+        return
+      }
+      if (method === 'POST' && path === '/api/feishu/origin') {
+        const body = await readBody(request)
+        const origin = bodyString(body, 'origin')?.trim() ?? ''
+        if (origin !== '') {
+          const parsedOrigin = new URL(origin)
+          if (parsedOrigin.protocol === 'http:' || parsedOrigin.protocol === 'https:') {
+            const current = this.#feishu.config()
+            if (current.webBaseUrl !== origin) await this.#feishu.updateConfig({ webBaseUrl: origin })
+          }
+        }
+        this.#json(response, 200, { config: this.#feishu.publicConfig() })
+        return
+      }
+      if (method === 'POST' && path === '/api/feishu/thread/forget') {
+        const body = await readBody(request)
+        const key = bodyString(body, 'key')
+        if (key === undefined) throw new Error('缺少 key')
+        const thread = this.#feishu.thread(key)
+        if (thread === undefined) throw new Error('找不到这个话题')
+        const store = this.#feishu.store()
+        await store.removeThread(key)
+        await this.#store.changed()
+        this.#json(response, 200, { removed: true })
+        return
+      }
+      throw new Error(`未知的飞书请求：${method} ${path}`)
+    }
+    if (url.startsWith('/api/auto-review')) {
+      const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
+      const path = requestUrl.pathname
+      const recordId = requestUrl.searchParams.get('id') ?? undefined
+      const record = recordId === undefined ? undefined : this.#autoReview.record(recordId)
+      if (method === 'GET' && path === '/api/auto-review/config') {
+        this.#json(response, 200, { config: this.#autoReview.config() })
+        return
+      }
+      if (method === 'PUT' && path === '/api/auto-review/config') {
+        const input = await readBody(request) as unknown as AutoReviewConfigInput
+        const config = await this.#autoReview.updateConfig(input)
+        this.#store.event('info', 'auto-review', `自动评审设置已更新：${config.enabled ? '已开启' : '已关闭'}`)
+        await this.#store.changed()
+        this.#json(response, 200, { config })
+        return
+      }
+      if (method === 'GET' && path === '/api/auto-review/record') {
+        if (record === undefined) throw new Error('找不到这条自动评审记录')
+        this.#json(response, 200, { record: withLiveFixStatus(record, this.#store.state.jobs) })
+        return
+      }
+
+      if (method === 'GET' && path === '/api/auto-review/models') {
+        this.#json(response, 200, await this.#autoReviewModels())
+        return
+      }
+      if (method === 'GET' && path === '/api/auto-review/github') {
+        this.#json(response, 200, await this.#autoReviewGithubStatus())
+        return
+      }
+      if (method === 'GET' && path === '/api/auto-review/diff') {
+        if (record === undefined) throw new Error('找不到这条自动评审记录')
+        const pr = this.#prDashboard.find(candidate => candidate.repoSlug === record.repoSlug && candidate.number === record.number)
+        if (pr === undefined) throw new Error('PR 不在当前看板中，无法读取改动')
+        const manifest = await this.#autoReviewDiff.open(record, pr.clonePath, { refresh: requestUrl.searchParams.get('refresh') === '1' })
+        if (requestUrl.searchParams.has('file')) {
+          const payload = this.#autoReviewDiff.payload(requestUrl.searchParams.get('token') ?? '', Number(requestUrl.searchParams.get('file')))
+          if (payload === undefined) throw new Error('该 diff 已失效，请重新打开')
+          this.#json(response, 200, payload)
+        } else {
+          this.#json(response, 200, manifest)
+        }
+        return
+      }
+      if (method !== 'POST') throw new Error(`未知的自动评审请求：${method} ${path}`)
+      if (this.#draining) throw new Error('服务正在排空并准备重启，请稍后重试')
+      const body = await readBody(request)
+      const bodyId = bodyString(body, 'id') ?? recordId
+      if (path === '/api/auto-review/run') {
+        const target = bodyId === undefined ? undefined : this.#autoReview.record(bodyId)
+        if (target === undefined) throw new Error('找不到这条自动评审记录')
+        target.status = 'pending'
+        target.trigger = 'manual'
+        target.dueAt = now()
+        target.skippedReason = undefined
+        target.updatedAt = now()
+        await this.#autoReview.saveRecord(target)
+        await this.#store.changed()
+        this.#json(response, 202, { accepted: true })
+        return
+      }
+      if (path === '/api/auto-review/cancel') {
+        const controller = bodyId === undefined ? undefined : this.#autoReviewControllers.get(bodyId)
+        if (controller === undefined) throw new Error('这条记录没有正在进行的评审')
+        controller.abort()
+        this.#json(response, 202, { accepted: true })
+        return
+      }
+      if (path === '/api/auto-review/fix') {
+        const target = bodyId === undefined ? undefined : this.#autoReview.record(bodyId)
+        if (target === undefined) throw new Error('找不到这条自动评审记录')
+        const instruction = bodyString(body, 'instruction')?.trim()
+        if ((instruction?.length ?? 0) > 4_000) throw new Error('补充指令不能超过 4000 个字符')
+        await this.#startAutoReviewFix(target, { automatic: false, ...(instruction === undefined ? {} : { instruction }) })
+        this.#json(response, 202, { accepted: true })
+        return
+      }
+      if (path === '/api/auto-review/forget') {
+        if (bodyId === undefined) throw new Error('缺少 id')
+        const removed = await this.#autoReview.removeRecord(bodyId)
+        if (!removed) throw new Error('找不到这条自动评审记录')
+        await this.#store.changed()
+        this.#json(response, 200, { removed: true })
+        return
+      }
+      if (path === '/api/auto-review/clear') {
+        await this.#autoReview.clearRecords()
+        this.#store.event('info', 'auto-review', '已清空自动评审记录')
+        await this.#store.changed()
+        this.#json(response, 200, { cleared: true })
+        return
+      }
+      throw new Error(`未知的自动评审请求：${path}`)
+    }
     if (url.startsWith('/api/reviews/')) {
       const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
       const parsed = parseReviewPath(requestUrl.pathname)
@@ -764,6 +982,91 @@ class WorkflowService {
       this.#json(response, 200, { ok: true })
       return
     }
+
+    // Read-only review page linked from Feishu messages. Reached directly on
+    // the daemon port or through the plugin's `/api/dshw` proxy; the proxy
+    // reports its prefix so links and redirects stay on the browser's origin.
+    if ((method === 'GET' || method === 'POST') && url.startsWith('/review/')) {
+      const requestUrl = new URL(url, `http://${HOST}:${PORT}`)
+      const pathname = requestUrl.pathname
+      const prefix = typeof request.headers['x-dshw-prefix'] === 'string' ? request.headers['x-dshw-prefix'] : ''
+      const fixAction = /^(\/review\/([^/]+)\/(\d+))\/fix$/u.exec(pathname)
+      if (method === 'POST' && fixAction !== null) {
+        const repoSlug = decodeURIComponent(fixAction[2]!)
+        const number = Number(fixAction[3])
+        const record = this.#autoReview.record(`${repoSlug}#${String(number)}`)
+        const back = `${prefix}${fixAction[1]!}`
+        const redirect = (query: string): void => {
+          response.writeHead(303, { location: `${back}${query}` })
+          response.end()
+        }
+        if (record === undefined) {
+          redirect('?fix=error&message=' + encodeURIComponent('找不到这条评审记录'))
+          return
+        }
+        if (this.#draining) {
+          redirect('?fix=error&message=' + encodeURIComponent('服务正在重启，请稍后重试'))
+          return
+        }
+        try {
+          await this.#startAutoReviewFix(record, { automatic: false })
+          redirect('?fix=started')
+        } catch (error) {
+          redirect(`?fix=error&message=${encodeURIComponent(messageOf(error))}`)
+        }
+        return
+      }
+      if (method !== 'GET') throw new Error(`未知的评审页面请求：${method} ${pathname}`)
+      const match = /^\/review\/([^/]+)\/(\d+)$/u.exec(pathname)
+      if (match === null) {
+        response.writeHead(404, { 'content-type': 'text/html; charset=utf-8' })
+        response.end(renderReviewPageMissing('评审链接格式不正确。'))
+        return
+      }
+      const repoSlug = decodeURIComponent(match[1]!)
+      const number = Number(match[2])
+      const record = this.#autoReview.record(`${repoSlug}#${String(number)}`)
+      if (record === undefined) {
+        response.writeHead(404, { 'content-type': 'text/html; charset=utf-8' })
+        response.end(renderReviewPageMissing(`没有找到 ${repoSlug} #${String(number)} 的评审记录。`))
+        return
+      }
+      let diff: ReviewPageDiff | undefined
+      const pr = this.#prDashboard.find(candidate => candidate.repoSlug === repoSlug && candidate.number === number)
+      try {
+        if (pr !== undefined) {
+          const captured = await this.#autoReviewDiff.capture(record, pr.clonePath)
+          diff = {
+            fromOid: captured.manifest.fromOid,
+            toOid: captured.manifest.toOid,
+            additions: captured.manifest.additions,
+            deletions: captured.manifest.deletions,
+            files: captured.manifest.files,
+            payloads: captured.payloads,
+          }
+        }
+      } catch { /* the page still renders the findings without the diff */ }
+      const fix = requestUrl.searchParams.get('fix')
+      const flash = fix === null ? undefined
+        : fix === 'started' ? { ok: true, message: '已启动修复会话；进展会更新在飞书卡片上，完成后这个页面也会同步。' }
+          : { ok: false, message: requestUrl.searchParams.get('message') ?? '启动修复会话失败' }
+      // The fix diff is read live so the page tracks the latest turn.
+      let fixDiff = record.fix?.diff
+      if (record.fix !== undefined) {
+        const pr = this.#prDashboard.find(candidate => candidate.repoSlug === record.repoSlug && candidate.number === record.number)
+        if (pr !== undefined) {
+          const clone = await findClone(pr.cloneName).catch(() => undefined)
+          if (clone !== undefined) fixDiff = await captureFixDiff(clone.path) ?? fixDiff
+        }
+      }
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      response.end(renderReviewPage(record, diff, {
+        actionPath: `${prefix}${pathname}`,
+        ...(flash === undefined ? {} : { flash }),
+        ...(fixDiff === undefined ? {} : { fixDiff }),
+      }))
+      return
+    }
     if (method === 'GET' && !url.startsWith('/api/')) {
       // The standalone browser UI was removed: the kanban now lives in the
       // DeepSeek Harness plugin. Keep a plain notice at the root.
@@ -823,6 +1126,20 @@ class WorkflowService {
         return viewed === undefined ? record : { ...record, viewed }
       }),
       reviewRequestsStatus: this.#reviewRequestsStatus,
+      autoReview: {
+        config: this.#autoReview.config(),
+        records: this.#autoReviewSummaries(),
+        running: [...this.#autoReviewRunning],
+      },
+      feishu: {
+        config: this.#feishu.publicConfig(),
+        threads: this.#feishu.threads().map(thread => ({
+          key: thread.key,
+          title: thread.title,
+          threadId: thread.threadId,
+          updatedAt: thread.updatedAt,
+        })),
+      },
       jobProgress: this.#readJobProgress(),
       workers: this.#workers.list(),
       workerTypes: this.#workerRegistry.availability(),
@@ -831,6 +1148,484 @@ class WorkflowService {
       ...state,
       jobs: recentJobs,
     }
+  }
+
+
+  /* ── PR Auto Reviewer ─────────────────────────────────────────────────── */
+
+  /** Seed the demo PR + review record (development only; see dev-demo.ts). */
+  async #loadDemoScenario(): Promise<void> {
+    for (const { pr, record } of await seedDemoScenarios()) {
+      if (!this.#prDashboard.some(candidate => candidate.repoSlug === pr.repoSlug && candidate.number === pr.number)) {
+        this.#prDashboard = [...this.#prDashboard, pr]
+        this.#prDashboardStatus = {
+          state: 'ready',
+          refreshing: false,
+          stale: false,
+          lastAttemptAt: now(),
+          lastSuccessAt: now(),
+        }
+      }
+      if (this.#autoReview.record(record.id) === undefined) await this.#autoReview.saveRecord(record)
+    }
+    this.#store.event('info', 'auto-review', '已加载 PR Auto Reviewer 演示数据（DSHW_DEMO=1）')
+    await this.#store.changed()
+  }
+
+
+  /** Records for the list view: comments are fetched per record on demand. */
+  #autoReviewSummaries(): AutoReviewSummary[] {
+    const jobs = this.#store.state.jobs
+    return this.#autoReview.records().map(record => {
+      const live = withLiveFixStatus(record, jobs)
+      const { comments, ...rest } = live
+      return { ...rest, commentCount: comments.length }
+    })
+  }
+
+
+  /** Render one of the auto-review turn prompts for this PR. */
+  async #autoReviewTurnPrompt(file: string, sync: SyncRecord): Promise<string> {
+    const template = await readFile(join(DSHW_ROOT, 'prompts', file), 'utf8')
+    return renderPromptTemplate(template, {
+      clonePath: sync.clonePath,
+      prNumber: String(sync.prNumber),
+      branch: sync.branch,
+      baseRefName: sync.baseRefName,
+    })
+  }
+
+  /** Render one summary row's debounce deadline for the event log. */
+  #autoReviewSchedule(record: AutoReviewRecord): string {
+    if (record.dueAt === undefined) return ''
+    const seconds = Math.max(1, Math.round((Date.parse(record.dueAt) - Date.now()) / 1_000))
+    return `${String(Math.floor(seconds / 60))} 分 ${String(seconds % 60)} 秒`
+  }
+
+  /** Fold a fresh dashboard snapshot into the debounce scheduler. */
+  async #observeAutoReviews(): Promise<void> {
+    const config = this.#autoReview.config()
+    if (!config.enabled) return
+    const records = new Map(this.#autoReview.records().map(record => [record.id, record]))
+    const changed = observePrCommits(records, this.#prDashboard, config, Date.now())
+    if (changed.length === 0) return
+    for (const record of changed) await this.#autoReview.saveRecord(record)
+    for (const record of changed) {
+      if (record.status !== 'pending') continue
+      this.#store.event(
+        'info',
+        'auto-review',
+        `${record.repoSlug} / PR #${record.number}: 检测到新提交 ${record.observedHeadOid.slice(0, 7)}，${this.#autoReviewSchedule(record)}后自动评审`,
+      )
+    }
+    await this.#store.changed()
+  }
+
+  /** Queue a manual review (used by the Feishu `/review` command). */
+  async #enqueueAutoReview(key: string): Promise<void> {
+    const record = this.#autoReview.record(key)
+    if (record === undefined) throw new Error('找不到这条自动评审记录')
+    if (this.#autoReviewRunning.has(key)) throw new Error('这个 PR 正在评审')
+    record.status = 'pending'
+    record.trigger = 'manual'
+    record.dueAt = now()
+    record.skippedReason = undefined
+    record.updatedAt = now()
+    await this.#autoReview.saveRecord(record)
+    await this.#store.changed()
+    if (!this.#draining) this.#startDueAutoReviews()
+  }
+
+  /** Send one instruction to the PR's running fix session (Feishu free text). */
+  async #steerAutoReviewFix(key: string, instruction: string): Promise<boolean> {
+    const record = this.#autoReview.record(key)
+    if (record?.fix === undefined) return false
+    const job = this.#store.state.jobs.find(candidate => candidate.id === record.fix!.jobId && candidate.status === 'running')
+    if (job === undefined || job.dshWorker === undefined) return false
+    await this.#steerDshJob(job.id, instruction)
+    return true
+  }
+
+  /** Kick off every review whose debounce deadline has passed. */
+  #startDueAutoReviews(): void {
+    // A manual run is honoured even while automatic watching is off; queued
+    // automatic runs stop when the switch is turned off.
+    const enabled = this.#autoReview.config().enabled
+    for (const record of dueReviews(this.#autoReview.records(), Date.now())) {
+      if (!enabled && record.trigger === 'auto') continue
+      if (this.#autoReviewRunning.has(record.id)) continue
+      void this.#startAutoReview(record).catch(() => { /* recorded on the record and in the log */ })
+    }
+  }
+
+  /** Run the review agent for one record and persist its findings. */
+  async #startAutoReview(record: AutoReviewRecord): Promise<void> {
+    if (this.#autoReviewRunning.has(record.id)) throw new Error(`${record.id} 的自动评审正在进行`)
+    const config = this.#autoReview.config()
+    const pr = this.#prDashboard.find(candidate => candidate.repoSlug === record.repoSlug && candidate.number === record.number)
+    const headOid = record.observedHeadOid
+    if (pr === undefined) {
+      record.status = 'idle'
+      record.dueAt = undefined
+      record.pendingSince = undefined
+      record.skippedReason = 'PR 不在当前看板中（可能已关闭）'
+      record.updatedAt = now()
+      await this.#autoReview.saveRecord(record)
+      await this.#store.changed()
+      return
+    }
+    if (record.trigger === 'auto' && record.reviewedHeadOid === headOid) {
+      record.status = record.reviewedHeadOid === undefined ? 'idle' : 'reviewed'
+      record.dueAt = undefined
+      record.pendingSince = undefined
+      record.updatedAt = now()
+      await this.#autoReview.saveRecord(record)
+      await this.#store.changed()
+      return
+    }
+    const apiKey = this.#autoReview.apiKey()
+    if (apiKey === undefined) {
+      record.status = 'failed'
+      record.error = `缺少评审模型 API Key（${config.apiKeyMode === 'value' ? '已保存的 Key 为空' : `环境变量 ${config.apiKeyEnv ?? 'DEEPSEEK_API_KEY'}`}）`
+      record.dueAt = undefined
+      record.pendingSince = undefined
+      record.finishedAt = now()
+      record.updatedAt = record.finishedAt
+      await this.#autoReview.saveRecord(record)
+      this.#store.event('error', 'auto-review', `${record.repoSlug} / PR #${record.number}: ${record.error}`)
+      await this.#store.changed()
+      return
+    }
+
+    this.#autoReviewRunning.add(record.id)
+    const controller = new AbortController()
+    this.#autoReviewControllers.set(record.id, controller)
+    record.status = 'running'
+    record.startedAt = now()
+    record.finishedAt = undefined
+    record.error = undefined
+    record.summary = ''
+    record.comments = []
+    record.counts = { critical: 0, warning: 0, suggestion: 0 }
+    record.headOid = headOid
+    record.baseOid = pr.baseOid ?? record.baseOid
+    record.dueAt = undefined
+    record.pendingSince = undefined
+    record.skippedReason = undefined
+    record.updatedAt = record.startedAt
+    await this.#autoReview.saveRecord(record)
+    this.#store.event('info', 'auto-review', `${record.repoSlug} / PR #${record.number}: 开始评审 ${headOid.slice(0, 7)}`)
+    await this.#store.changed()
+
+    try {
+      await this.#ensureAutoReviewCommits(pr, record.baseOid, headOid)
+      const description = await this.#autoReviewPrBody(pr)
+      const runDir = join(AUTO_REVIEW_ROOT, 'runs', `${record.id.replace(/[^a-zA-Z0-9._-]+/gu, '-')}-${String(Date.now())}`)
+      const models = config.models.length > 0 ? config.models : [config.model]
+      const result = await runReviews({
+        repoSlug: record.repoSlug,
+        prNumber: record.number,
+        title: record.title,
+        description,
+        instructions: config.instructions,
+        clonePath: pr.clonePath,
+        baseOid: record.baseOid,
+        headOid,
+        runDir,
+        models,
+        ...(config.modelProfile === undefined ? {} : { modelProfile: config.modelProfile }),
+        baseUrl: config.baseUrl,
+        apiKey,
+        engineVersion: config.engineVersion,
+        pricingFor: model => estimatePricing(model),
+        timeoutSeconds: config.timeoutSeconds,
+        signal: controller.signal,
+      })
+      record.status = result.status === 'completed' ? 'reviewed' : 'failed'
+      record.finishedAt = now()
+      record.summary = result.summary
+      record.comments = result.comments
+      record.counts = countSeverities(result.comments)
+      record.models = result.models
+      record.model = result.models.join(' + ')
+      record.engine = result.engineVersion
+      record.usage = result.usage === undefined ? undefined : { ...result.usage }
+      record.error = result.error ?? undefined
+      if (result.status === 'completed') record.reviewedHeadOid = headOid
+      record.updatedAt = record.finishedAt
+      await this.#autoReview.saveRecord(record)
+      const counts = record.counts
+      this.#store.event(
+        result.status === 'completed' ? 'info' : 'error',
+        'auto-review',
+        result.status === 'completed'
+          ? `${record.repoSlug} / PR #${record.number}: 评审完成（${result.models.join(' + ')}；${String(counts.critical)} critical / ${String(counts.warning)} warning / ${String(counts.suggestion)} suggestion）`
+          : `${record.repoSlug} / PR #${record.number}: 评审失败：${result.error ?? '未知错误'}`,
+      )
+    } catch (error) {
+      record.status = 'failed'
+      record.error = messageOf(error)
+      record.finishedAt = now()
+      record.updatedAt = record.finishedAt
+      await this.#autoReview.saveRecord(record)
+      this.#store.event('error', 'auto-review', `${record.repoSlug} / PR #${record.number}: 评审失败：${record.error}`)
+    } finally {
+      this.#autoReviewRunning.delete(record.id)
+      this.#autoReviewControllers.delete(record.id)
+      await this.#store.changed()
+    }
+
+    void this.#feishu.notifyReview(record).catch(() => { /* recorded as an event by the bot */ })
+    const latest = this.#autoReview.record(record.id) ?? record
+    if (!shouldAutoFix(latest, this.#autoReview.config())) return
+    try {
+      await this.#startAutoReviewFix(latest, { automatic: true })
+    } catch (error) {
+      this.#store.event('warning', 'auto-review', `${record.repoSlug} / PR #${record.number}: 未能启动自动修复：${messageOf(error)}`)
+      await this.#store.changed()
+    }
+  }
+
+
+  /**
+   * Push an auto-review fix that is waiting in the working tree.
+   *
+   * Runs one more dsh turn with the push prompt (commit + push + no force), then
+   * marks the record as pushed. Triggered by the card button or a Feishu message.
+   */
+  async #pushAutoReviewFix(record: AutoReviewRecord): Promise<void> {
+    const pr = this.#prDashboard.find(candidate => candidate.repoSlug === record.repoSlug && candidate.number === record.number)
+    if (pr === undefined) throw new Error('PR 不在当前看板中，无法推送')
+    if (record.fix === undefined) throw new Error('这条记录还没有修复会话')
+    if (record.fix.status === 'running') throw new Error('修复会话还在运行，等它完成再推送')
+    const clone = await findClone(pr.cloneName)
+    const prInfo = await pullRequest(clone.path, clone.repoSlug, pr.number)
+    if (prInfo.state !== 'OPEN') throw new Error(`PR #${String(pr.number)} 当前不是 open 状态`)
+    const existing = this.#store.state.syncs.find(candidate => candidate.repoSlug === clone.repoSlug && candidate.prNumber === pr.number)
+    const sync = existing ?? this.#manualSyncFromPr(clone, prInfo)
+    const workerConfig = this.#workers.executionConfig(this.#autoReview.config().workerConfigId)
+    this.#workerRegistry.assertAvailable(workerConfig.type)
+    const job = this.#beginJob('auto-review-fix', `${sync.cloneName} / PR #${sync.prNumber}: 推送修复`, sync.id)
+    record.fix = { ...record.fix, jobId: job.id, status: 'running' }
+    record.updatedAt = now()
+    await this.#autoReview.saveRecord(record)
+    this.#store.event('info', 'auto-review', `${record.repoSlug} / PR #${record.number}: 开始推送修复`)
+    await this.#store.changed()
+    const prompt = await this.#autoReviewTurnPrompt('auto-review-fix-push.md', sync)
+    void this.#withSyncLock(sync, async () => {
+      try {
+        await this.#runAgent(sync, 'auto-review-fix', workerConfig, prompt, job, { turns: [], push: true })
+      } catch (error) {
+        const latest = this.#autoReview.record(record.id) ?? record
+        latest.fix = { ...latest.fix!, status: 'ready' }
+        latest.error = messageOf(error)
+        latest.updatedAt = now()
+        await this.#autoReview.saveRecord(latest)
+        this.#store.event('warning', 'auto-review', `${record.repoSlug} / PR #${record.number}: 推送失败：${messageOf(error)}`)
+      } finally {
+        void this.#refreshPrDashboardAfterAction()
+      }
+    })
+  }
+
+  /** Make sure the reviewed base/head commits exist in the PR clone before cloning it. */
+  async #ensureAutoReviewCommits(pr: PrDashboardRecord, baseOid: string, headOid: string): Promise<void> {
+    const has = async (oid: string): Promise<boolean> => (
+      oid !== '' && (await run('git', ['cat-file', '-e', `${oid}^{commit}`], { cwd: pr.clonePath })).code === 0
+    )
+    if (await has(headOid) && await has(baseOid)) return
+    await runOrThrow('git', ['fetch', '--no-tags', 'origin', `+refs/heads/${pr.branch}:refs/remotes/origin/${pr.branch}`], {
+      cwd: pr.clonePath,
+      timeoutMs: 5 * 60 * 1000,
+    })
+    if (!await has(headOid) || !await has(baseOid)) throw new Error('PR 的基准或最新提交不在本地仓库中，无法评审')
+  }
+
+  /** Pull request description for the review prompt (best effort). */
+  async #autoReviewPrBody(pr: PrDashboardRecord): Promise<string> {
+    const result = await run('gh', ['pr', 'view', String(pr.number), '--repo', pr.repoSlug, '--json', 'body', '--jq', '.body'], {
+      timeoutMs: 30_000,
+    })
+    return result.code === 0 ? result.stdout.trim().slice(0, 20_000) : ''
+  }
+
+  /** GitHub connectivity as the settings panel shows it. */
+  async #autoReviewGithubStatus(): Promise<{ authenticated: boolean, account?: string, repositories: string[], error?: string }> {
+    const repositories = this.#monitoredRepos.filter(repo => repo.enabled).map(repo => repo.repoSlug)
+    const result = await run('gh', ['api', 'user', '--jq', '.login'], { timeoutMs: 30_000 })
+    if (result.code !== 0) {
+      return {
+        authenticated: false,
+        repositories,
+        error: result.stderr.trim().slice(-600) === '' ? 'gh 命令失败' : result.stderr.trim().slice(-600),
+      }
+    }
+    return { authenticated: true, account: result.stdout.trim(), repositories }
+  }
+
+
+  /**
+   * Models the configured review endpoint serves.
+   *
+   * The gateway is OpenAI-compatible for every family, so its `/models` list is
+   * the authoritative picker source; a failed lookup falls back to the models
+   * the panel already knows plus the currently configured one.
+   */
+  async #autoReviewModels(): Promise<{ models: string[], recommended: string[], error?: string }> {
+    const config = this.#autoReview.config()
+    const apiKey = this.#autoReview.apiKey()
+    const fallback = [...new Set([config.model, ...RECOMMENDED_REVIEW_MODELS])]
+    if (apiKey === undefined) return { models: fallback, recommended: [...RECOMMENDED_REVIEW_MODELS], error: '还没有配置评审模型 API Key' }
+    try {
+      const response = await fetch(`${config.baseUrl.replace(/\/+$/u, '')}/models`, {
+        headers: { authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(20_000),
+      })
+      if (!response.ok) return { models: fallback, recommended: [...RECOMMENDED_REVIEW_MODELS], error: `模型列表请求失败：HTTP ${String(response.status)}` }
+      const body = await response.json() as { data?: Array<{ id?: unknown }> }
+      const models = (body.data ?? [])
+        .map(entry => entry.id)
+        .filter((id): id is string => typeof id === 'string' && id !== '')
+        .sort((left, right) => left.localeCompare(right))
+      return models.length === 0
+        ? { models: fallback, recommended: [...RECOMMENDED_REVIEW_MODELS], error: '模型列表为空' }
+        : { models, recommended: [...RECOMMENDED_REVIEW_MODELS] }
+    } catch (error) {
+      return { models: fallback, recommended: [...RECOMMENDED_REVIEW_MODELS], error: `无法读取模型列表：${messageOf(error)}` }
+    }
+  }
+
+
+  /** Push running fix-session progress into the Feishu card (the bot throttles patches). */
+  async #syncFeishuFixProgress(): Promise<void> {
+    for (const record of this.#autoReview.records()) {
+      const fix = record.fix
+      if (fix === undefined || fix.status !== 'running') continue
+      const job = this.#store.state.jobs.find(candidate => candidate.id === fix.jobId && candidate.status === 'running')
+      const runId = job?.dshWorker?.handle.runId
+      if (runId === undefined) continue
+      const progress = this.#workerProgress.get(runId)
+      if (progress === undefined) continue
+      await this.#feishu.syncFixProgress(record, { status: 'running', phase: progress.phase, message: progress.message })
+    }
+  }
+
+
+
+  /**
+   * Route one natural-language Feishu message.
+   *
+   * Uses the cheapest configured reviewer (`deepseek-flash`) as a router so the
+   * topic behaves like a chat: questions get answered, "重新评审" re-runs the
+   * review, "修一下" starts or steers the fix session. Any failure falls back to
+   * the pre-router behaviour (treat the text as a fix instruction).
+   */
+  async #interpretFeishuMessage(key: string, message: string): Promise<FeishuRoute> {
+    const record = this.#autoReview.record(key)
+    if (record === undefined) return { action: 'answer', reply: '这个 PR 已经不在自动评审记录里了。' }
+    const config = this.#autoReview.config()
+    const apiKey = this.#autoReview.apiKey()
+    if (apiKey === undefined) return parseRoute('', message)
+    const liveFix = this.#store.state.jobs.some(job => job.id === record.fix?.jobId && job.status === 'running')
+    const prompt = routePrompt(record, message, liveFix)
+    try {
+      const response = await fetch(`${config.baseUrl.replace(/\/+$/u, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: INTERPRET_MODEL,
+          messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
+          temperature: 0,
+          max_tokens: 500,
+        }),
+        signal: AbortSignal.timeout(25_000),
+      })
+      if (!response.ok) return parseRoute('', message)
+      const body = await response.json() as { choices?: Array<{ message?: { content?: unknown } }> }
+      const content = body.choices?.[0]?.message?.content
+      return parseRoute(typeof content === 'string' ? content : '', message)
+    } catch {
+      return parseRoute('', message)
+    }
+  }
+
+  /** Why the review card shows no fix session (auto-fix off, below threshold, …). */
+  #autoReviewFixHint(record: AutoReviewRecord): string {
+    const config = this.#autoReview.config()
+    if (!config.enabled) return '自动评审已关闭'
+    if (!config.autoFix) return '自动修复未开启'
+    if (record.status !== 'reviewed') return '评审未完成'
+    const counts = record.counts
+    const blocking = config.fixSeverity === 'critical' ? counts.critical : counts.critical + counts.warning
+    if (blocking === 0) return '未达到自动修复级别'
+    if ((record.fixRounds ?? 0) >= MAX_AUTO_FIX_ROUNDS) return `已达 ${String(MAX_AUTO_FIX_ROUNDS)} 次上限`
+    return '自动修复未启动'
+  }
+
+  /** Start a dsh session that works through the record's findings. */
+  async #startAutoReviewFix(record: AutoReviewRecord, options: { automatic: boolean, instruction?: string }): Promise<void> {
+    const config = this.#autoReview.config()
+    // The record may hold the status from before a daemon restart; the live job
+    // list is authoritative for "is a fix session running right now".
+    const liveFixStatus = record.fix === undefined
+      ? undefined
+      : this.#store.state.jobs.find(job => job.id === record.fix!.jobId)?.status ?? record.fix.status
+    if (liveFixStatus === 'running') throw new Error('这条记录的修复会话已经在运行')
+    if (options.automatic && (record.fixRounds ?? 0) >= MAX_AUTO_FIX_ROUNDS) throw new Error(`已达到 ${String(MAX_AUTO_FIX_ROUNDS)} 次自动修复上限`)
+    const pr = this.#prDashboard.find(candidate => candidate.repoSlug === record.repoSlug && candidate.number === record.number)
+    if (pr === undefined) throw new Error('PR 不在当前看板中，无法启动修复会话')
+    const clone = await findClone(pr.cloneName)
+    const prInfo = await pullRequest(clone.path, clone.repoSlug, pr.number)
+    if (prInfo.state !== 'OPEN') throw new Error(`PR #${String(pr.number)} 当前不是 open 状态`)
+    const existing = this.#store.state.syncs.find(candidate => candidate.repoSlug === clone.repoSlug && candidate.prNumber === pr.number)
+    const sync = existing ?? this.#manualSyncFromPr(clone, prInfo)
+    const workerConfig = this.#workers.executionConfig(config.workerConfigId)
+    this.#workerRegistry.assertAvailable(workerConfig.type)
+    const findings = formatFindings(record)
+    if (findings === '') throw new Error('这条记录没有可修复的评审意见')
+    const label = options.automatic ? '自动评审修复' : '手动发起评审修复'
+    this.#prepareManualAction(sync, label)
+    const job = this.#beginJob('auto-review-fix', `${sync.cloneName} / PR #${sync.prNumber}: ${label}`, sync.id)
+    record.fix = {
+      jobId: job.id,
+      status: 'running',
+      startedAt: now(),
+      headOid: record.reviewedHeadOid ?? record.headOid,
+    }
+    record.fixRounds = (record.fixRounds ?? 0) + 1
+    record.updatedAt = now()
+    await this.#autoReview.saveRecord(record)
+    this.#store.event('info', 'auto-review', `${record.repoSlug} / PR #${record.number}: ${label}已启动（${workerConfig.name}）`)
+    await this.#store.changed()
+    void this.#feishu.notifyFixStarted(record).catch(() => { /* recorded as an event by the bot */ })
+    const prompt = options.instruction === undefined || options.instruction.trim() === ''
+      ? findings
+      : `${findings}\n\n## 用户补充指令\n\n${options.instruction.trim()}`
+    void this.#withSyncLock(sync, async () => {
+      try {
+        const turns = [
+          await this.#autoReviewTurnPrompt('auto-review-scope-audit.md', sync),
+          await this.#autoReviewTurnPrompt('auto-review-fix-summary.md', sync),
+        ]
+        await this.#runAgent(sync, 'auto-review-fix', workerConfig, prompt, job, { turns })
+      } finally {
+        const latest = await pullRequest(clone.path, clone.repoSlug, pr.number).catch(() => undefined)
+        const fix = record.fix
+        if (fix !== undefined && job.dshWorker?.kind !== 'auto-review-fix') {
+          record.fix = {
+            ...fix,
+            status: job.status,
+            ...(job.finishedAt === undefined ? {} : { finishedAt: job.finishedAt }),
+            ...(latest === undefined ? {} : { producedHeadOid: latest.headRefOid }),
+            ...(job.output === undefined || job.status !== 'blocked' ? {} : { blockedReason: job.output.slice(-600) }),
+          }
+          record.updatedAt = now()
+          await this.#autoReview.saveRecord(record)
+          void this.#feishu.notifyFix(record, job.status).catch(() => { /* recorded as an event by the bot */ })
+        }
+        void this.#refreshPrDashboardAfterAction()
+      }
+    })
   }
 
   async #jobOutput(jobId: string | undefined, before?: number): Promise<OutputPage> {
@@ -1146,6 +1941,8 @@ class WorkflowService {
       this.#lastPrDashboardRefreshAt = currentTime
       void this.#refreshPrDashboard()
     }
+    this.#startDueAutoReviews()
+    void this.#syncFeishuFixProgress()
     for (const sync of [...this.#store.state.syncs]) {
       if (sync.enabled === false) continue
       if (this.#syncLocks.has(sync.id)) continue
@@ -1446,6 +2243,7 @@ class WorkflowService {
       }
       if (complete) this.#clearRateLimited()
       await this.#store.changed()
+      await this.#observeAutoReviews()
       await this.#refreshWorkspace()
     })().catch(async (error: unknown) => {
       // 整体失败（如 GraphQL 限流）时保留旧 dashboard，不要清空列表
@@ -1798,10 +2596,11 @@ class WorkflowService {
 
   async #runAgent(
     sync: SyncRecord,
-    kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom' | 'review',
+    kind: 'merge-base' | 'fix-ci' | 'resolve-comments' | 'custom' | 'review' | 'auto-review-fix',
     selectedWorker?: WorkerExecutionConfig,
     additionalInstruction?: string,
     existingJob?: JobRecord,
+    options: { turns?: string[], push?: boolean } = {},
   ): Promise<void> {
     if (sync.agentPausedReason !== undefined) {
       this.#store.event(
@@ -1817,7 +2616,7 @@ class WorkflowService {
       ? `合并 ${sync.baseRefName}`
       : kind === 'fix-ci'
         ? '修复 CI'
-        : kind === 'resolve-comments' ? '解决 review 评论' : kind === 'review' ? 'Review 对话' : '自定义任务'
+        : kind === 'resolve-comments' ? '解决 review 评论' : kind === 'review' ? 'Review 对话' : kind === 'auto-review-fix' ? '自动评审修复' : '自定义任务'
     const job = existingJob ?? this.#beginJob(type, `${sync.cloneName} / PR #${sync.prNumber}: ${label}`, sync.id)
     job.summary = `${sync.cloneName} / PR #${sync.prNumber}: ${label}`
     const oldHead = sync.headOid
@@ -1826,9 +2625,10 @@ class WorkflowService {
       const workerConfig = selectedWorker ?? this.#workers.executionConfig()
       job.executor = workerConfig.name
       const handle = await this.#workerRegistry.start(sync, kind, workerConfig, additionalInstruction)
-      job.dshWorker = { handle, kind, sync: structuredClone(sync), oldHead, label }
+      job.dshWorker = { handle, kind, sync: structuredClone(sync), oldHead, label, ...(options.push === true ? { push: true } : {}) }
       job.nextAgentSteerAt = kind === 'review' ? undefined : after(AGENT_STEER_INTERVAL_MS)
       await this.#store.changed()
+      if (options.turns !== undefined) await this.#driveDshTurns(handle, options.turns)
       await this.#completeDshJob(job, sync)
     } catch (error) {
       if (job.dshWorker === undefined) {
@@ -1837,6 +2637,40 @@ class WorkflowService {
       }
       throw error
     }
+  }
+
+
+  /**
+   * Drive the auto-review fix conversation: wait until the session is paused
+   * after a turn, steer the next one, and complete the session at the end.
+   */
+  async #driveDshTurns(handle: DshWorkerHandle, prompts: readonly string[]): Promise<void> {
+    for (const prompt of prompts) {
+      if (!await this.#waitDshPaused(handle)) return
+      const tail = this.#workerProgress.get(handle.runId)?.outputTail ?? ''
+      if (/DSHW_RESULT:\s*blocked/iu.test(tail)) return
+      await steerDshWorker(handle, prompt)
+    }
+    if (!await this.#waitDshPaused(handle)) return
+    await completeDshWorker(handle)
+  }
+
+  /** Poll the worker until it pauses; false when it exited or timed out. */
+  async #waitDshPaused(handle: DshWorkerHandle): Promise<boolean> {
+    const deadline = Date.now() + 30 * 60 * 1000
+    while (Date.now() < deadline) {
+      const progress = this.#workerProgress.get(handle.runId)
+      if (progress?.phase === 'paused') return true
+      if (progress === undefined) return false
+      try {
+        const inspected = await inspectDshWorker(handle)
+        if (inspected.phase === 'paused') return true
+      } catch {
+        return false
+      }
+      await new Promise(resolve => setTimeout(resolve, 2_000))
+    }
+    return false
   }
 
   async #completeDshJob(job: JobRecord, sync: SyncRecord): Promise<void> {
@@ -1872,6 +2706,49 @@ class WorkflowService {
       if (worker.kind === 'review') {
         this.#finishJob(job, 'succeeded', `${worker.label}已完成`)
         this.#store.event('info', 'review', `${sync.repoSlug} / PR #${sync.prNumber}: ${worker.label}已完成`)
+        await this.#store.changed()
+        return
+      }
+
+      if (worker.kind === 'auto-review-fix') {
+        const record = this.#autoReview.records().find(candidate => candidate.fix?.jobId === job.id)
+        if (record === undefined) {
+          this.#finishJob(job, 'succeeded', `${worker.label} 已完成`)
+          await this.#store.changed()
+          return
+        }
+        const output = job.output ?? ''
+        const blocked = /DSHW_RESULT:\s*blocked\s*$/imu.test(output)
+        const diff = await captureFixDiff(sync.clonePath)
+        if (worker.push === true) {
+          const pushed = await pullRequest(sync.clonePath, sync.repoSlug, sync.prNumber).catch(() => undefined)
+          if (pushed !== undefined) this.#applyPr(sync, pushed)
+          record.fix = {
+            ...record.fix!,
+            status: 'pushed',
+            finishedAt: now(),
+            diff,
+            ...(pushed === undefined ? {} : { producedHeadOid: pushed.headRefOid }),
+          }
+          this.#finishJob(job, 'succeeded', `${worker.label} 已 push`)
+          this.#store.event('info', 'auto-review', `${sync.repoSlug} / PR #${sync.prNumber}: 修复已推送`)
+        } else {
+          const parsed = parseFixSummary(output)
+          record.fix = {
+            ...record.fix!,
+            status: blocked ? 'blocked' : 'ready',
+            finishedAt: now(),
+            diff,
+            ...(parsed.summary === '' ? {} : { summary: parsed.summary }),
+            ...(parsed.notes.length === 0 ? {} : { notes: parsed.notes }),
+            ...(blocked ? { blockedReason: output.slice(-600) } : {}),
+          }
+          this.#finishJob(job, 'succeeded', `${worker.label} 完成（未推送，等待确认）`)
+          this.#store.event('info', 'auto-review', `${sync.repoSlug} / PR #${sync.prNumber}: 修复完成，改动留在工作区等待确认`)
+        }
+        record.updatedAt = now()
+        await this.#autoReview.saveRecord(record)
+        void this.#feishu.notifyFix(record, record.fix.status).catch(() => { /* recorded as an event by the bot */ })
         await this.#store.changed()
         return
       }
@@ -2319,6 +3196,7 @@ class WorkflowService {
   async #drainAndExit(): Promise<void> {
     if (this.#draining) return
     this.#draining = true
+    this.#feishu.stop()
     this.#store.event('info', 'service', '开始重启：独立 dsh worker 将继续运行，仅等待短任务安全结束')
     await this.#store.changed()
     if (this.#timer !== undefined) clearInterval(this.#timer)

@@ -50,7 +50,9 @@ export function renderPeriodicAgentReminder(worker: DshWorkerState): string {
       ? `修复 PR #${worker.sync.prNumber} 启动本任务时已经失败的 CI checks`
       : worker.kind === 'resolve-comments'
         ? `处理 PR #${worker.sync.prNumber} 启动本任务时尚未解决的 review threads`
-        : `完成用户为 PR #${worker.sync.prNumber} 指定的自定义任务`
+        : worker.kind === 'auto-review-fix'
+          ? `处理 PR #${worker.sync.prNumber} 启动本任务时列出的自动评审意见`
+          : `完成用户为 PR #${worker.sync.prNumber} 指定的自定义任务`
   return [
     '# 20 分钟任务边界提醒',
     '',
@@ -115,6 +117,18 @@ export async function loadWorkerPrompt(sync: SyncRecord, kind: DshRunRecord['kin
       baseRefName: sync.baseRefName,
       instruction,
       readOnlyReminder: REVIEW_READ_ONLY_REMINDER,
+    })
+  }
+  if (kind === 'auto-review-fix') {
+    const findings = additionalInstruction?.trim()
+    if (findings === undefined || findings === '') throw new Error('自动评审修复缺少评审意见')
+    const template = await readFile(join(DSHW_ROOT, 'prompts', 'auto-review-fix.md'), 'utf8')
+    return renderPromptTemplate(template, {
+      clonePath: sync.clonePath,
+      prNumber: String(sync.prNumber),
+      branch: sync.branch,
+      baseRefName: sync.baseRefName,
+      findings,
     })
   }
   const filename = kind === 'merge-base' ? 'merge-base.md' : kind === 'fix-ci' ? 'fix-ci.md' : 'resolve-comments.md'
