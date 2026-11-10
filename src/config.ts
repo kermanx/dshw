@@ -31,6 +31,13 @@ export const WORKER_SECRET_FILE = join(DATA_ROOT, 'worker-secrets.env')
 export const WORKER_ROOT = join(DATA_ROOT, 'workers')
 export const INSTALLATION_FILE = join(DATA_ROOT, 'installation.json')
 export const MANAGED_HARNESS_FILE = join(DATA_ROOT, 'managed-harness.json')
+/** PR Auto Reviewer state (records + non-secret settings) and secrets. */
+export const AUTO_REVIEW_FILE = join(DATA_ROOT, 'auto-review.json')
+export const AUTO_REVIEW_SECRET_FILE = join(DATA_ROOT, 'auto-review-secrets.env')
+/** Run directories (checkouts, logs) and the pinned review engine installs. */
+export const AUTO_REVIEW_ROOT = join(DATA_ROOT, 'auto-review')
+/** Feishu bot settings, topic threads and the messages already handled. */
+export const FEISHU_FILE = join(DATA_ROOT, 'feishu.json')
 export const HARNESS_REMOTE_URL = process.env.DSHW_HARNESS_REMOTE_URL ?? 'https://github.com/deepseek-harness/deepseek-harness.git'
 export const SERVICE_LABEL = process.env.DSHW_SERVICE_LABEL ?? 'com.deepseek-harness.dshw'
 export const SERVICE_PLIST = resolve(process.env.DSHW_SERVICE_PLIST ?? join(homedir(), 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`))
@@ -45,6 +52,10 @@ export const PR_REVIEW_INTERVAL_MS = 5 * 60 * 1000
 export const DSHW_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000
 export const WORKSPACE_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 export const CI_WATCH_INTERVAL_MS = 30 * 1000
+/** Newest commit must rest this long before the automatic review starts. */
+export const AUTO_REVIEW_DEBOUNCE_SECONDS = 90
+/** A busy branch is still reviewed at this point, however many commits keep arriving. */
+export const AUTO_REVIEW_DEBOUNCE_MAX_SECONDS = 900
 export const AGENT_STEER_INTERVAL_MS = 20 * 60 * 1000
 export const BASE_DEBOUNCE_MS = 10 * 60 * 1000
 export const BASE_DEBOUNCE_MAX_MS = 30 * 60 * 1000
